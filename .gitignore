@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# NetPilot local data (disposable lab measurements)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Environment & secrets - never commit
+.env
+.env.local
+*.pem
+*.key
+
+# Containerlab runtime artifacts
+lab/*.txt
+lab/myeuler*
+containerlab.db
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml

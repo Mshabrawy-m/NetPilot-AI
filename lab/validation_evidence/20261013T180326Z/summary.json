@@ -1,0 +1,14 @@
+{
+  "generated_utc": "2026-10-13T18:03:26.174876+00:00",
+  "counts": {
+    "pass": 0,
+    "fail": 0,
+    "blocked": 1
+  },
+  "items": {
+    "PRE-FLIGHT": {
+      "status": "BLOCKED",
+      "detail": "Docker/Containerlab unavailable -> L-1..L-6 CANNOT run on real telemetry. No demo/mock substitution. Provision a Linux VM."
+    }
+  }
+}

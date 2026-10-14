@@ -1,0 +1,109 @@
+# =============================================================================
+# NetPilot AI - Phase 1 virtual network lab (Containerlab + FRRouting)
+#
+#   Topology:
+#                 R1
+#                /  \
+#              R2    R3
+#              |      |
+#             PC1    PC2
+#
+# Deploy:   containerlab deploy   -t lab/topology.clab.yml
+# Inspect:  containerlab inspect  -g lab/topology.clab.yml
+# Destroy:  containerlab destroy  -t lab/topology.clab.yml
+# Redeploy: containerlab deploy   -t lab/topology.clab.yml --reconfigure
+#
+# Requires: Docker + Containerlab (Linux host, or Windows with WSL2/Docker
+#           Desktop). See README.md "Lab deployment" and "Known limitations".
+#
+# IP address plan (documented, lab-internal only, RFC1918 / loopback):
+#   Segment R1-R2 : 10.0.12.0/24   (R1 eth1=.1,  R2 eth1=.2)
+#   Segment R1-R3 : 10.0.13.0/24   (R1 eth2=.1,  R3 eth1=.3)
+#   Segment R2-PC1: 10.0.21.0/24   (R2 eth2=.2,  PC1 eth1=.21)
+#   Segment R3-PC2: 10.0.32.0/24   (R3 eth2=.3,  PC2 eth1=.32)
+#   Loopbacks     : R1=10.1.1.1/32 R2=10.1.1.2/32 R3=10.1.1.3/32
+#   Routing       : OSPF area 0 between routers (FRR ospfd);
+#                   PC1/PC2 use their router as default gateway.
+#
+# The `netpilot.*` labels are read by NetPilot's device inventory parser
+# (network/device_inventory.py). Containerlab ignores unknown label keys.
+# =============================================================================
+name: netpilot
+prefix: ""          # keep container names exactly R1/R2/R3/PC1/PC2
+
+mgmt:
+  network: netpilot-mgmt   # isolated Docker bridge for node management
+
+topology:
+  nodes:
+    R1:
+      kind: frr
+      image: frrouting/frr:v8.4.4
+      binds:
+        - configs/R1/daemons:/etc/frr/daemons
+        - configs/R1/frr.conf:/etc/frr/frr.conf
+      labels:
+        netpilot.type: router
+        netpilot.loopback: 10.1.1.1/32
+        netpilot.if.eth1: 10.0.12.1/24
+        netpilot.if.eth2: 10.0.13.1/24
+
+    R2:
+      kind: frr
+      image: frrouting/frr:v8.4.4
+      binds:
+        - configs/R2/daemons:/etc/frr/daemons
+        - configs/R2/frr.conf:/etc/frr/frr.conf
+      labels:
+        netpilot.type: router
+        netpilot.loopback: 10.1.1.2/32
+        netpilot.if.eth1: 10.0.12.2/24
+        netpilot.if.eth2: 10.0.21.2/24
+
+    R3:
+      kind: frr
+      image: frrouting/frr:v8.4.4
+      binds:
+        - configs/R3/daemons:/etc/frr/daemons
+        - configs/R3/frr.conf:/etc/frr/frr.conf
+      labels:
+        netpilot.type: router
+        netpilot.loopback: 10.1.1.3/32
+        netpilot.if.eth1: 10.0.13.3/24
+        netpilot.if.eth2: 10.0.32.3/24
+
+    PC1:
+      kind: linux
+      image: alpine:3.20
+      # Isolate from any real network: no default Docker bridge.
+      network-mode: none
+      # eth1 is wired by containerlab; IP assigned via startup exec below.
+      exec:
+        - sysctl -w net.ipv4.ip_forward=1
+        - ip addr add 10.0.21.21/24 dev eth1
+        - ip link set eth1 up
+        - ip route add default via 10.0.21.2
+      labels:
+        netpilot.type: host
+        netpilot.if.eth1: 10.0.21.21/24
+
+    PC2:
+      kind: linux
+      image: alpine:3.20
+      network-mode: none
+      exec:
+        - sysctl -w net.ipv4.ip_forward=1
+        - ip addr add 10.0.32.32/24 dev eth1
+        - ip link set eth1 up
+        - ip route add default via 10.0.32.3
+      labels:
+        netpilot.type: host
+        netpilot.if.eth1: 10.0.32.32/24
+
+  links:
+    # Interface numbering order matters: endpoints get eth1, eth2, ...
+    # in the order their node is referenced below.
+    - endpoints: ["R1:eth1", "R2:eth1"]   # 10.0.12.0/24
+    - endpoints: ["R1:eth2", "R3:eth1"]   # 10.0.13.0/24
+    - endpoints: ["R2:eth2", "PC1:eth1"]  # 10.0.21.0/24
+    - endpoints: ["R3:eth2", "PC2:eth1"]  # 10.0.32.0/24

@@ -1,0 +1,27 @@
+# NetPilot AI — global Streamlit theme ("Mission Control / Network-Ops").
+# Applied automatically to every page. Colours here pair with the CSS layer in
+# ui/theme.py. Fonts are pulled in by ui/theme.py via @import at runtime.
+[theme]
+base = "dark"
+primaryColor = "#38BDF8"          # electric cyan — actions & accents
+backgroundColor = "#0A0E1A"        # deep space-navy canvas
+secondaryBackgroundColor = "#131A2B"  # surfaces, cards, inputs
+textColor = "#E6EDF7"
+linkColor = "#7DD3FC"
+borderColor = "#233049"
+codeFont = "'JetBrains Mono', 'Fira Code', monospace"
+headingFont = "'Space Grotesk', 'Inter', sans-serif"
+font = "'Inter', system-ui, sans-serif"
+baseRadius = "14px"
+buttonRadius = "10px"
+showSidebarBorder = true
+
+[theme.sidebar]
+backgroundColor = "#0B1120"
+secondaryBackgroundColor = "#141C2E"
+textColor = "#C7D2E6"
+borderColor = "#1C2540"
+linkColor = "#7DD3FC"
+
+[browser]
+gatherUsageStats = false

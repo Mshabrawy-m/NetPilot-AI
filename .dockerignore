@@ -1,0 +1,30 @@
+# Keep the build context lean and secrets out of the image (Slice 8).
+# Anything not listed here is copied into the image by `COPY . .`.
+.git
+.gitignore
+.github
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# Local data and environment files must never enter the image.
+data
+*.db
+*.db-shm
+*.db-wal
+.env
+*.env
+!.env.example
+
+# Docs/tests are copied (tiny) but coverage artefacts and editor files are not.
+.coverage.*
+.vscode
+.idea
+*.tmp
