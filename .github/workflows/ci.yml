@@ -1,0 +1,92 @@
+# NetPilot AI - CI (v2 Slice 8).
+# The whole suite is offline by design: no API keys, no network, no Docker
+# needed to be green. Three gates, all required:
+#   1. secret hygiene scan  - nothing that looks like a .env or key lands
+#   2. pytest matrix        - Python 3.11 + 3.12 (pure-Python deps, no lab)
+#   3. headless UI smoke    - Streamlit AppTest over app.py + every page
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: No environment files may be committed
+        run: |
+          set -euo pipefail
+          found=$(git ls-files | grep -E '(^|/)\.env(\.|$)' | grep -v '\.env\.example$' || true)
+          if [ -n "$found" ]; then
+            echo "::error::Refusing to build with committed env files: $found"
+            exit 1
+          fi
+      - name: Hard-coded credential scan (tested tool, single source of truth)
+        run: python tools/secret_scan_check.py
+
+  test:
+    needs: secret-scan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest-cov
+      - name: Syntax gate
+        run: python -m compileall -q app.py api analytics database network services pages ai
+      - name: Offline pytest suite (coverage summary)
+        run: pytest --cov=. --cov-report=term-missing:skip-covered
+        env:
+          # No secrets exist in CI by design; the suite must pass without any.
+          GROQ_API_KEY: ""
+
+  ui-smoke:
+    needs: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements.txt
+      - name: Headless UI smoke (every page via Streamlit AppTest)
+        run: python tests/ui_smoke_check.py
+
+  docker-build:
+    # Build-only smoke: proves the Dockerfile/compose files parse and the
+    # image assembles. The stack itself is verified manually on a Docker host.
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

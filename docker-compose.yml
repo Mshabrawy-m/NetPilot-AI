@@ -1,0 +1,92 @@
+# NetPilot AI - one-command stack (Slice 8).
+#
+#   docker compose up --build           # dashboard + API + PostgreSQL
+#   http://localhost:8501               # Streamlit dashboard
+#   http://localhost:8000/health        # read-only REST/WS API
+#   http://localhost:8000/metrics       # observability snapshot (JSON;
+#                                       #  Accept: text/plain -> Prometheus)
+#
+# Honesty notes:
+# * This stack starts EVERYTHING the platform needs, but NOT the network lab
+#   itself: Containerlab needs the host Docker socket, so it runs on a Docker
+#   host via the optional 'lab' profile below (never on production networks).
+# * Live collection from inside a container requires NETPILOT_DEMO_MODE=false
+#   plus reachability to the lab; the stack boots in clearly-labelled demo
+#   mode so `compose up` always shows a working, honest dashboard.
+# * Change-loop apply stays OFF (NETPILOT_CHANGE_LOOP_ENABLED=false); a real
+#   apply needs a virtual-lab executor on the lab host, by design.
+
+name: netpilot
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: netpilot
+      POSTGRES_PASSWORD: netpilot          # local lab credential, not a secret
+      POSTGRES_DB: netpilot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netpilot -d netpilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  dashboard:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NETPILOT_SERVICE: dashboard
+      DATABASE_URL: postgresql+psycopg2://netpilot:netpilot@db:5432/netpilot
+      NETPILOT_DEMO_MODE: "${NETPILOT_DEMO_MODE:-true}"
+      NETPILOT_AUTH_ENABLED: "${NETPILOT_AUTH_ENABLED:-false}"
+      NETPILOT_CHANGE_LOOP_ENABLED: "false"   # gated off inside containers
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"       # passthrough only; never stored
+    ports:
+      - "8501:8501"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request as u;u.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NETPILOT_SERVICE: api
+      DATABASE_URL: postgresql+psycopg2://netpilot:netpilot@db:5432/netpilot
+      NETPILOT_DEMO_MODE: "${NETPILOT_DEMO_MODE:-true}"
+      NETPILOT_API_TOKEN: "${NETPILOT_API_TOKEN:-}"  # empty = open read-only
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request as u;u.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+
+  # Optional: the Containerlab virtual lab, ONLY on a Docker-capable host.
+  #   docker compose --profile lab up
+  # Needs the socket (container-in-container) and the repo's lab/ directory;
+  # lab nodes stay on their own network - nothing here touches production.
+  lab:
+    profiles: ["lab"]
+    image: ghcr.io/srlabs/clab:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./lab:/lab
+    working_dir: /lab
+    command: ["containerlab", "deploy", "-t", "topology.clab.yml"]
+
+volumes:
+  pgdata:
