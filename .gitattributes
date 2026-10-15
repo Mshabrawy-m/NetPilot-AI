@@ -1,0 +1,46 @@
+# NetPilot AI - how Git stores files and how GitHub renders/counts them.
+#
+# This file changes no source content. Every rule below either pins how a file
+# is normalized in the repository (so Linux tooling never sees a stray CR) or
+# tells GitHub's Linguist which paths are prose/lab fixtures rather than
+# product code, so the repository's Languages bar describes the application.
+
+# --- line endings -------------------------------------------------------------
+# The published blobs are already LF, so adding these rules rewrites nothing:
+# they keep it that way if a future clone is made with core.autocrlf unset
+# (a Linux CI checkout, or another contributor's machine).
+#
+# Shell scripts must stay LF in the working tree too: bash dies on '#!/bin\r'.
+*.sh text eol=lf
+
+# Text that Linux parses: the image build (Dockerfile line continuations) and
+# the CI/compose YAML. Normalized to LF in the repo, native on checkout.
+Dockerfile text
+docker/** text
+*.yml text
+*.toml text
+requirements.txt text
+.dockerignore text
+.gitignore text
+.env.example text
+*.py text
+*.md text
+
+# --- GitHub language statistics ----------------------------------------------
+# Project documentation (phase specs, roadmap, delivery reports) and the README
+# are prose deliverables, not code. Marking them documentation keeps the
+# Languages bar showing Python/YAML instead of ~50% Markdown.
+*.md linguist-documentation
+docs/** linguist-documentation
+
+# FRR router configs and captured lab evidence are inputs/outputs of the
+# Containerlab lab. The 'daemons' and 'frr.conf' files have no useful extension,
+# so Linguist would otherwise guess and skew the statistics.
+lab/configs/** linguist-vendored
+lab/validation_evidence/** linguist-vendored
+
+# --- diff hygiene -------------------------------------------------------------
+# Never show a byte-level diff for binary assets.
+*.png binary
+*.jpg binary
+*.ico binary

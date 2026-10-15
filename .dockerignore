@@ -2,6 +2,7 @@
 # Anything not listed here is copied into the image by `COPY . .`.
 .git
 .gitignore
+.gitattributes
 .github
 .venv
 venv
@@ -23,7 +24,17 @@ data
 *.env
 !.env.example
 
-# Docs/tests are copied (tiny) but coverage artefacts and editor files are not.
+# Local-only verification paperwork. These files are git-ignored, but `COPY . .`
+# reads THIS file, not .gitignore - so without the rules below a local build
+# would bake internal acceptance/audit reports into the image, and services/rag.py
+# (which indexes every *.md it can see) would then quote them in the dashboard.
+NETPILOT_GATE2_*.md
+Acceptance_Gate1_*.md
+V2_Acceptance_Gate_Report.md
+Phase3_Acceptance_Audit.md
+Phase3_Final_Acceptance_Report.md
+
+# Docs/tests are copied (tiny) but coverage artefacts and editor files are not. 
 .coverage.*
 .vscode
 .idea
