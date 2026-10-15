@@ -1,9 +1,10 @@
 # NetPilot AI - CI (v2 Slice 8).
 # The whole suite is offline by design: no API keys, no network, no Docker
-# needed to be green. Three gates, all required:
+# needed to be green. Four gates, all required:
 #   1. secret hygiene scan  - nothing that looks like a .env or key lands
-#   2. pytest matrix        - Python 3.11 + 3.12 (pure-Python deps, no lab)
-#   3. headless UI smoke    - Streamlit AppTest over app.py + every page
+#   2. installability       - requirements.txt resolves as Linux wheels, 3.10-3.13
+#   3. pytest matrix        - Python 3.11 + 3.12 (pure-Python deps, no lab)
+#   4. headless UI smoke    - Streamlit AppTest over app.py + every page
 name: ci
 
 on:
@@ -29,6 +30,48 @@ jobs:
           fi
       - name: Hard-coded credential scan (tested tool, single source of truth)
         run: python tools/secret_scan_check.py
+
+  installability:
+    # requirements.txt is also what Streamlit Community Cloud installs, and the
+    # platform lets the deployer pick the interpreter. If any pin has no Linux
+    # wheel for that interpreter pip aborts the whole install - the container is
+    # left with NOTHING, and the app dies on its first third-party import while
+    # Streamlit redacts the reason. That happened in production, so the range a
+    # deployer may choose is now asserted here instead of discovered later.
+    # Measured on 2026-10-15: 3.10-3.13 resolve; 3.9 fails (no streamlit wheel)
+    # and 3.14 fails (no pandas wheel yet), which is why the matrix stops at 3.13
+    # and the README tells deployers to select 3.11 or 3.12.
+    needs: secret-scan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - py: "3.10"
+            abi: cp310
+          - py: "3.11"
+            abi: cp311
+          - py: "3.12"
+            abi: cp312
+          - py: "3.13"
+            abi: cp313
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Resolve requirements.txt for CPython ${{ matrix.py }} (Linux wheels only)
+        run: |
+          set -euo pipefail
+          python -m pip install -U pip
+          if ! python -m pip install --dry-run --ignore-installed --no-cache-dir \
+               --only-binary=:all: --python-version "${{ matrix.py }}" \
+               --implementation cp --abi ${{ matrix.abi }} \
+               --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 \
+               --target "$RUNNER_TEMP/np-resolve" -r requirements.txt; then
+            echo "::error::requirements.txt is not installable from Linux wheels on CPython ${{ matrix.py }}. A hosted deploy using that interpreter would install nothing and crash on import."
+            exit 1
+          fi
 
   test:
     needs: secret-scan
