@@ -14,12 +14,22 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Load .env from the project root if present (never commit it).
-load_dotenv(PROJECT_ROOT / ".env")
+# ``python-dotenv`` is a LOCAL DEVELOPMENT convenience only: it loads a
+# git-ignored ``.env`` into the process environment. It is deliberately
+# optional so that a hosted deploy which does not install it (Streamlit
+# Community Cloud promotes Secrets to env vars before the script runs, so no
+# ``.env`` is ever needed there) can never crash at import time. If it is
+# absent we simply read configuration from the real environment.
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - depends on the deployment platform
+    load_dotenv = None
+
+if load_dotenv is not None:
+    # Load .env from the project root if present (never commit it).
+    load_dotenv(PROJECT_ROOT / ".env")
 
 
 def utc_now() -> datetime:
