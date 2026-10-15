@@ -1,5 +1,9 @@
 # NetPilot AI - Phase 1 + Phase 2 dependencies (all free / open source)
-streamlit>=1.32
+# Pinned to the minor verified by runtime acceptance (1.65.0). The same file is
+# used by Streamlit Community Cloud, where an unpinned floor would silently
+# upgrade the UI framework in production; 1.65 also removed several theme keys,
+# so framework upgrades are adopted deliberately after a UI re-check.
+streamlit>=1.65,<1.66
 # 2.0.x pinned: 2.1 ships a compiled Cython extension that Windows App
 # Control policies may block; 2.0 is pure-Python and API-stable for us.
 sqlalchemy>=2.0,<2.1

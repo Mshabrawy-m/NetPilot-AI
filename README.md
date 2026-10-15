@@ -245,6 +245,57 @@ deterministic synthetic history labelled `data_source='demo'`, and shows a
 persistent warning banner on every page. It exists only to exercise the UI
 without Docker — it is never presented as real network data.
 
+### Deploying to Streamlit Community Cloud (public demo, no lab)
+
+The repository is already in the shape Cloud expects — no build step, no Docker
+image and no external service is required to start the UI:
+
+| Cloud setting | Value |
+|---|---|
+| Repository | this repo (the free plan requires it to be public) |
+| **Main script path** | `app.py` (landing page; `pages/` is picked up automatically) |
+| Requirements file | `requirements.txt` at the root (Linux wheels only; no Windows-only package, `psycopg2` deliberately left commented out) |
+| Python version | choose **3.11** or **3.12** in *Advanced settings* — both are the versions CI exercises. `runtime.txt` is not honoured by Community Cloud, so it is intentionally absent from this repo. |
+
+**Configuration comes from the Secrets manager, never from a committed `.env`.**
+Top-level scalar entries in app secrets are promoted to environment variables
+before the first line of the app script runs, which is exactly how `config.py`
+reads its settings — so no code change is needed. Under *Settings → Secrets*:
+
+```toml
+# required for a public demo
+NETPILOT_DEMO_MODE = "true"
+
+# optional: enables the AI assistant (page 10). Never commit this value.
+GROQ_API_KEY = "<your-key>"
+GROQ_MODEL = "openai/gpt-oss-20b"
+
+# optional but recommended for a public URL: require a login (viewer<operator<admin)
+NETPILOT_AUTH_ENABLED = "true"
+NETPILOT_ADMIN_USER = "<bootstrap-admin-username>"
+NETPILOT_ADMIN_PASSWORD = "<strong-password>"
+```
+
+What works on Cloud, verified in Demo Mode with an empty, freshly created
+database: all 12 pages, charts, topology/graph intelligence, anomaly detection,
+forecasting and backtests, the offline natural-language query, RAG search, the
+alert cycle and the change-proposal workflow. `data/` is git-ignored, so on the
+first launch the app creates its SQLite file (including the parent directory) and
+seeds the labelled demo fixtures itself.
+
+Two consequences of the Cloud runtime are worth stating plainly:
+
+* **Storage is ephemeral.** A redeploy or restart discards the SQLite file; the
+  demo seed simply regenerates it, but anything collected or recorded in that
+  session is lost. Persistent data needs an external database
+  (`DATABASE_URL=postgresql+psycopg2://…` plus `psycopg2-binary`), i.e. the
+  containerized stack of §15 (`docker compose up --build`, which starts the
+  dashboard, the API and PostgreSQL together) — not the free Cloud filesystem.
+* **There is no lab and no change loop.** Docker/Containerlab are not available
+  on Cloud, so live collection cannot run (the UI says so instead of inventing
+  data), and `NETPILOT_CHANGE_LOOP_ENABLED` must stay unset — `apply` therefore
+  refuses by design, with no executor to inject.
+
 ### AI Network Assistant (page 10)
 
 The assistant needs a Groq key in the local, git-ignored `.env`:
