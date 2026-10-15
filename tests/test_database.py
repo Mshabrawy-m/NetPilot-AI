@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import threading
+
+import pytest
 
 from database import repository
 
@@ -122,3 +125,63 @@ def test_reset_removes_all_rows(session):
     reset_lab_data()
     assert repository.get_devices(session) == []
     assert repository.get_metric_series(session, "R9", "m") == []
+
+
+# --------------------------------------------------------------------------
+# init_db() robustness (Streamlit Community Cloud boots several sessions at
+# once; create_all is a non-atomic check-then-create).
+# --------------------------------------------------------------------------
+def test_init_db_is_safe_under_concurrent_callers(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETPILOT_DEMO_MODE", "false")
+    monkeypatch.setenv("DATABASE_URL",
+                       f"sqlite:///{(tmp_path / 'race.db').as_posix()}")
+    from database import connection
+
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            connection.init_db()
+        except BaseException as exc:  # pragma: no cover - regression only
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors, f"concurrent init_db raised: {errors!r}"
+
+
+def test_init_db_retries_past_already_exists(tmp_path, monkeypatch):
+    """A writer that wins the race must not fail the loser's page render."""
+    monkeypatch.setenv("NETPILOT_DEMO_MODE", "false")
+    monkeypatch.setenv("DATABASE_URL",
+                       f"sqlite:///{(tmp_path / 'retry.db').as_posix()}")
+    from sqlalchemy.exc import OperationalError
+    from database import connection
+    from database.models import Base
+
+    real_create_all = Base.metadata.create_all
+    calls = {"n": 0}
+
+    def flaky_create_all(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError("CREATE TABLE devices", {},
+                                   Exception("table devices already exists"))
+        return real_create_all(*args, **kwargs)
+
+    monkeypatch.setattr(Base.metadata, "create_all", flaky_create_all)
+    connection.init_db()            # swallows the race, then succeeds
+    assert calls["n"] == 2
+
+    # A genuine error must still propagate rather than be masked as a race.
+    def boom(*args, **kwargs):
+        raise OperationalError("CREATE TABLE devices", {},
+                               Exception("attempt to write a readonly database"))
+
+    monkeypatch.setattr(Base.metadata, "create_all", boom)
+    with pytest.raises(OperationalError):
+        connection.init_db()

@@ -9,18 +9,23 @@ The connection URL comes only from configuration/environment variables.
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from config import get_settings
 from database.models import Base
 
 _lock = threading.Lock()
+# Separate from ``_lock`` (which guards engine creation) so that holding it
+# while running DDL can never deadlock against ``get_engine()``.
+_init_lock = threading.Lock()
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
 _engine_url: str | None = None
@@ -87,8 +92,36 @@ def session_scope() -> Iterator[Session]:
 
 
 def init_db() -> None:
-    """Create all tables if they do not exist (safe to call repeatedly)."""
-    Base.metadata.create_all(get_engine())
+    """Create all tables if they do not exist (safe to call repeatedly).
+
+    ``MetaData.create_all`` performs a *check-then-create*: it asks the dialect
+    whether each table exists and only then issues ``CREATE TABLE``. That is
+    not atomic, and Streamlit Community Cloud starts several script runs (page
+    loads, reruns and the prerun) in the same process at boot, so two runs can
+    both observe a missing ``devices`` table and both emit ``CREATE TABLE
+    devices``. The loser raises ``OperationalError: table devices already
+    exists`` and the page renders a red error box.
+
+    Two guards make this safe on every backend:
+
+    * a process lock, so concurrent callers in this process are serialised;
+    * a short bounded retry, so a writer in *another* process - or one that
+      committed between our check and our ``CREATE`` - is tolerated. Once the
+      schema exists, ``checkfirst`` turns the call into a cheap no-op, so the
+      retry is idempotent.
+
+    Genuine failures (bad credentials, unwritable path, ...) still propagate.
+    """
+    engine = get_engine()  # acquires ``_lock``; never nested with the below
+    with _init_lock:
+        for attempt in range(5):
+            try:
+                Base.metadata.create_all(engine)
+                return
+            except OperationalError as exc:
+                if attempt == 4 or "already exists" not in str(exc).lower():
+                    raise
+                time.sleep(0.1 * (attempt + 1))
 
 
 def check_connection() -> tuple[bool, str]:

@@ -6,6 +6,8 @@ services/ and data access in database/repository.
 """
 from __future__ import annotations
 
+import threading
+
 import pandas as pd
 import streamlit as st
 
@@ -15,6 +17,13 @@ from database import repository
 from services import auth, collection_service, demo_data
 from ui import theme
 
+# Demo seeding is guarded process-wide: ``st.session_state`` is per browser
+# session, so relying on it alone let every session (and Streamlit's prerun)
+# seed independently, and two concurrent seeds fight over SQLite's single
+# writer. See ``_ensure_demo_seeded``.
+_demo_seed_lock = threading.Lock()
+_demo_seed_done = False
+
 
 def bootstrap() -> None:
     """Run at the top of every page: schema, scheduler, demo seeding."""
@@ -22,9 +31,8 @@ def bootstrap() -> None:
                        layout="wide")
     init_db()
     settings = get_settings()
-    if settings.demo_mode and not st.session_state.get("_demo_seeded"):
-        demo_data.seed_demo_data()
-        st.session_state["_demo_seeded"] = True
+    if settings.demo_mode:
+        _ensure_demo_seeded()
     st.session_state.setdefault("_scheduler", collection_service.get_scheduler())
     # Apply the shared "Mission Control" styling to every page from one place.
     theme.inject_css()
@@ -35,6 +43,27 @@ def bootstrap() -> None:
         _ensure_bootstrap_admin()
         if not current_user():
             _login_gate()
+
+
+def _ensure_demo_seeded() -> None:
+    """Seed the demo store exactly once per process, under a lock.
+
+    The old guard used only ``st.session_state``, which is per browser
+    session: every new session (and Streamlit's prerun) re-seeded, and two
+    concurrent seeds contend for SQLite's single writer and can fail with
+    "database is locked" (or duplicate/clobber rows, since seeding purges
+    first). A process-wide lock plus flag guarantees a single seeding; the
+    per-session flag is kept as a cheap short-circuit.
+    """
+    global _demo_seed_done
+    if _demo_seed_done or st.session_state.get("_demo_seeded"):
+        st.session_state["_demo_seeded"] = True
+        return
+    with _demo_seed_lock:
+        if not _demo_seed_done:
+            demo_data.seed_demo_data()
+            _demo_seed_done = True
+    st.session_state["_demo_seeded"] = True
 
 
 # --------------------------------------------------------------------------
