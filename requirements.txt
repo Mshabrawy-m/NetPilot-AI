@@ -16,7 +16,15 @@ python-dotenv>=1.0
 # Windows App Control policy (unlike statsmodels, whose compiled Kalman /
 # CFA extensions are blocked - damped Holt is therefore implemented in
 # pure NumPy in analytics/forecasting.py instead).
-scikit-learn>=1.4,<1.6
+# Ceiling 1.8, not 1.6: scikit-learn 1.7.2 is the FIRST release publishing
+# cp314 manylinux wheels, and Streamlit Community Cloud now defaults to CPython
+# 3.14 - with <1.6 the platform finds no wheel at all, pip aborts the whole
+# install and the app dies on its first import. pip takes the newest release
+# inside the band, so 3.11+ now installs 1.7.2 rather than the previous 1.5.2;
+# the full suite (317 tests) and the headless UI smoke were both re-run on
+# 1.7.2 before widening this, because the code only touches long-stable APIs
+# (IsolationForest, StandardScaler, Ridge, TfidfVectorizer, linear_kernel).
+scikit-learn>=1.4,<1.8
 scipy>=1.11
 # statsmodels - intentionally NOT used: DLLs blocked by App Control here.
 

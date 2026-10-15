@@ -2,7 +2,7 @@
 # The whole suite is offline by design: no API keys, no network, no Docker
 # needed to be green. Four gates, all required:
 #   1. secret hygiene scan  - nothing that looks like a .env or key lands
-#   2. installability       - requirements.txt resolves as Linux wheels, 3.10-3.13
+#   2. installability       - requirements.txt resolves as Linux wheels, 3.10-3.14
 #   3. pytest matrix        - Python 3.11 + 3.12 (pure-Python deps, no lab)
 #   4. headless UI smoke    - Streamlit AppTest over app.py + every page
 name: ci
@@ -37,16 +37,19 @@ jobs:
     # wheel for that interpreter pip aborts the whole install - the container is
     # left with NOTHING, and the app dies on its first third-party import while
     # Streamlit redacts the reason. That happened in production (a redacted
-    # ModuleNotFoundError on dotenv), so the range a deployer may choose is
-    # asserted here instead of discovered later.
-    # Measured on 2026-10-15 against PyPI Linux wheels: 3.10-3.13 resolve, 3.9
-    # fails (no streamlit wheel) and 3.14 fails on our own scikit-learn ceiling
-    # - `scikit-learn>=1.4,<1.6` reports "from versions: 1.7.2", because 1.7.2
-    # is the first release publishing cp314 manylinux wheels. pandas and
-    # sqlalchemy are NOT the blocker (both ship cp314 wheels), so widening the
-    # scikit-learn ceiling is what would unlock the 3.14 interpreter that Cloud
-    # now defaults to. Until then the matrix stops at 3.13 and the README tells
-    # deployers to select 3.11 or 3.12.
+    # ModuleNotFoundError on dotenv, on every page at once), so the interpreters
+    # a deployer may choose are asserted here instead of discovered later.
+    # Measured on 2026-10-15 against PyPI Linux wheels: 3.10-3.14 all resolve;
+    # 3.9 cannot, because no streamlit release ships for it. CPython 3.14 - the
+    # interpreter Cloud now defaults to - originally failed this gate on
+    # scikit-learn alone: 1.7.2 is the first release publishing cp314 manylinux
+    # wheels, and the old <1.6 ceiling excluded it. requirements.txt now allows
+    # <1.8, which is what makes a 3.14 deploy installable.
+    # The --platform list has to include the newer manylinux tags. pandas ships
+    # ONLY manylinux_2_28 wheels, so with a 2_17/2014-only list pip quietly
+    # resolves an older pandas than a hosted deploy installs, and the gate proves
+    # less than it claims. The dry-run prints the resolved set per leg, so that
+    # drift is visible in the job log instead of hidden.
     needs: secret-scan
     runs-on: ubuntu-latest
     strategy:
@@ -61,6 +64,8 @@ jobs:
             abi: cp312
           - py: "3.13"
             abi: cp313
+          - py: "3.14"
+            abi: cp314
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -74,6 +79,7 @@ jobs:
                --only-binary=:all: --python-version "${{ matrix.py }}" \
                --implementation cp --abi ${{ matrix.abi }} \
                --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 \
+               --platform manylinux_2_28_x86_64 \
                --target "$RUNNER_TEMP/np-resolve" -r requirements.txt; then
             echo "::error::requirements.txt is not installable from Linux wheels on CPython ${{ matrix.py }}. A hosted deploy using that interpreter would install nothing and crash on import."
             exit 1
