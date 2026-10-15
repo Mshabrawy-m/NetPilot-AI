@@ -36,11 +36,17 @@ jobs:
     # platform lets the deployer pick the interpreter. If any pin has no Linux
     # wheel for that interpreter pip aborts the whole install - the container is
     # left with NOTHING, and the app dies on its first third-party import while
-    # Streamlit redacts the reason. That happened in production, so the range a
-    # deployer may choose is now asserted here instead of discovered later.
-    # Measured on 2026-10-15: 3.10-3.13 resolve; 3.9 fails (no streamlit wheel)
-    # and 3.14 fails (no pandas wheel yet), which is why the matrix stops at 3.13
-    # and the README tells deployers to select 3.11 or 3.12.
+    # Streamlit redacts the reason. That happened in production (a redacted
+    # ModuleNotFoundError on dotenv), so the range a deployer may choose is
+    # asserted here instead of discovered later.
+    # Measured on 2026-10-15 against PyPI Linux wheels: 3.10-3.13 resolve, 3.9
+    # fails (no streamlit wheel) and 3.14 fails on our own scikit-learn ceiling
+    # - `scikit-learn>=1.4,<1.6` reports "from versions: 1.7.2", because 1.7.2
+    # is the first release publishing cp314 manylinux wheels. pandas and
+    # sqlalchemy are NOT the blocker (both ship cp314 wheels), so widening the
+    # scikit-learn ceiling is what would unlock the 3.14 interpreter that Cloud
+    # now defaults to. Until then the matrix stops at 3.13 and the README tells
+    # deployers to select 3.11 or 3.12.
     needs: secret-scan
     runs-on: ubuntu-latest
     strategy:
