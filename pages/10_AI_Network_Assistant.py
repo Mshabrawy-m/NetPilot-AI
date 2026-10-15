@@ -48,7 +48,7 @@ def _jload(x):
     return json.loads(x) if isinstance(x, str) else x
 
 
-def _render_detail(uuid: str) -> None:
+def _render_detail(uuid: str, key_prefix: str) -> None:
     detail = read(lambda s: ai_svc.get_run_detail(s, uuid))
     if not detail:
         st.info("Run not found.")
@@ -149,13 +149,16 @@ def _render_detail(uuid: str) -> None:
     st.markdown(run.final_answer or "(none)")
 
     # Human review (records an outcome only; applies nothing).
+    # ``key_prefix`` keeps keys unique because st.tabs() renders EVERY tab
+    # panel in one script run, so the "New request" and "Run history" panels
+    # can render the same run twice and collide on a shared widget key.
     with st.expander("✍️ Record human review outcome"):
         outcome = st.selectbox(
             "Outcome", ["approved_for_phase4_review", "rejected",
                        "needs_more_investigation"],
-            key=f"review_{run.run_uuid}")
+            key=f"{key_prefix}_review_{run.run_uuid}")
         if st.button("Save review (does not deploy anything)",
-                     key=f"save_{run.run_uuid}"):
+                     key=f"{key_prefix}_save_{run.run_uuid}"):
             ok = False
             sess = get_session()
             try:
@@ -191,7 +194,7 @@ with tab_new:
                 sess.close()
     if st.session_state.get("last_ai_run"):
         st.divider()
-        _render_detail(st.session_state["last_ai_run"])
+        _render_detail(st.session_state["last_ai_run"], "new")
 
 # ---------------------------------------------------------------- history
 with tab_hist:
@@ -204,7 +207,7 @@ with tab_hist:
                                f"{(r.request_text or '')[:40]}" for r in runs}
         sel = st.selectbox("Select a past run", list(options),
                            format_func=lambda u: options[u])
-        _render_detail(sel)
+        _render_detail(sel, "hist")
 
 
 # ---------------------------------------------------------- knowledge & ask

@@ -77,8 +77,14 @@ if st.button("🔍 Run detection on this series", width="stretch"):
                        "nothing to detect on.")
             result = None
         else:
-            chosen_default = (options.index(st.session_state["_anom_iface"])
-                              if st.session_state.get("_anom_iface") in options
+            # ``options`` may legitimately contain ``None`` (the
+            # "(device-level)" scope). Compare the *retrieved* value against
+            # it rather than subscripting the key directly: a missing key
+            # makes ``.get()`` return ``None``, and ``None in options`` is
+            # True, so the old form raised KeyError on first render.
+            stored_iface = st.session_state.get("_anom_iface")
+            chosen_default = (options.index(stored_iface)
+                              if stored_iface in options
                               else 0)
             target_iface = st.selectbox(
                 "Interface scope for detection (one series at a time)",
