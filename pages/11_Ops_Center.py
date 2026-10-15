@@ -418,13 +418,17 @@ with tab_change:
         else:
             base_lines = [ln for ln in base.splitlines() if ln.strip()]
             prop_lines = [ln for ln in prop.splitlines() if ln.strip()]
-            req = _write(lambda s: change_service.propose(
+            # Read the scalar inside the session: _write() commits (which
+            # expires ORM instances) and closes the session, so returning the
+            # ChangeRequest itself would make the attribute access below raise
+            # sqlalchemy DetachedInstanceError.
+            status = _write(lambda s: change_service.propose(
                 s, device_name=dev, base_lines=base_lines,
                 proposed_lines=prop_lines, data_source=data_source,
                 description=desc or None, proposed_by=principal,
-                risk_level=risk))
-            (st.success if req.status == "validated" else st.error)(
-                f"Proposal recorded as **{req.status}**.")
+                risk_level=risk).status)
+            (st.success if status == "validated" else st.error)(
+                f"Proposal recorded as **{status}**.")
 
 
 # --------------------------------------------------------------- access (admin)

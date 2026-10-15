@@ -64,6 +64,10 @@ def press(page: str, label: str) -> bool:
 actions_ok = (
     press("pages/8_Anomalies.py", "Run detection")
     and press("pages/9_Forecasting.py", "Run forecast comparison")
+    # Regression guard: submitting a change proposal used to raise sqlalchemy
+    # DetachedInstanceError, because the page read an ORM attribute after the
+    # committing session had closed. See pages/11_Ops_Center.py.
+    and press("pages/11_Ops_Center.py", "Validate & record proposal")
 )
 
 # Demo banner must be present on the landing page (spec: clearly labelled).
