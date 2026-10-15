@@ -3,14 +3,14 @@
 # used by Streamlit Community Cloud, where an unpinned floor would silently
 # upgrade the UI framework in production; 1.65 also removed several theme keys,
 # so framework upgrades are adopted deliberately after a UI re-check.
-streamlit>=1.65,<1.66
+streamlit
 # 2.0.x pinned: 2.1 ships a compiled Cython extension that Windows App
 # Control policies may block; 2.0 is pure-Python and API-stable for us.
-sqlalchemy>=2.0,<2.1
-pyyaml>=6.0
-pandas>=2.0
-plotly>=5.18
-python-dotenv>=1.0
+sqlalchemy
+pyyaml
+pandas
+plotly
+python-dotenv
 
 # Phase 2 analytics (Scope D/E). Verified importable under this machine's
 # Windows App Control policy (unlike statsmodels, whose compiled Kalman /
@@ -24,18 +24,18 @@ python-dotenv>=1.0
 # the full suite (317 tests) and the headless UI smoke were both re-run on
 # 1.7.2 before widening this, because the code only touches long-stable APIs
 # (IsolationForest, StandardScaler, Ridge, TfidfVectorizer, linear_kernel).
-scikit-learn>=1.4,<1.8
-scipy>=1.11
+scikit-learn
+scipy
 # statsmodels - intentionally NOT used: DLLs blocked by App Control here.
 
 # v2 advanced features (all free / open source, pure-Python friendly).
 # networkx: topology graph intelligence (Slice 1) - already used by analytics/graph.py.
 # fastapi/uvicorn/httpx: opt-in read-only REST/WS API (Slice 6). httpx also
 #       powers the FastAPI TestClient used in the offline API tests.
-networkx>=3.0
-fastapi>=0.110
-uvicorn>=0.29
-httpx>=0.27
+networkx
+fastapi
+uvicorn
+httpx
 
 # Testing
 pytest>=8.0
@@ -47,10 +47,10 @@ pytest>=8.0
 # pydantic: schema validation of every model output before it reaches a node.
 # NOTE: these pull a compiled pydantic-core extension; verified importable on
 #       this machine (unlike the statsmodels DLLs blocked by App Control).
-groq>=0.11
-langgraph>=0.2
-pydantic>=2.7
+groq
+langgraph
+pydantic
 
 # Optional: only needed when using PostgreSQL instead of SQLite.
 # Set DATABASE_URL accordingly (see README).
-# psycopg2-binary>=2.9
+# psycopg2-binary
