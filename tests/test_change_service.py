@@ -118,8 +118,64 @@ def test_rollback_restores_base_config(session, monkeypatch):
 
     res = change_service.rollback(session, req.request_uuid, executor=executor)
     assert res["rolled_back"] is True
-    assert req.status == "rolled_back"
     assert seen == [["hostname R1"]]  # base config restored
+    # the executor cannot read the device back, so the restoration could NOT
+    # be verified - and it is not claimed as such
+    assert res["restored"] is False
+    assert req.status == "failed"
+    assert "restoration could not be verified" in (req.apply_detail or "")
+
+
+def test_rollback_prefers_the_executors_real_undo(session, monkeypatch):
+    """A rollback must UNDO the change, not merge the base on top of it."""
+    monkeypatch.setenv("NETPILOT_CHANGE_LOOP_ENABLED", "true")
+    req = _propose_ok(session)
+    change_service.approve(session, req.request_uuid, approved_by="bob")
+    change_service.apply(session, req.request_uuid,
+                         executor=lambda d, c: types.SimpleNamespace(ok=True))
+    calls = []
+
+    class UndoExecutor:
+        def rollback_config(self, device, proposed, base):
+            calls.append(("rollback_config", device, list(proposed),
+                          list(base)))
+            return types.SimpleNamespace(ok=True, detail="undone")
+
+        def read_config(self, device):
+            return ["hostname R1"]
+
+    res = change_service.rollback(session, req.request_uuid,
+                                  executor=UndoExecutor())
+    assert res["rolled_back"] is True
+    assert res["restored"] is True
+    assert req.status == "rolled_back"
+    # the executor's real undo was used, not a re-apply of the base config
+    assert calls and calls[0][0] == "rollback_config"
+    assert calls[0][2] == GOOD          # what to undo
+    assert calls[0][3] == ["hostname R1"]  # what to restore
+
+
+def test_a_rollback_that_leaves_the_change_active_is_not_claimed(session,
+                                                                 monkeypatch):
+    monkeypatch.setenv("NETPILOT_CHANGE_LOOP_ENABLED", "true")
+    req = _propose_ok(session)
+    change_service.approve(session, req.request_uuid, approved_by="bob")
+    change_service.apply(session, req.request_uuid,
+                         executor=lambda d, c: types.SimpleNamespace(ok=True))
+
+    class StillThere:
+        def rollback_config(self, device, proposed, base):
+            return types.SimpleNamespace(ok=True, detail="undone")
+
+        def read_config(self, device):
+            # the change is still active on the device
+            return ["hostname R1"] + list(GOOD)
+
+    res = change_service.rollback(session, req.request_uuid,
+                                  executor=StillThere())
+    assert res["rolled_back"] is True
+    assert res["restored"] is False
+    assert req.status == "failed"
 
 
 def test_cancel_before_apply(session):

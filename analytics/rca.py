@@ -116,14 +116,35 @@ def correlate_root_causes(
                                    + centrality_weight * s["centrality"], 4)
             scored.sort(key=lambda s: (-s["score"], s["earliest"]))
             top = scored[0]
+            # Describe what actually drove the ranking - the winner is not
+            # necessarily both earliest and most central.
+            earliest = min(scored, key=lambda s: s["earliest"])
+            max_centrality = max(s["centrality"] for s in scored)
+            if top["device"] == earliest["device"]:
+                timing_claim = (f"the earliest anomaly "
+                                f"({top['earliest']:%H:%M:%S})")
+            else:
+                timing_claim = (f"not the earliest anomaly - "
+                                f"{earliest['device']} was first at "
+                                f"{earliest['earliest']:%H:%M:%S}")
+            if max_centrality <= 0:
+                centrality_claim = ("centrality is not decisive (all "
+                                    "betweenness values are zero)")
+            elif top["centrality"] >= max_centrality:
+                centrality_claim = "the most central device in this cluster"
+            else:
+                centrality_claim = (
+                    f"not the most central device (betweenness "
+                    f"{top['centrality']:.3f} vs highest "
+                    f"{max_centrality:.3f})")
             reports.append({
                 "devices": sorted(by_dev),
                 "probable_cause": top["device"],
                 "candidates": scored,
                 "rationale": (
-                    f"{top['device']} is the earliest anomaly "
-                    f"({top['earliest']:%H:%M:%S}) and most central in this "
-                    "connected cluster; ranked by precedence + betweenness."),
+                    f"{top['device']} is {timing_claim} and "
+                    f"{centrality_claim}; ranked by precedence + "
+                    "betweenness."),
                 "event_ids": [i for s in scored for i in s["event_ids"]
                               if i is not None],
             })

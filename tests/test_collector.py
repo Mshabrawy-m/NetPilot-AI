@@ -147,6 +147,32 @@ def test_collect_once_rejects_no_lab(db_url, tmp_path, fake_docker):
         session.close()
 
 
+def test_demo_mode_refuses_to_fire_any_probe(db_url, monkeypatch, fake_inventory,
+                                              fake_docker):
+    """A demo 'Collect now' must never reach the lab (gate report G3-6/§6)."""
+    monkeypatch.setenv("NETPILOT_DEMO_MODE", "true")
+    calls: list = []
+
+    def _boom(*args, **kwargs):        # pragma: no cover - must never run
+        calls.append(args)
+        raise AssertionError("real probe fired while demo mode is on")
+
+    summary = metrics_collector.collect_once(
+        inventory=fake_inventory, host_ping=_boom, inlab_ping=_boom,
+        counter_reader=_boom, route_reader=_boom, data_source="demo")
+
+    assert calls == []                                  # nothing probed
+    assert summary.samples_stored == 0
+    assert summary.status == "error"
+    assert "demo mode" in summary.errors[0].lower()
+    session = get_session()
+    try:
+        assert repository.get_recent_runs(session) == []  # no run recorded
+        assert repository.get_devices(session) == []      # nothing persisted
+    finally:
+        session.close()
+
+
 def test_incident_resolves_when_device_recovers(db_url, fake_inventory, fake_docker):
     # Cycle 1: PC1 down -> incident opened.
     metrics_collector.collect_once(inventory=fake_inventory,

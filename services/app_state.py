@@ -173,26 +173,31 @@ def sidebar_status() -> None:
     )
 
     scheduler: collection_service.CollectionScheduler = st.session_state["_scheduler"]
-    col_a, col_b = st.sidebar.columns(2)
-    if col_a.button("▶️ Start collector", width="stretch"):
-        scheduler.start()
-        st.sidebar.caption(f"Collecting every {scheduler.interval}s")
-    if col_b.button("⏹ Stop", width="stretch"):
-        scheduler.stop()
-    if st.sidebar.button("🔄 Collect now", width="stretch"):
-        result = scheduler.run_now()
-        if isinstance(result, str):
-            st.sidebar.warning(result)
-        elif result is not None and getattr(result, "status", None) == "error":
-            st.sidebar.error(
-                "Collection ran but the lab was unreachable: "
-                + "; ".join(getattr(result, "errors", []) or [])[:200])
-        else:
-            st.sidebar.success("Collection cycle finished")
-    status = scheduler.status()
-    st.sidebar.caption(
-        f"Scheduler: {'running' if status.running else 'idle'} | "
-        f"cycles={status.cycles_completed} | skipped overlaps={status.skipped_overlaps}")
+    if settings.demo_mode:
+        # Demo history is seeded data (services/demo_data.py); running the
+        # collector would probe real lab hardware from a demo screen.
+        st.sidebar.caption("🧪 Demo mode: collector disabled — no live probes.")
+    else:
+        col_a, col_b = st.sidebar.columns(2)
+        if col_a.button("▶️ Start collector", width="stretch"):
+            scheduler.start()
+            st.sidebar.caption(f"Collecting every {scheduler.interval}s")
+        if col_b.button("⏹ Stop", width="stretch"):
+            scheduler.stop()
+        if st.sidebar.button("🔄 Collect now", width="stretch"):
+            result = scheduler.run_now()
+            if isinstance(result, str):
+                st.sidebar.warning(result)
+            elif result is not None and getattr(result, "status", None) == "error":
+                st.sidebar.error(
+                    "Collection ran but the lab was unreachable: "
+                    + "; ".join(getattr(result, "errors", []) or [])[:200])
+            else:
+                st.sidebar.success("Collection cycle finished")
+        status = scheduler.status()
+        st.sidebar.caption(
+            f"Scheduler: {'running' if status.running else 'idle'} | "
+            f"cycles={status.cycles_completed} | skipped overlaps={status.skipped_overlaps}")
 
 
 def read(fn):

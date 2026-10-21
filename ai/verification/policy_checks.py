@@ -82,7 +82,9 @@ def check_lab_invariants(config_lines: list[str]) -> dict:
     Live management-path preservation cannot be proven from static config,
     so it is reported inconclusive (documented, never a false pass)."""
     blob = " ".join((l or "").lower() for l in config_lines)
-    if "no ip routing" in blob or "no router ospf" in blob and "shutdown" in blob:
+    removes_all_routing = "no ip routing" in blob
+    removes_ospf_and_shuts = "no router ospf" in blob and "shutdown" in blob
+    if removes_all_routing or removes_ospf_and_shuts:
         return {"name": "lab_invariants", "passed": False, "severity": "critical",
                 "finding": "proposal appears to remove core lab routing"}
     return {"name": "lab_invariants", "passed": None, "severity": "info",

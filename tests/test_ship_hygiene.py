@@ -34,6 +34,11 @@ LOCAL_ONLY_PAPERWORK = [
     "NETPILOT_GATE2_COMPLETION_REPORT.md",
     "NETPILOT_GATE2_STREAMLIT_RUNTIME_ACCEPTANCE.md",
     "NETPILOT_GATE2_STREAMLIT_CLOUD_DEPLOY_RUNBOOK.md",
+    "Phase3_Gate3_Gap_Report.md",
+    "Phase3_Gate3_Remediation_Report.md",
+    "Phase3_Gate3_Task_Board.md",
+    "Phase3_Gate3_Acceptance_Matrix.md",
+    "NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md",
 ]
 
 #: Documentation that belongs to the product, published under docs/.

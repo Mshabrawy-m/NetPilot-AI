@@ -25,6 +25,10 @@ class CommandResult:
     returncode: int
     stdout: str
     error: str | None = None
+    #: True when the command was killed by the hard timeout. Callers must
+    #: treat a timeout as "state unknown" - never as "the change failed
+    #: cleanly", because the command may have taken effect before it died.
+    timed_out: bool = False
 
 
 def _run(argv: list[str], timeout: int = _CMD_TIMEOUT_SECONDS) -> CommandResult:
@@ -37,7 +41,9 @@ def _run(argv: list[str], timeout: int = _CMD_TIMEOUT_SECONDS) -> CommandResult:
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return CommandResult(False, -1, "", f"{argv[0]} timed out ({timeout}s)")
+        return CommandResult(False, -1, "",
+                             f"{argv[0]} timed out ({timeout}s)",
+                             timed_out=True)
     except OSError as exc:
         return CommandResult(False, -1, "", f"{type(exc).__name__}: {exc}")
     out = (proc.stdout or "")[:_OUTPUT_LIMIT_BYTES]
@@ -112,3 +118,25 @@ def docker_exec(container: str, argv: list[str],
     if not container or len(container) > 128 or not shutil.which("docker"):
         return CommandResult(False, -1, "", "docker unavailable or bad container name")
     return _run(["docker", "exec", container, *argv], timeout=timeout)
+
+
+def docker_inspect_labels(container: str, timeout: int = 15
+                          ) -> dict[str, str] | None:
+    """Return the Docker labels of a container, or None when unavailable.
+
+    Containerlab stamps every node it creates with its own labels
+    (``clab_node_name``, ``clab_topology_file``, ...). Reading them back is
+    how the executor PROVES that a container really is a node of the
+    configured lab topology, instead of trusting a name it was handed.
+    """
+    if not container or len(container) > 128 or not shutil.which("docker"):
+        return None
+    result = _run(["docker", "inspect", "--format", "{{json .Config.Labels}}",
+                   container], timeout=timeout)
+    if not result.ok or not (result.stdout or "").strip():
+        return None
+    try:
+        data = json.loads((result.stdout or "").strip())
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None

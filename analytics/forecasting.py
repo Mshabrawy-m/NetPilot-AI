@@ -12,15 +12,25 @@ Small, explainable model set - all original implementations:
   (its compiled statespace extensions are blocked by this machine's
   Windows App Control policy, same class of issue as the Phase 1
   SQLAlchemy pin).
-* ``ridge_lag``       - scikit-learn Ridge on trailing lag features, one
-  direct model per horizon step; scaler fitted on TRAIN data only.
+* ``ridge_lag``       - scikit-learn Ridge on trailing lag features: one
+  direct model per horizon step, with the feature scaler fitted on TRAIN
+  rows only. Holdout evaluation is one-step-ahead (features use true
+  in-time history); future steps after the first are recursive (each
+  prediction is fed back as history), so multi-step accuracy is not
+  guaranteed. This is a small explainable baseline, not a production
+  forecaster.
 
 Protocol honoured by the service layer (see services/forecast_service.py):
 chronological train|val|test splits, tuning on train+val only, models
 compared on identical test timestamps, forecast origin = last observation,
-future forecasts refit on all available (in-time) data. Every model returns
-NaN-based uncertainty bands derived from its own training 1-step residuals
-(documented approximation, sqrt(h) scaling), never a fabricated interval.
+future forecasts refit on all available (in-time) data.
+
+Uncertainty bands are a documented approximation, NOT calibrated prediction
+intervals: each model scales its own training-residual sigma by sqrt(h).
+The sigma source differs by model (naive: first differences; holt: one-step
+residuals; ridge: residuals pooled across all fitted direct-horizon
+models), so bands are indicative only and no per-horizon coverage is
+claimed.
 """
 from __future__ import annotations
 
@@ -238,6 +248,11 @@ def ridge_lag_forecast(train: pd.Series, horizon: int,
     (training target index) and the feature StandardScaler is fitted on
     TRAIN rows only. For test evaluation, features for test step j use the
     true observed values preceding it (values are in-time at prediction).
+    Only the 1-step model is used for that one-step-ahead evaluation; the
+    future multi-step path feeds earlier predictions back as history and is
+    therefore recursive. The reported sigma pools residuals from every
+    direct-horizon model, so it is an indicative scale, not a calibrated
+    multi-step interval.
     """
     try:
         from sklearn.linear_model import Ridge

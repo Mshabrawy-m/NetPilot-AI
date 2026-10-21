@@ -33,6 +33,14 @@ Acceptance_Gate1_*.md
 V2_Acceptance_Gate_Report.md
 Phase3_Acceptance_Audit.md
 Phase3_Final_Acceptance_Report.md
+Phase3_Gate3_Gap_Report.md
+Phase3_Gate3_Remediation_Report.md
+Phase3_Gate3_Task_Board.md
+Phase3_Gate3_Acceptance_Matrix.md
+NETPILOT_GATE3_*.md
+
+# Live-lab validation evidence: device running-config dumps, never in the image.
+lab/validation_evidence
 
 # Docs/tests are copied (tiny) but coverage artefacts and editor files are not. 
 .coverage.*

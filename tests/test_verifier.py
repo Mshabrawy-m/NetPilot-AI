@@ -63,6 +63,19 @@ def test_lab_invariant_blocks_removing_routing():
     assert res["passed"] is False
 
 
+def test_lab_invariant_shutdown_alone_is_not_a_routing_removal():
+    # Operator-precedence regression: a plain interface shutdown must not be
+    # read as "no router ospf and shutdown".
+    res = policy_checks.check_lab_invariants(["interface eth1", " shutdown"])
+    assert res["passed"] is None
+
+
+def test_lab_invariant_ospf_removed_and_shutdown_is_flagged():
+    res = policy_checks.check_lab_invariants(
+        ["router ospf", "no router ospf", " shutdown"])
+    assert res["passed"] is False
+
+
 def test_policy_constraints_inconclusive_when_unconfirmable():
     intent = {"services_or_reachability": ["allow https to web tier"],
               "constraints": []}

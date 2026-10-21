@@ -23,6 +23,11 @@ lab/*.txt
 lab/myeuler*
 containerlab.db
 
+# Live-lab validation evidence: contains device running-config dumps and
+# local measurements. Never publish it. (One historical blocked-run summary
+# is still tracked from the initial commit; new runs are ignored from here.)
+lab/validation_evidence/
+
 # Local-only verification paperwork (kept on disk, never published)
 V2_Acceptance_Gate_Report.md
 Acceptance_Gate1_Security_Repo_Readiness.md
@@ -32,6 +37,11 @@ NETPILOT_GATE2_CI_DOCKER_ACCEPTANCE.md
 NETPILOT_GATE2_COMPLETION_REPORT.md
 NETPILOT_GATE2_STREAMLIT_RUNTIME_ACCEPTANCE.md
 NETPILOT_GATE2_STREAMLIT_CLOUD_DEPLOY_RUNBOOK.md
+Phase3_Gate3_Gap_Report.md
+Phase3_Gate3_Remediation_Report.md
+Phase3_Gate3_Task_Board.md
+Phase3_Gate3_Acceptance_Matrix.md
+NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md
 
 # IDE / OS
 .vscode/

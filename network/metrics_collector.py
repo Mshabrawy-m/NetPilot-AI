@@ -156,6 +156,15 @@ def collect_once(
 ) -> CollectionSummary:
     """Run one full collection cycle and persist everything it measured."""
     settings = get_settings()
+    if settings.demo_mode:
+        # Demo mode must never touch a real lab. The UI also hides the
+        # collector controls, but the guard lives here too so a programmatic
+        # or stale-session call cannot fire probes against demo data.
+        return CollectionSummary(
+            data_source="demo", status="error",
+            errors=["demo mode: live collection is disabled "
+                    "(no probes were run); demo samples come from seeded data"],
+        )
     data_source = data_source or settings.data_source
     inventory = inventory or load_inventory()
     host_ping = host_ping or _host_ping

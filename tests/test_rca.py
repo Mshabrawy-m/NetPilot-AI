@@ -70,6 +70,23 @@ def test_device_missing_from_graph_is_kept_as_singleton_not_merged():
     assert set(reports[0]["devices"]) == {"R1", "R2"}
 
 
+def test_rationale_says_most_central_when_it_actually_is():
+    events = [_ev("R1", "m", 0, 1), _ev("R2", "m", 4, 2), _ev("R3", "m", 7, 3)]
+    rep = rca.correlate_root_causes(events, STAR, window_minutes=15)[0]
+    assert rep["probable_cause"] == "R1"
+    assert "earliest anomaly" in rep["rationale"]
+    assert "most central" in rep["rationale"]
+
+
+def test_rationale_never_claims_centrality_it_does_not_have():
+    # R2 (a leaf, betweenness 0) is earliest and wins on precedence alone.
+    events = [_ev("R2", "m", 0, 1), _ev("R3", "m", 4, 2), _ev("R1", "m", 7, 3)]
+    rep = rca.correlate_root_causes(events, STAR, window_minutes=15)[0]
+    assert rep["probable_cause"] == "R2"
+    assert "not the most central" in rep["rationale"]
+    assert "earliest anomaly" in rep["rationale"]
+
+
 def test_scores_are_ordered_descending():
     events = [_ev("R1", "m", 0, 1), _ev("R2", "m", 4, 2), _ev("R3", "m", 6, 3)]
     rep = rca.correlate_root_causes(events, STAR)[0]

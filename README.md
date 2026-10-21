@@ -137,6 +137,7 @@ data, not from a static image.
 |---|---|---|
 | Python 3.10+ | everything | developed/tested on 3.11/3.12 |
 | Docker + Containerlab | **live lab mode** | Linux, or Windows via WSL2 + Docker Desktop |
+| Ubuntu 22.04/24.04 LTS VM | **Gate 3 / Gate D live validation** | disposable, isolated host — see the lab runbook |
 | PostgreSQL (optional) | production-grade storage | otherwise the built-in SQLite is used |
 
 If Docker/Containerlab are unavailable on your machine, the dashboard still
@@ -144,6 +145,17 @@ runs fully in **clearly labelled demo mode** (see §5) — the spec explicitly
 allows this, and demo data is stored in a *separate* database file and tagged
 `data_source='demo'` everywhere, so it can never masquerade as a real
 measurement.
+
+> **Running the live validation suites.** The real-environment harnesses
+> (`tools/phase3_lab_validation.py` for the Gate 3 items L-1…L-6 and
+> `tools/phase4_change_loop_validation.py` for the Gate D
+> apply→verify→rollback loop) need Docker Engine + Containerlab and are
+> executed on an isolated Ubuntu VM, never on a workstation and never against
+> a production network. Both fail closed: a missing prerequisite is recorded
+> `BLOCKED` (exit code 2) and is never substituted with demo data. The exact
+> prerequisites, isolation checklist, commands, negative-path tests and
+> teardown steps are in `NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md` (local-only
+> paperwork — kept on disk, not published).
 
 ### Installing Containerlab (on a Docker-supported host)
 
@@ -308,7 +320,8 @@ Two consequences of the Cloud runtime are worth stating plainly:
   dashboard, the API and PostgreSQL together) — not the free Cloud filesystem.
 * **There is no lab and no change loop.** Docker/Containerlab are not available
   on Cloud, so live collection cannot run (the UI says so instead of inventing
-  data), and `NETPILOT_CHANGE_LOOP_ENABLED` must stay unset — `apply` therefore
+  data), and `NETPILOT_CHANGE_LOOP_ENABLED` **and**
+  `NETPILOT_LAB_EXECUTION_ENABLED` must both stay unset — `apply` therefore
   refuses by design, with no executor to inject.
 
 ### AI Network Assistant (page 10)
@@ -473,18 +486,33 @@ v2 additions (advanced capabilities roadmap, Slices 1–8; all offline):
 - gated change loop: validation, self-approval refusal, apply refused unless
   enabled+approved+executor, executor-called-with-proposed-config only,
   failure recorded, rollback, cancel (`test_change_service.py`)
+- lab-only executor + gated apply/verify/rollback: config-block model and
+  rollback-plan derivation (`test_lab_config_ops.py`), lab identity proof,
+  static gate, argv rendering, timeout/partial/failure outcomes
+  (`test_lab_executor.py`), the ten-step gated pipeline including
+  precondition drift, verification failure, rollback and restoration
+  (`test_change_execution.py`), and the shared L-4/L-5 static scanner —
+  no execution primitives in `ai/`, and no agent able to hand retrieved
+  evidence to the model without the `<untrusted_data>` envelope
+  (`test_gate3_safety.py`)
 - CI secret-hygiene scanner: clean on the real tree, catches planted secrets,
   ignores placeholders/fakes (`test_secret_scan.py`)
 - multi-layout topology: pure layout engines (layered/force/circular/grid)
   + degree sizing + a demo-only large synthetic fabric
   (`test_topology_views.py`)
 
-Last recorded result on this machine (Windows, no Docker): **311 passed**,
+Last recorded result on this machine (Windows, no Docker): **441 passed**,
 UI smoke check: all 12 scripts (app + 11 pages incl. the AI Assistant and Ops
 Center) render without exceptions + both Phase 2 action buttons verified +
 demo banner verified. A **live** Groq integration check
 (`tools/phase3_live_check.py`) was run separately with the real key and
 classified both an English question and an Arabic change request correctly.
+
+> The Phase 4 lab executor and the Gate 3 / Gate D harnesses are **not** part
+> of the published tip: they exist in the working tree and are covered by the
+> count above, but the live-lab evidence for them does not exist yet (no
+> Docker/Containerlab host). See §14 and
+> `NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md`.
 
 ---
 
@@ -667,22 +695,57 @@ EXISTS). No Phase 1/2 table is altered, and no provider secret is ever stored.
 
 ## 14. Explicitly out of scope (Phase 4+)
 
-Automated **configuration deployment**, post-change verification, live
-routing/behaviour simulation and **rollback** are Phase 4 and are not
-implemented — Phase 3 stops at a reviewed proposal. The assistant never
-connects to a production network and never executes generated config or
-modifies routes/ACLs/firewalls/interfaces. No RAG store and no MCP servers.
-Anomaly events, forecast warnings and AI diagnoses remain clearly-labelled
-probabilistic/statistical statements about data — never classified as
-confirmed failures or attacks.
+Live routing/behaviour simulation, a RAG store and MCP servers are Phase 4
+and are not implemented. The assistant never connects to a production network
+and never executes generated config or modifies routes/ACLs/firewalls/
+interfaces. Anomaly events, forecast warnings and AI diagnoses remain
+clearly-labelled probabilistic/statistical statements about data — never
+classified as confirmed failures or attacks.
 
-> **v2 update:** the advanced-capabilities roadmap (see
-> `docs/NetPilot_AI_Advanced_Roadmap.md`) adds a **gated, lab-only change loop**
-> (Slice 7) behind the same deterministic FRR verifier: propose → approve →
-> (opt-in) apply → rollback. Applying is refused by default and, from the
-> dashboard, always a no-op — it needs `NETPILOT_CHANGE_LOOP_ENABLED` **and**
-> an injected virtual-lab executor on a host that runs the lab. A production
-> device is never reachable from this path, so the safety stance above holds.
+**Where the Phase 4 change loop now stands.** The *runtime* half of the
+change loop is implemented (`network/lab_executor.py`,
+`network/lab_verifier.py`, `network/lab_config_ops.py`,
+`services/change_execution.py`) — see the advanced-capabilities roadmap
+(`docs/NetPilot_AI_Advanced_Roadmap.md`, slice 7) for the full design:
+propose → approve → apply → post-change verify → rollback → verify
+restoration. It is **lab-only and opt-in**, and every gate fails closed:
+
+- it needs **both** `NETPILOT_CHANGE_LOOP_ENABLED=true` **and**
+  `NETPILOT_LAB_EXECUTION_ENABLED=true` (both off by default), in live mode —
+  demo mode always refuses;
+- the target must be a **router node of the configured Containerlab
+  topology**, running, and its container must carry Containerlab's own node
+  label — a container name alone is never trusted;
+- the proposal must pass the existing deterministic validator, the
+  lab-invariant policy checks and a config-command allowlist;
+- a **named, non-self human approval** and a **verified rollback plan** are
+  mandatory; the device must still match the recorded base configuration;
+- the LLM never reaches a shell: lines are sent as a fixed
+  `docker exec … vtysh -c …` argv list (`shell=False`), one argv element per
+  config line, and the executor lives **outside** `ai/` so the L-5 static
+  safety scan of the AI package stays clean;
+- changes are applied to the **running** configuration only — `write memory`,
+  `copy running-config` and `configure replace` are prohibited — so a
+  container restart discards them;
+- the **rollback is a real undo**, not a merge: it removes the lines the
+  change added (with FRR's own removal form — `no description`, not
+  `no description <text>`) and re-applies the base value for the lines it
+  changed. A change FRR gives no removal command for is **refused** before
+  anything is applied;
+- the **dashboard is unchanged**: from the UI, applying is still always a
+  no-op. The loop is driven from the CLI
+  (`tools/phase4_change_loop_validation.py`), which refuses to write to a
+  device unless the operator passes the explicit `--approve-change` flag for
+  that exact change.
+
+> **Honest status:** this executor is covered by an offline test suite, but
+> it has **not yet been executed against a running lab** — that requires the
+> isolated Ubuntu VM described in
+> `NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md`. Until that run exists with
+> captured evidence, apply / verification / rollback / restoration are
+> **claimed as implemented and unit-tested, not as validated in a live
+> environment**.
+
 
 ## 15. v2 platform: containerized stack, API & CI
 

@@ -131,6 +131,14 @@ class Settings:
     #: human approval AND an injected executor bound to the virtual lab - a
     #: production device is never reachable from this path.
     change_loop_enabled: bool = False
+    # ---- Phase 4: isolated-lab execution (opt-in, OFF by default) ---------
+    #: When False no lab executor may touch a device at all. This is a SECOND
+    #: gate on top of ``change_loop_enabled``: both must be true, on a host
+    #: that runs the Containerlab lab, before a single config line is sent
+    #: anywhere. Leaving both false keeps the hosted/demo deployment inert.
+    lab_execution_enabled: bool = False
+    #: Hard timeout (seconds) for one device config operation (apply/verify).
+    lab_execution_timeout_seconds: int = 30
     data_source: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -194,4 +202,8 @@ def get_settings() -> Settings:
         api_token=os.getenv("NETPILOT_API_TOKEN", "").strip(),
         api_cors_origins=os.getenv("NETPILOT_API_CORS_ORIGINS", "").strip(),
         change_loop_enabled=_env_bool("NETPILOT_CHANGE_LOOP_ENABLED", False),
+        # ---- Phase 4: isolated-lab execution ------------------------------
+        lab_execution_enabled=_env_bool("NETPILOT_LAB_EXECUTION_ENABLED", False),
+        lab_execution_timeout_seconds=max(
+            5, _env_int("NETPILOT_LAB_EXECUTION_TIMEOUT", 30)),
     )

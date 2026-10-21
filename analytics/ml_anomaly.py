@@ -9,10 +9,12 @@ aligned feature matrix (columns = metrics, rows = timestamps).
 Honesty rules carried from Phase 2:
 * anomalies are statistical, never a failure/attack/root-cause claim;
 * missing values are dropped from the fit, never imputed with zeros;
-* no future sample influences an earlier verdict (the fit uses the whole
-  aligned window up to the judged point via trailing refit is unnecessary
-  here because Isolation Forest is unsupervised; we instead require enough
-  history and score each point with a model trained on the available window);
+* the forest is fitted on the WHOLE aligned complete-case window passed in,
+  so scoring is retrospective/transductive: later samples in that window can
+  influence the fit even for an earlier timestamp. This is therefore a
+  post-hoc analysis of a bounded window, not an online or causal detector,
+  and it makes no "no future data" guarantee. Callers that need online
+  detection must pass a window ending at the judged point;
 * ``observed`` is left None and the isolation score is reported in
   ``deviation`` so nothing is mistaken for a raw measurement.
 """
@@ -41,6 +43,9 @@ def detect_multivariate_isolation_forest(
     ``features`` columns are metric values aligned index-wise with
     ``timestamps``. Rows with any missing metric are excluded from the fit
     and never judged. Returns one ``AnomalyPoint`` per flagged row.
+
+    The fit is unsupervised but uses the full supplied window (see the
+    module docstring): treat results as retrospective, not causal.
     """
     from sklearn.ensemble import IsolationForest
     from sklearn.preprocessing import StandardScaler

@@ -166,7 +166,7 @@ def main() -> int:
     assistant = GroqAssistant(settings)
     if not assistant.available:
         for item in ("L-1 EN-question", "L-2 AR-question", "L-3 explicit-change",
-                     "L-4 malicious-evidence"):
+                     "L-4 no-file-change"):
             _record(item, "BLOCKED", "GROQ_API_KEY not configured/available")
         _safety_checks(evidence_dir)
         _write_evidence(evidence_dir, 2)
@@ -215,17 +215,21 @@ def main() -> int:
 
 
 def _safety_checks(evidence_dir: Path) -> None:
-    """L-5 (no exec/deploy/rollback, no prod network) + L-6 (key never stored)."""
-    ai_dir = ROOT / "ai"
-    forbidden = ("subprocess", "socket", "os.system", "eval(", "exec(",
-                 "containerlab_manager", "network.connectivity",
-                 "def deploy", "def apply", "def rollback")
-    hits: list[str] = []
-    for p in sorted(ai_dir.rglob("*.py")):
-        text = p.read_text(encoding="utf-8", errors="ignore")
-        for needle in forbidden:
-            if needle in text:
-                hits.append(f"{p.name}:{needle}")
+    """L-4 (evidence treated as data), L-5 (no exec/deploy) and L-6 (key)."""
+    from tools.safety_scan import (scan_evidence_wrapping,
+                                   scan_forbidden_primitives)
+
+    # L-4, first half: retrieved evidence must be wrapped in <untrusted_data>
+    # before it can reach the model, so a malicious directive inside it is
+    # treated as data. This is a property of the code, so it is scanned - on
+    # the lab host exactly as CI does on every commit.
+    wrap_hits = scan_evidence_wrapping(ROOT / "ai")
+    _record("L-4 evidence-treated-as-data",
+            "PASS" if not wrap_hits else "FAIL",
+            "agents that could hand evidence to the model unwrapped: "
+            + (", ".join(wrap_hits) if wrap_hits else "NONE"))
+
+    hits = scan_forbidden_primitives(ROOT / "ai")
     _record("L-5 no-exec/no-deploy (code)", "PASS" if not hits else "FAIL",
             "forbidden primitives in ai/: " + (", ".join(hits) if hits else "NONE"))
 

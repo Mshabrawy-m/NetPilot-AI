@@ -27,6 +27,8 @@ from ai.verification.config_validation import validate_lines
 from config import get_settings
 from database import repository
 from database.models import db_utcnow
+from network.lab_config_ops import normalize_config, normalize_line
+from network.lab_verifier import verify_restored_config
 
 _APPROVABLE = ("validated",)
 #: Extra wall-clock guard: even when enabled, apply is refused without one.
@@ -146,12 +148,27 @@ def apply(session, request_uuid: str, *, executor=None,
             session, req, status="failed", applied_at=now,
             apply_detail=detail or "executor reported failure")
     session.commit()
-    return {"applied": bool(ok), "status": req.status, "detail": detail}
+    # The raw executor outcome is returned as well: the service layer needs
+    # to distinguish a clean failure from a *partial* application and from a
+    # timeout, because those three need three different responses.
+    return {"applied": bool(ok), "status": req.status, "detail": detail,
+            "outcome": result}
 
 
 def rollback(session, request_uuid: str, *, executor=None,
              now: dt.datetime | None = None) -> dict:
-    """Restore the stored rollback config on an applied change (same gates)."""
+    """Undo an applied change (same gates) and verify the restoration.
+
+    The rollback is a **real undo**, not a merge: when the executor offers a
+    ``rollback_config(device, proposed, base)`` entry point (the lab
+    executor does), that is used - it removes the lines the change added and
+    re-applies the base values for the lines it changed. Re-applying the
+    base configuration on top of the device would leave an added line in
+    place, which is not a restoration.
+
+    When the executor cannot read the device back, the restoration cannot be
+    proven and is reported as unverified - never as a success.
+    """
     settings = get_settings()
     req = repository.get_change_request(session, request_uuid)
     if req is None:
@@ -166,23 +183,49 @@ def rollback(session, request_uuid: str, *, executor=None,
         return {"rolled_back": False, "reason": "no lab executor provided"}
     now = now or db_utcnow()
     restore = _load(req.rollback_config_json) or _load(req.base_config_json) or []
+    proposed = _load(req.proposed_config_json) or []
+
+    rollback_config = getattr(executor, "rollback_config", None)
     try:
-        result = executor(req.device_name, restore)
+        if callable(rollback_config):
+            result = rollback_config(req.device_name, proposed, restore)
+        else:
+            # A plain executor protocol: restore the base configuration.
+            result = executor(req.device_name, restore)
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"[:_MAX_DETAIL_LEN]
         repository.update_change_request(session, req, status="failed",
                                          apply_detail=f"rollback raised: {detail}")
         session.commit()
-        return {"rolled_back": False, "reason": detail}
+        return {"rolled_back": False, "restored": False, "reason": detail}
     ok, detail = _outcome(result)
-    if ok:
-        repository.update_change_request(session, req, status="rolled_back",
-                                         apply_detail=detail or "rolled back")
-    else:
+    if not ok:
         repository.update_change_request(session, req, status="failed",
                                          apply_detail=f"rollback failed: {detail}")
+        session.commit()
+        return {"rolled_back": False, "restored": False, "reason": detail}
+
+    # The restoration is only claimed when the device was actually read back.
+    restored = False
+    verification: dict = {}
+    read_config = getattr(executor, "read_config", None)
+    if callable(read_config):
+        removed = [ln for ln in proposed
+                   if normalize_line(ln) not in set(normalize_config(restore))]
+        comparison = verify_restored_config(req.device_name, restore,
+                                            read_config,
+                                            removed_lines=removed)
+        verification = comparison.as_dict()
+        restored = comparison.passed
+
+    repository.update_change_request(
+        session, req, status="rolled_back" if restored else "failed",
+        apply_detail=(detail or "rolled back") if restored
+        else "rolled back but the restoration could not be verified")
     session.commit()
-    return {"rolled_back": bool(ok), "status": req.status}
+    return {"rolled_back": True, "restored": restored, "status": req.status,
+            "verification": verification,
+            "reason": (verification.get("detail") or detail or "rolled back")}
 
 
 def cancel(session, request_uuid: str) -> dict:
