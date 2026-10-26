@@ -14,8 +14,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from services.app_state import (bootstrap, demo_banner_if_active, has_role,
-                                read, sidebar_status)
+from services.app_state import (bootstrap, demo_banner_if_active, flash,
+                                has_role, read, render_flash, sidebar_status)
 from ui import theme
 
 bootstrap()
@@ -24,6 +24,7 @@ theme.page_header("Network Topology",
                   "Rendered live from lab devices & links · multi-layout views",
                   icon="🕸️")
 demo_banner_if_active()
+render_flash()
 
 from analytics import graph
 from config import get_settings
@@ -67,8 +68,8 @@ if settings.demo_mode and has_role("operator"):
                                        hosts_per_access=9)}[size]
         if st.button("Seed / refresh demo fabric", type="primary"):
             counts = _write(lambda s: demo_data.seed_demo_fabric(**params))
-            st.success(f"Fabric seeded: {counts['devices']} devices, "
-                       f"{counts['links']} links (demo).")
+            flash(f"Fabric seeded: {counts['devices']} devices, "
+                  f"{counts['links']} links (demo).")
             st.rerun()
 
 # ------------------------------------------------------------------ data

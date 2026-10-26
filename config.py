@@ -51,6 +51,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_optional_int(name: str) -> int | None:
+    """Optional positive integer; absent/invalid/zero means 'not configured'."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
@@ -131,6 +143,9 @@ class Settings:
     #: human approval AND an injected executor bound to the virtual lab - a
     #: production device is never reachable from this path.
     change_loop_enabled: bool = False
+    #: How long a validated change request may wait for a decision before the
+    #: service marks it ``expired`` and refuses approval/application.
+    change_request_ttl_minutes: int = 1440
     # ---- Phase 4: isolated-lab execution (opt-in, OFF by default) ---------
     #: When False no lab executor may touch a device at all. This is a SECOND
     #: gate on top of ``change_loop_enabled``: both must be true, on a host
@@ -139,6 +154,11 @@ class Settings:
     lab_execution_enabled: bool = False
     #: Hard timeout (seconds) for one device config operation (apply/verify).
     lab_execution_timeout_seconds: int = 30
+    #: Optional freshness policy for Digital Twin snapshot integrity checks.
+    #: None/absent means no TTL is evaluated; freshness then stays explicitly
+    #: unknown unless the caller supplies both a capture timestamp and a max
+    #: age. It never enables approval, execution, or the change loop.
+    digital_twin_snapshot_max_age_seconds: int | None = None
     data_source: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -202,8 +222,12 @@ def get_settings() -> Settings:
         api_token=os.getenv("NETPILOT_API_TOKEN", "").strip(),
         api_cors_origins=os.getenv("NETPILOT_API_CORS_ORIGINS", "").strip(),
         change_loop_enabled=_env_bool("NETPILOT_CHANGE_LOOP_ENABLED", False),
+        change_request_ttl_minutes=max(
+            1, _env_int("NETPILOT_CHANGE_REQUEST_TTL_MINUTES", 1440)),
         # ---- Phase 4: isolated-lab execution ------------------------------
         lab_execution_enabled=_env_bool("NETPILOT_LAB_EXECUTION_ENABLED", False),
         lab_execution_timeout_seconds=max(
             5, _env_int("NETPILOT_LAB_EXECUTION_TIMEOUT", 30)),
+        digital_twin_snapshot_max_age_seconds=_env_optional_int(
+            "NETPILOT_DIGITAL_TWIN_MAX_AGE_SECONDS"),
     )

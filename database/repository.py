@@ -16,6 +16,7 @@ from database.models import (
     CollectionRun,
     ConnectivityTest,
     Device,
+    DigitalTwinSnapshotBinding,
     ForecastPrediction,
     ForecastRun,
     Incident,
@@ -175,6 +176,26 @@ def get_metric_series(
     if data_source is not None:
         stmt = stmt.where(MetricSample.data_source == data_source)
     return session.scalars(stmt).all()
+
+
+def get_latest_metric_times(
+    session: Session, *, data_source: str | None = None,
+) -> dict[str, dt.datetime]:
+    """Latest stored sample time per device (optionally for one source).
+
+    Used by the read-only change-impact analysis to label telemetry as fresh,
+    stale or missing. A sample whose value is NULL still counts as an
+    observation timestamp; no measurement value is inferred.
+    """
+    stmt = (
+        select(MetricSample.device_name,
+               func.max(MetricSample.collected_at))
+        .group_by(MetricSample.device_name)
+    )
+    if data_source is not None:
+        stmt = stmt.where(MetricSample.data_source == data_source)
+    return {name: latest for name, latest in session.execute(stmt).all()
+            if name and latest is not None}
 
 
 def get_available_metrics(
@@ -839,6 +860,7 @@ import json  # noqa: E402
 from database.models import (  # noqa: E402
     CHANGE_RISK_LEVELS,
     CHANGE_STATUSES,
+    ChangeAuditEvent,
     ChangeRequest,
 )
 
@@ -854,6 +876,10 @@ def create_change_request(
     base_config=None, proposed_config=None, rollback_config=None,
     diff: str | None = None, validation=None, risk_level: str = "low",
     status: str = "draft", proposed_by: str | None = None,
+    proposed_by_authenticated: bool = False,
+    expires_at: dt.datetime | None = None,
+    rejection_reason: str | None = None,
+    rejected_at: dt.datetime | None = None,
 ) -> ChangeRequest:
     if status not in CHANGE_STATUSES:
         raise ValueError(f"status must be one of {CHANGE_STATUSES}")
@@ -869,6 +895,9 @@ def create_change_request(
         rollback_config_json=_dump(rollback_config),
         diff=diff, validation_json=_dump(validation),
         risk_level=risk_level, status=status, proposed_by=proposed_by,
+        proposed_by_authenticated=bool(proposed_by_authenticated),
+        expires_at=expires_at, rejection_reason=rejection_reason,
+        rejected_at=rejected_at,
     )
     session.add(req)
     session.flush()
@@ -910,3 +939,104 @@ def update_change_request(session: Session, req: ChangeRequest, **fields
             setattr(req, key, value)
     session.flush()
     return req
+
+
+def add_change_audit_event(
+    session: Session, req: ChangeRequest, *, action: str,
+    actor: str | None = None, actor_authenticated: bool = False,
+    from_status: str | None = None, to_status: str | None = None,
+    reason: str | None = None, at: dt.datetime | None = None,
+) -> ChangeAuditEvent:
+    """Append one audit row. Actor is only recorded when authenticated."""
+    req = session.merge(req)
+    event = ChangeAuditEvent(
+        request_id=req.id, action=action,
+        actor=actor if actor_authenticated and actor else None,
+        actor_authenticated=bool(actor_authenticated and actor),
+        from_status=from_status, to_status=to_status, reason=reason,
+        at=at or db_utcnow(),
+    )
+    session.add(event)
+    session.flush()
+    return event
+
+
+def get_change_audit_events(
+    session: Session, request_id: int,
+) -> list[ChangeAuditEvent]:
+    return list(session.scalars(
+        select(ChangeAuditEvent)
+        .where(ChangeAuditEvent.request_id == request_id)
+        .order_by(ChangeAuditEvent.at, ChangeAuditEvent.id)
+    ).all())
+
+
+# --------------------------------------------------------------------------
+# Digital Twin snapshot bindings (Phase D4)
+# --------------------------------------------------------------------------
+def add_dt_snapshot_binding(
+    session: Session, *,
+    binding_uuid: str,
+    schema_version: str,
+    binding_version: str,
+    topology_ref: str,
+    topology_source: str,
+    topology_fingerprint: str,
+    change_fingerprint: str | None,
+    device_name: str | None,
+    request_uuid: str | None,
+    scenario: str | None,
+    captured_at: dt.datetime,
+    max_age_seconds: int | None,
+    device_count: int,
+    link_count: int,
+) -> DigitalTwinSnapshotBinding:
+    """Insert one immutable binding row and flush it (caller commits).
+
+    No update/delete counterpart exists: the registry is append-only. A
+    duplicate ``binding_uuid`` is rejected by the unique constraint and must be
+    resolved by the service, never silently overwritten here.
+    """
+    row = DigitalTwinSnapshotBinding(
+        binding_uuid=binding_uuid,
+        schema_version=schema_version,
+        binding_version=binding_version,
+        topology_ref=topology_ref,
+        topology_source=topology_source,
+        topology_fingerprint=topology_fingerprint,
+        change_fingerprint=change_fingerprint,
+        device_name=device_name,
+        request_uuid=request_uuid,
+        scenario=scenario,
+        captured_at=captured_at,
+        max_age_seconds=max_age_seconds,
+        device_count=device_count,
+        link_count=link_count,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def get_dt_snapshot_binding(
+    session: Session, binding_uuid: str,
+) -> DigitalTwinSnapshotBinding | None:
+    return session.scalar(
+        select(DigitalTwinSnapshotBinding)
+        .where(DigitalTwinSnapshotBinding.binding_uuid == binding_uuid))
+
+
+def list_dt_snapshot_bindings(
+    session: Session, *, topology_ref: str | None = None,
+    request_uuid: str | None = None, limit: int = 100,
+) -> list[DigitalTwinSnapshotBinding]:
+    stmt = select(DigitalTwinSnapshotBinding).order_by(
+        DigitalTwinSnapshotBinding.captured_at.desc(),
+        DigitalTwinSnapshotBinding.id.desc())
+    if topology_ref:
+        stmt = stmt.where(
+            DigitalTwinSnapshotBinding.topology_ref == topology_ref)
+    if request_uuid:
+        stmt = stmt.where(
+            DigitalTwinSnapshotBinding.request_uuid == request_uuid)
+    return list(session.scalars(stmt.limit(limit)).all())

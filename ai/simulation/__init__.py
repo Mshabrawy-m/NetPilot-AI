@@ -13,11 +13,29 @@ from dataclasses import dataclass, field
 
 @dataclass
 class SimulationResult:
-    status: str = "not_run"          # not_run | passed | failed | inconclusive
+    #: ``not_run`` (Phase 3 default) or an honest simulation verdict:
+    #: ``simulated`` / ``partial`` / ``insufficient_evidence`` / ``invalid`` /
+    #: ``not_simulated`` / ``error``. A ``simulated`` result is structural
+    #: only and never proves a real change is safe.
+    status: str = "not_run"
     checks: list = field(default_factory=list)
     evidence: list = field(default_factory=list)
     simulator_version: str | None = None
     reasons: list = field(default_factory=list)
+    #: Structured detail added by the Phase D1 engine. The defaults keep the
+    #: Phase 3 ``not_run`` boundary backward compatible.
+    assumptions: list = field(default_factory=list)
+    limitations: list = field(default_factory=list)
+    conflicts: list = field(default_factory=list)
+    affected_components: dict = field(default_factory=dict)
+    topology_ref: str | None = None
+    change_ref: dict = field(default_factory=dict)
+    before: dict = field(default_factory=dict)
+    after: dict = field(default_factory=dict)
+    not_proof_of_safety: bool = True
+    #: Full engine report for callers that need evidence beyond the summary
+    #: fields above. Additive and empty for the Phase 3 ``not_run`` boundary.
+    details: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
@@ -26,6 +44,16 @@ class SimulationResult:
             "evidence": self.evidence,
             "simulator_version": self.simulator_version,
             "reasons": self.reasons,
+            "assumptions": self.assumptions,
+            "limitations": self.limitations,
+            "conflicts": self.conflicts,
+            "affected_components": self.affected_components,
+            "topology_ref": self.topology_ref,
+            "change_ref": self.change_ref,
+            "before": self.before,
+            "after": self.after,
+            "not_proof_of_safety": self.not_proof_of_safety,
+            "details": self.details,
         }
 
 

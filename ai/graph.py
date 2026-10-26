@@ -227,26 +227,44 @@ def _compose_final_answer(state: WorkflowState, twin) -> str:
     vrep = state.get("verifier_report", {})
     dt = state.get("digital_twin", {})
 
+    facts = state.get("investigation", {}).get("facts", [])
+    causes = diag.get("causes", [])
+    inv = state.get("investigation", {})
+    missing = []
+    seen_missing: set[str] = set()
+    for item in (list(inv.get("stale_or_missing") or [])
+                 + list(diag.get("missing_evidence") or [])):
+        if item and item not in seen_missing:
+            seen_missing.add(item)
+            missing.append(item)
+
     if lang_ar:
         parts.append("الخلاصة:")
-        facts = state.get("investigation", {}).get("facts", [])
         if facts:
             parts.append("حقائق (من الأدلة): " + "; ".join(facts[:5]))
-        causes = diag.get("causes", [])
         if causes:
             parts.append("فرضيات: " + "; ".join(
                 f"{c.get('cause')} (ثقة {c.get('confidence')})" for c in causes[:3]))
+        if missing:
+            parts.append("أدلة ناقصة أو قديمة: " + "; ".join(missing[:5]))
+        if not facts and not causes:
+            parts.append("لا يمكن استخلاص نتيجة مدعومة بالأدلة "
+                         "من البيانات المتاحة.")
     else:
         parts.append("Summary:")
-        facts = state.get("investigation", {}).get("facts", [])
         if facts:
             parts.append("Facts (evidence-backed): " + "; ".join(facts[:5]))
-        causes = diag.get("causes", [])
         if causes:
             parts.append("Hypotheses: " + "; ".join(
                 f"{c.get('cause')} (confidence {c.get('confidence')}"
                 + (", inference" if c.get("is_inference") else "") + ")"
                 for c in causes[:3]))
+        if missing:
+            parts.append("Missing/stale evidence disclosed: "
+                         + "; ".join(missing[:5]))
+        if not facts and not causes:
+            parts.append("No evidence-backed conclusion can be drawn from "
+                         "the available data.")
     if state.get("plan"):
         parts.append(("Proposed plan (review only - not applied): "
                       + "; ".join(state["plan"].get("proposed_steps", [])[:6])))

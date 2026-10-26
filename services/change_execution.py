@@ -16,17 +16,19 @@ The pipeline, in order - every step is a gate that can only *stop* the
 change, never start it:
 
 1. the change loop must be enabled;
-2. the request must exist and be in status ``approved``;
-3. the approval must be a real, named, non-self approval;
-4. an executor must be supplied;
-5. the **rollback plan** must be computable and valid (fail closed when it
+2. the request must exist and its approval window must still be open;
+3. the request must be in status ``approved``;
+4. the approval must be a real, authenticated, named, non-self approval
+   bound to a verified requester identity;
+5. an executor must be supplied;
+6. the **rollback plan** must be computable and valid (fail closed when it
    is not - an unrollbackable change is never applied);
-6. the **lab identity** of the target must be provable;
-7. the **precondition** - the device's current running configuration must
+7. the **lab identity** of the target must be provable;
+8. the **precondition** - the device's current running configuration must
    still contain the recorded base configuration - must hold;
-8. the change is applied;
-9. the result is **verified** by reading the device back;
-10. if verification fails (or the apply only partially landed), the change
+9. the change is applied;
+10. the result is **verified** by reading the device back;
+11. if verification fails (or the apply only partially landed), the change
     is **rolled back** and the **restoration is verified** too.
 
 Nothing here can reach a production device: the executor resolves the target
@@ -140,30 +142,38 @@ def execute_change(session, request_uuid: str, *, executor=None,
     if req is None:
         return refuse("not found")
 
-    # -- 2. the request must be approved -----------------------------------
+    # -- 2. the approval window must still be open -------------------------
+    if change_service.expire_if_due(session, req, now):
+        return refuse("change request expired; application refused",
+                      req.status)
+
+    # -- 3. the request must be approved -----------------------------------
     if req.status != "approved":
         return refuse(f"requires an approved request, current status "
                       f"'{req.status}'", req.status)
 
-    # -- 3. explicit, non-self human approval ------------------------------
+    # -- 4. explicit, non-self human approval ------------------------------
     if not req.approved_by or not req.approved_at:
         return refuse("no recorded human approval for this request", req.status)
-    if req.proposed_by and req.proposed_by == req.approved_by:
+    if not req.proposed_by or not req.proposed_by_authenticated:
+        return refuse("the approval is not bound to a verified requester "
+                      "identity", req.status)
+    if req.proposed_by == req.approved_by:
         return refuse("self-approval is not allowed", req.status)
 
-    # -- 4. an executor must be supplied -----------------------------------
+    # -- 5. an executor must be supplied -----------------------------------
     if executor is None:
         return refuse("no lab executor provided; refusing to apply", req.status)
 
     proposed = _load(req.proposed_config_json) or []
     base = _load(req.rollback_config_json) or _load(req.base_config_json) or []
 
-    # -- 5. the rollback plan must be verifiable ----------------------------
+    # -- 6. the rollback plan must be verifiable ----------------------------
     ok, reason = verify_rollback_plan(base, proposed)
     if not ok:
         return refuse(f"rollback plan not verified: {reason}", req.status)
 
-    # -- 6. the lab identity of the target must be provable ------------------
+    # -- 7. the lab identity of the target must be provable ------------------
     preflight = getattr(executor, "preflight", None)
     if callable(preflight):
         identity_ok, identity_reason = preflight(req.device_name)
@@ -171,7 +181,7 @@ def execute_change(session, request_uuid: str, *, executor=None,
             return refuse(f"lab identity not verified: {identity_reason}",
                           req.status)
 
-    # -- 7. deterministic precondition: the device must still be as recorded -
+    # -- 8. deterministic precondition: the device must still be as recorded -
     read_config = getattr(executor, "read_config", None)
     if not callable(read_config):
         return refuse("the executor cannot read the device state - a "
@@ -190,7 +200,7 @@ def execute_change(session, request_uuid: str, *, executor=None,
                       f"matches the recorded base configuration (missing "
                       f"{drift[:5]}); the change was not applied", req.status)
 
-    # -- 8. apply ----------------------------------------------------------
+    # -- 9. apply ----------------------------------------------------------
     result = change_service.apply(session, request_uuid, executor=executor,
                                    now=now)
     outcome = result.get("outcome")
@@ -200,6 +210,10 @@ def execute_change(session, request_uuid: str, *, executor=None,
 
     if not applied:
         reason = result.get("reason") or result.get("detail") or "apply failed"
+        if result.get("expired"):
+            # The window closed between our pre-check and the apply call.
+            # Never overwrite the service's ``expired`` state with ``failed``.
+            return refuse(reason, result.get("status", "expired"))
         if partial:
             # Some lines landed before the failure: undo them.
             rb = _rollback(session, req, executor, proposed, base, now)
@@ -220,7 +234,7 @@ def execute_change(session, request_uuid: str, *, executor=None,
                 "reason": reason, "status": "failed", "verification": {},
                 "timed_out": timed_out}
 
-    # -- 9. post-change verification ---------------------------------------
+    # -- 10. post-change verification --------------------------------------
     verification = verify_applied_config(req.device_name, proposed, read_config)
     if verification.passed:
         repository.update_change_request(
@@ -232,7 +246,7 @@ def execute_change(session, request_uuid: str, *, executor=None,
                 "reason": verification.detail, "status": "applied",
                 "verification": verification.as_dict(), "timed_out": False}
 
-    # -- 10. verification failed -> roll back and verify the restoration ----
+    # -- 11. verification failed -> roll back and verify the restoration ----
     rb = _rollback(session, req, executor, proposed, base, now)
     return {"ok": False, "applied": True, "verified": False,
             "rolled_back": rb["rolled_back"], "restored": rb["restored"],

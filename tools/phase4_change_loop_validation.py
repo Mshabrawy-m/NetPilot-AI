@@ -253,7 +253,8 @@ def main() -> int:
             base_lines=base_lines,
             proposed_lines=proposal,
             description="Gate D change-loop validation",
-            proposed_by="gate4-proposer")
+            proposed_by="gate4-proposer",
+            proposer_authenticated=True)
         request_uuid = req.request_uuid
         base_lines = list(req.base_config_json and
                           json.loads(req.base_config_json) or [])
@@ -262,8 +263,12 @@ def main() -> int:
 
     # ---- 5. explicit, non-self human approval -----------------------------
     with session_scope() as s:
+        # This CLI is already gated by --approve-change plus a named approver;
+        # the name is an explicit operator assertion, not an anonymous click.
         req, msg = change_service.approve(s, request_uuid,
-                                          approved_by=args.approver)
+                                          approved_by=args.approver,
+                                          authenticated=True,
+                                          reason="Gate D explicit approval")
         approved = msg == "approved"
     _record("APPROVAL", "PASS" if approved else "FAIL",
             f"approval by {args.approver!r}: {msg}")

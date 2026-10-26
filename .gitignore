@@ -43,6 +43,9 @@ Phase3_Gate3_Task_Board.md
 Phase3_Gate3_Acceptance_Matrix.md
 NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md
 
+# B4 AI-quality evaluation: generated reports are artifacts, not fixtures
+evaluation/reports/*.json
+
 # IDE / OS
 .vscode/
 .idea/

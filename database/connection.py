@@ -14,10 +14,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.schema import CreateColumn
 
 from config import get_settings
 from database.models import Base
@@ -91,6 +92,38 @@ def session_scope() -> Iterator[Session]:
         session.close()
 
 
+def _ensure_additive_columns(engine: Engine) -> None:
+    """Add nullable model columns that an older database does not have yet.
+
+    ``create_all`` only creates missing *tables*; it never alters an existing
+    table. NetPilot's migration strategy is strictly additive, so this helper
+    adds only missing **nullable** columns with ``ALTER TABLE ... ADD COLUMN``.
+    It never drops or rewrites a column and refuses to guess at a NOT NULL
+    column, which would need an explicit data migration.
+    """
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    preparer = engine.dialect.identifier_preparer
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            existing_columns = {
+                col["name"] for col in inspector.get_columns(table.name)
+            }
+            for column in table.columns:
+                if column.name in existing_columns:
+                    continue
+                if not column.nullable:
+                    raise RuntimeError(
+                        f"additive migration refused: {table.name}."
+                        f"{column.name} is NOT NULL and needs a data migration")
+                ddl = str(CreateColumn(column).compile(dialect=engine.dialect))
+                conn.execute(text(
+                    f"ALTER TABLE {preparer.quote(table.name)} "
+                    f"ADD COLUMN {ddl}"))
+
+
 def init_db() -> None:
     """Create all tables if they do not exist (safe to call repeatedly).
 
@@ -117,9 +150,13 @@ def init_db() -> None:
         for attempt in range(5):
             try:
                 Base.metadata.create_all(engine)
+                _ensure_additive_columns(engine)
                 return
             except OperationalError as exc:
-                if attempt == 4 or "already exists" not in str(exc).lower():
+                message = str(exc).lower()
+                raced = ("already exists" in message
+                         or "duplicate column" in message)
+                if attempt == 4 or not raced:
                     raise
                 time.sleep(0.1 * (attempt + 1))
 

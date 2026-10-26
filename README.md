@@ -47,7 +47,8 @@ netpilot-ai/
 │   ├── agents/                 # intent, investigation, diagnosis, planner, config
 │   ├── tools/                  # read-only evidence tools (topology/telemetry/…)
 │   ├── verification/           # independent deterministic verifier + policy checks
-│   └── simulation/             # Digital Twin interface (honestly reports not_run)
+│   └── simulation/             # Digital Twin workflow boundary (reports not_run;
+│                               #   read-only engine is services/digital_twin.py)
 ├── analytics/                  # Phase 2 computation core (no UI, no SQL writes)
 │   ├── time_series.py          # frame loading, dedupe, resample, labelled gaps
 │   ├── data_quality.py         # quality report + readiness gates per series
@@ -112,7 +113,9 @@ alongside the Phase 1–3 tree, additively — nothing above was rewritten:
 ├── app.py / pages/…            # + Ops Center (11) new page
 ├── analytics/                  # + graph.py, ml_anomaly.py, rca.py, backtest.py
 ├── services/                   # + alert_service, auth, change_service, rag,
-│                               #   nlquery, telemetry (in-process metrics)
+│                               #   nlquery, telemetry (in-process metrics),
+│                               #   impact_service, ops_center_actions,
+│                               #   digital_twin, digital_twin_registry
 ├── api/                        # opt-in read-only FastAPI REST + /ws/topology
 │   ├── app.py                  #   (standalone; no Streamlit import)
 │   └── readmodels.py           #   thin JSON read-models over the repository
@@ -120,7 +123,9 @@ alongside the Phase 1–3 tree, additively — nothing above was rewritten:
 ├── docker/entrypoint.sh        #   selects streamlit vs uvicorn; passthrough
 ├── docker-compose.yml          # db(Postgres) + dashboard + api (+ lab profile)
 ├── .dockerignore               # keeps .env / data / venv out of the image
-└── .github/workflows/ci.yml    # secret gate + pytest matrix + UI smoke + docker
+├── .github/workflows/ci.yml    # secret gate + pytest matrix + UI smoke + docker
+└── docs/                       # + D1-D4 Digital Twin reports, FEATURE_* audit
+                                #   reports, FINAL_PROJECT_CLOSURE_REPORT.md
 ```
 
 Justified deviations from the suggested layout: `services/app_state.py` and
@@ -303,11 +308,13 @@ NETPILOT_ADMIN_USER = "<bootstrap-admin-username>"
 NETPILOT_ADMIN_PASSWORD = "<strong-password>"
 ```
 
-What works on Cloud, verified in Demo Mode with an empty, freshly created
-database: all 12 pages, charts, topology/graph intelligence, anomaly detection,
-forecasting and backtests, the offline natural-language query, RAG search, the
-alert cycle and the change-proposal workflow. `data/` is git-ignored, so on the
-first launch the app creates its SQLite file (including the parent directory) and
+The demo-mode application is designed to work on Cloud with an empty, freshly
+created database: all 12 scripts, charts, topology/graph intelligence, anomaly
+detection, forecasting and backtests, the offline natural-language query, RAG
+search, the alert cycle and the change-proposal workflow. The offline UI smoke
+check re-verifies all 12 scripts locally; **Streamlit Cloud itself was not
+re-deployed during the closure audit**. `data/` is git-ignored, so on the first
+launch the app creates its SQLite file (including the parent directory) and
 seeds the labelled demo fixtures itself.
 
 Two consequences of the Cloud runtime are worth stating plainly:
@@ -370,6 +377,16 @@ the real provider integration once (network + key required, prints no secret):
 | `NETPILOT_AI_EVIDENCE_MAX_ROWS` | `50` | Phase 3 — bound on evidence rows gathered per run |
 | `NETPILOT_AI_EVIDENCE_MAX_BYTES` | `8192` | Phase 3 — bound on each evidence record's content |
 | `NETPILOT_AI_GRAPH_MAX_STEPS` | `12` | Phase 3 — orchestrator step ceiling (bounded loops) |
+| `NETPILOT_AUTH_ENABLED` | `false` | v2 — opt-in login and RBAC (`viewer` < `operator` < `admin`) |
+| `NETPILOT_PBKDF2_ITERATIONS` | `240000` | v2 — password-hash work factor |
+| `NETPILOT_ADMIN_USER` / `NETPILOT_ADMIN_PASSWORD` | *(empty)* | v2 — optional bootstrap admin; environment only, never committed |
+| `NETPILOT_API_TOKEN` | *(empty)* | v2 — when set, every `/api/*` route requires `Authorization: Bearer <token>` |
+| `NETPILOT_API_CORS_ORIGINS` | *(empty)* | v2 — comma-separated allowed browser origins |
+| `NETPILOT_CHANGE_LOOP_ENABLED` | `false` | v2 — enables the change state machine; apply still needs an injected lab executor |
+| `NETPILOT_CHANGE_REQUEST_TTL_MINUTES` | `1440` | v2 — approval window before a request expires |
+| `NETPILOT_LAB_EXECUTION_ENABLED` | `false` | Phase 4 — second gate for lab device I/O; only on the isolated lab host |
+| `NETPILOT_LAB_EXECUTION_TIMEOUT` | `30` | Phase 4 — per-device config operation timeout (seconds) |
+| `NETPILOT_DIGITAL_TWIN_MAX_AGE_SECONDS` | *(unset)* | D3/D4 — optional snapshot freshness TTL; unset keeps freshness explicitly unknown |
 
 **Timezone convention:** every timestamp is **UTC**. Values are stored as
 naive-UTC datetimes (documented in `database/models.py`) and labelled
@@ -398,7 +415,7 @@ combinations that actually have non-null stored values.
 ## 8. Automated tests
 
 ```bash
-pytest                 # 311 unit/integration tests (201 Phase 1-3 + 110 v2)
+pytest                 # 692 unit/integration tests (full closure-audit suite)
 python tests\ui_smoke_check.py   # headless run of app.py + all 11 pages,
                                  # clicking the detection/forecast buttons
 ```
@@ -501,18 +518,42 @@ v2 additions (advanced capabilities roadmap, Slices 1–8; all offline):
   + degree sizing + a demo-only large synthetic fabric
   (`test_topology_views.py`)
 
-Last recorded result on this machine (Windows, no Docker): **441 passed**,
-UI smoke check: all 12 scripts (app + 11 pages incl. the AI Assistant and Ops
-Center) render without exceptions + both Phase 2 action buttons verified +
-demo banner verified. A **live** Groq integration check
-(`tools/phase3_live_check.py`) was run separately with the real key and
-classified both an English question and an Arabic change request correctly.
+Last recorded result on this machine (Windows, no Docker; 2026-10-26 closure
+audit): **692 passed**. UI smoke check: all 12 scripts (app + 11 pages incl.
+the AI Assistant and Ops Center) render without exceptions + both Phase 2
+action buttons verified + demo banner verified. The optional **live** Groq
+integration check (`tools/phase3_live_check.py`) was **not** re-run during the
+closure audit; live-provider behaviour is therefore unverified here. The
+previously exposed credential is treated as compromised and must be rotated
+(see `docs/FINAL_PROJECT_CLOSURE_REPORT.md`).
 
 > The Phase 4 lab executor and the Gate 3 / Gate D harnesses are **not** part
 > of the published tip: they exist in the working tree and are covered by the
 > count above, but the live-lab evidence for them does not exist yet (no
 > Docker/Containerlab host). See §14 and
 > `NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md`.
+
+### Offline AI-quality / groundedness evaluation (B4)
+
+A separate, deterministic evaluation scores the AI workflows themselves
+(groundedness, evidence relevance, abstention, safety, task correctness,
+structured output, language handling, robustness). It is fully offline and
+uses fixed synthetic fixtures — no API key, network, provider or paid service.
+
+```bash
+python tools/ai_quality_eval.py
+```
+
+The machine-readable report is written to
+`evaluation/reports/ai_quality_report.json` (generated, git-ignored). The
+versioned dataset is `evaluation/datasets/ai_quality_v1.json`; metric
+definitions, scope boundaries and limitations are documented in
+`evaluation/README.md`. Exit codes: `0` pass, `1` case failures, `2`
+dataset/harness error, `3` safety-gate failure.
+
+> This is **not** a live-provider, Streamlit, Gate 3 or Gate D test. Those are
+> marked `not_run` in the report and excluded from every metric. pytest pass
+> rates are engineering tests, not AI quality scores.
 
 ---
 
@@ -581,6 +622,13 @@ With the dashboard running (demo or live mode):
    per Streamlit process (overlap-locked). Multi-instance deployments should
    run one dedicated collector (documented; `collect_once` is importable as
    a standalone entry point).
+7. **Digital Twin and PostgreSQL remain partially validated.** The D1-D4
+   engine/registry are covered by offline tests and the read-only Ops Center
+   preview, but they are not wired into `ai/graph.py` and have no live-lab
+   evidence. PostgreSQL is supported by the storage layer and Docker image but
+   was not exercised in the closure environment (no driver/server); SQLite is
+   the verified default. Real-browser E2E, live-provider evaluation,
+   Docker/Containerlab and real-device tests were not run.
 
 ## 12. Phase 2 — Data Analysis, Anomaly Detection & Forecasting
 
@@ -675,8 +723,12 @@ check conclusively passes, otherwise `failed` or `inconclusive` (it never
 reports a false pass, and a static pass never implies live behaviour).
 
 **Digital Twin (`ai/simulation/`)** — a clean `DigitalTwin` interface with an
-`UnavailableDigitalTwin` that honestly reports `not_run` (no simulator is
-wired in Phase 3), so results are never misrepresented.
+`UnavailableDigitalTwin` that honestly reports `not_run`, so results are never
+misrepresented. A separate read-only structural engine
+(`services/digital_twin.py`, D1-D3) and persistent snapshot registry
+(`services/digital_twin_registry.py`, D4) now exist and are used by the Ops
+Center preview; they are deliberately **not wired into `ai/graph.py`**, so the
+AI workflow still reports `not_run`.
 
 **Prompt-injection defence** — retrieved logs/configs/user snippets are
 wrapped in `<untrusted_data>` blocks and treated as data everywhere; the
@@ -693,14 +745,17 @@ deploying anything.
 and `ai_evidence` are created on next start (`init_db()` → CREATE TABLE IF NOT
 EXISTS). No Phase 1/2 table is altered, and no provider secret is ever stored.
 
-## 14. Explicitly out of scope (Phase 4+)
+## 14. Current scope boundary (what is not wired or not validated)
 
-Live routing/behaviour simulation, a RAG store and MCP servers are Phase 4
-and are not implemented. The assistant never connects to a production network
-and never executes generated config or modifies routes/ACLs/firewalls/
-interfaces. Anomaly events, forecast warnings and AI diagnoses remain
-clearly-labelled probabilistic/statistical statements about data — never
-classified as confirmed failures or attacks.
+**Not implemented:** live routing/behaviour simulation (the Digital Twin engine
+is structural reachability only), real-network execution, and MCP servers.
+**Implemented but deliberately not wired into `ai/graph.py`:** the D1-D4
+Digital Twin engine and persistent snapshot registry. **Implemented:** the
+offline RAG store (`services/rag.py`) used by the Knowledge tab. The assistant
+never connects to a production network and never executes generated config or
+modifies routes/ACLs/firewalls/interfaces. Anomaly events, forecast warnings
+and AI diagnoses remain clearly-labelled probabilistic/statistical statements
+about data — never classified as confirmed failures or attacks.
 
 **Where the Phase 4 change loop now stands.** The *runtime* half of the
 change loop is implemented (`network/lab_executor.py`,

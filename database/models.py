@@ -555,7 +555,7 @@ class User(Base):
 #: Approval/execution lifecycle. 'applied' can only follow 'approved'.
 CHANGE_STATUSES = (
     "draft", "proposed", "validated", "rejected", "approved",
-    "applied", "failed", "rolled_back", "cancelled",
+    "applied", "failed", "rolled_back", "cancelled", "expired",
 )
 CHANGE_RISK_LEVELS = ("low", "medium", "high")
 
@@ -592,8 +592,111 @@ class ChangeRequest(Base):
     status: Mapped[str] = mapped_column(String(16), default="draft")
 
     proposed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: True only when ``proposed_by`` came from the authenticated session.
+    #: Open mode records no requester identity rather than inventing one.
+    proposed_by_authenticated: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, default=False)
     approved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    #: Human-entered rationale for the decision (bounded by the service).
+    approval_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rejected_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rejected_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cancelled_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The approval window. The service refuses approval/application after it.
+    expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    expired_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     applied_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     #: Redacted outcome summary only - never credentials or full device output.
     apply_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ChangeAuditEvent(Base):
+    """Append-only audit trail for one change request.
+
+    Records who did what, whether that actor was authenticated, the status
+    transition and the bounded human/system reason. Expiry is recorded with
+    ``actor=None`` (a service action, not a fabricated person).
+    """
+
+    __tablename__ = "change_audit_events"
+    __table_args__ = (
+        Index("ix_change_audit_request", "request_id", "at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[int] = mapped_column(
+        ForeignKey("change_requests.id", ondelete="CASCADE"), index=True)
+    at: Mapped[dt.datetime] = mapped_column(DateTime, default=db_utcnow)
+    #: proposed | approved | rejected | cancelled | expired | applied | failed |
+    #: rolled_back
+    action: Mapped[str] = mapped_column(String(32))
+    #: Verified principal only; NULL means no authenticated identity was
+    #: available (open mode) or the action was performed by the service.
+    actor: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_authenticated: Mapped[bool] = mapped_column(Boolean, default=False)
+    from_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ==========================================================================
+# Phase D4 - persistent Digital Twin snapshot-binding registry (additive).
+#
+# A binding is immutable evidence: it records the snapshot/change identity,
+# stable fingerprints and a caller-supplied trusted capture time. The registry
+# only inserts and reads. It never updates or deletes a binding, and it never
+# substitutes the current clock for a missing capture time. Created by the
+# existing ``init_db()`` (CREATE IF NOT EXISTS); no existing table is altered.
+# ==========================================================================
+#: Version of the persisted snapshot-binding record schema. Readers must fail
+#: closed on a version they do not understand instead of guessing.
+DT_SNAPSHOT_BINDING_SCHEMA_VERSION = "d4-1"
+
+
+class DigitalTwinSnapshotBinding(Base):
+    """One immutable, persisted Digital Twin snapshot/change binding."""
+
+    __tablename__ = "digital_twin_snapshot_bindings"
+    __table_args__ = (
+        UniqueConstraint("binding_uuid", name="uq_dt_binding_uuid"),
+        Index("ix_dt_binding_topology", "topology_ref", "captured_at"),
+        Index("ix_dt_binding_request", "request_uuid"),
+        Index("ix_dt_binding_captured", "captured_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    #: Stable public identifier. Supplied by the caller or derived
+    #: deterministically from the immutable binding content + capture time.
+    binding_uuid: Mapped[str] = mapped_column(String(64))
+    #: Registry schema version (``d4-1``); validated on read.
+    schema_version: Mapped[str] = mapped_column(
+        String(16), default=DT_SNAPSHOT_BINDING_SCHEMA_VERSION)
+    #: D3 binding contract version (``d3-1``).
+    binding_version: Mapped[str] = mapped_column(String(16))
+
+    topology_ref: Mapped[str] = mapped_column(String(256))
+    topology_source: Mapped[str] = mapped_column(String(16), default="stored")
+    topology_fingerprint: Mapped[str] = mapped_column(String(80))
+    change_fingerprint: Mapped[str | None] = mapped_column(
+        String(80), nullable=True)
+    device_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: Provenance only; deliberately not a foreign key. A binding may be
+    #: captured before a request exists and must never mutate request state.
+    request_uuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scenario: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    #: Caller-supplied trusted capture time (naive UTC, project convention).
+    #: Never defaulted to the current clock.
+    captured_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    #: Optional explicit freshness policy captured with the binding. ``None``
+    #: means TTL is disabled; freshness is then explicitly unknown.
+    max_age_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    device_count: Mapped[int] = mapped_column(Integer, default=0)
+    link_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: Record insertion time (audit only; never used for TTL).
+    registered_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=db_utcnow)

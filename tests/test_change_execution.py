@@ -11,8 +11,11 @@ in-memory fake executor - no device, no Docker, no network.
 """
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
+from database.models import db_utcnow
 from services import change_execution, change_service
 from tests.lab_fakes import (BASE_R2, PROPOSED_R2, FakeLab, FakeOutcome,
                              lab_inventory)
@@ -96,12 +99,13 @@ def _propose(session, base=None, proposed=None, proposed_by="alice"):
         session, device_name="R2",
         base_lines=list(base if base is not None else BASE_R2),
         proposed_lines=list(proposed if proposed is not None else PROPOSED_R2),
-        proposed_by=proposed_by)
+        proposed_by=proposed_by, proposer_authenticated=True)
 
 
 def _approved(session, base=None, proposed=None, approver="bob"):
     req = _propose(session, base, proposed)
-    change_service.approve(session, req.request_uuid, approved_by=approver)
+    change_service.approve(session, req.request_uuid, approved_by=approver,
+                           authenticated=True)
     return req.request_uuid
 
 
@@ -132,6 +136,54 @@ def test_refused_without_an_executor(session, live):
     res = change_execution.execute_change(session, uuid, executor=None)
     assert res["refused"] is True
     assert "no lab executor provided" in res["reason"]
+
+
+def test_refused_when_the_approval_window_has_expired(session, live):
+    uuid = _approved(session)
+    from database import repository
+    req = repository.get_change_request(session, uuid)
+    req.expires_at = db_utcnow() - dt.timedelta(minutes=1)
+    session.commit()
+    executor = FakeExecutor()
+    res = change_execution.execute_change(session, uuid, executor=executor)
+    assert res["refused"] is True
+    assert "expired" in res["reason"]
+    assert executor.applied == []       # nothing was applied
+
+
+def test_expiry_during_apply_is_not_overwritten_as_failed(session, live,
+                                                          monkeypatch):
+    """A window closing between the pre-check and apply must stay expired."""
+    uuid = _approved(session)
+    monkeypatch.setattr(
+        change_service, "apply",
+        lambda *a, **k: {"applied": False, "expired": True,
+                         "status": "expired",
+                         "reason": "change request expired; application "
+                                   "refused"})
+    executor = FakeExecutor()
+    res = change_execution.execute_change(session, uuid, executor=executor)
+    assert res["refused"] is True
+    assert res["status"] == "expired"
+    assert executor.applied == []
+
+
+def test_refused_when_approval_has_no_verified_requester(session, live):
+    req = change_service.propose(
+        session, device_name="R2", base_lines=list(BASE_R2),
+        proposed_lines=list(PROPOSED_R2), proposed_by=None,
+        proposer_authenticated=False)
+    # forge an approval that the service would never have produced
+    req.approved_by = "bob"
+    req.approved_at = req.created_at
+    req.status = "approved"
+    session.commit()
+    executor = FakeExecutor()
+    res = change_execution.execute_change(session, req.request_uuid,
+                                          executor=executor)
+    assert res["refused"] is True
+    assert "verified requester" in res["reason"]
+    assert executor.applied == []
 
 
 def test_refused_when_the_approval_is_a_self_approval(session, live):

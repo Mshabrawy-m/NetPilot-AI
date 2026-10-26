@@ -24,6 +24,26 @@ from ui import theme
 _demo_seed_lock = threading.Lock()
 _demo_seed_done = False
 
+# A message rendered in the same script run as ``st.rerun()`` is discarded by
+# the rerun before the browser ever paints it. Mutating actions therefore
+# queue their confirmation here and the page renders it on the next run.
+_FLASH_KEY = "_np_flash_messages"
+_FLASH_LEVELS = ("success", "info", "warning", "error")
+
+
+def flash(message: str, *, level: str = "success") -> None:
+    """Queue a message that survives the caller's ``st.rerun()``."""
+    if level not in _FLASH_LEVELS:
+        raise ValueError(f"unsupported flash level: {level!r}")
+    st.session_state.setdefault(_FLASH_KEY, []).append(
+        {"level": level, "message": message})
+
+
+def render_flash() -> None:
+    """Render (and clear) messages queued by actions in the previous run."""
+    for item in st.session_state.pop(_FLASH_KEY, []):
+        getattr(st, item["level"])(item["message"])
+
 
 def bootstrap() -> None:
     """Run at the top of every page: schema, scheduler, demo seeding."""
