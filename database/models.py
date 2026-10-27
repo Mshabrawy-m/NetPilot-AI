@@ -14,9 +14,15 @@ Tables (extensible, kept intentionally simple):
 Timestamp convention: ALL datetimes are UTC. SQLite stores them as naive
 UTC values; on PostgreSQL the columns are timezone-aware. ``config.utc_now()``
 is the only place time is taken.
-"""
-from __future__ import annotations
 
+Deliberately NO ``from __future__ import annotations`` in this module: with
+that import every ``Mapped[...]`` annotation stays a *string*, and SQLAlchemy
+resolves such strings by looking the defining module up in ``sys.modules``.
+Hosted runtimes that execute application modules through their own loader
+(observed on Streamlit Community Cloud) leave the module unregistered, which
+surfaced as ``MappedAnnotationError: Could not interpret annotation
+Mapped[int]`` at import time. Real annotation objects remove that dependency.
+"""
 import datetime as dt
 
 from sqlalchemy import (

@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
+import pathlib
+import sys
 import threading
 
 import pytest
@@ -185,3 +188,27 @@ def test_init_db_retries_past_already_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(Base.metadata, "create_all", boom)
     with pytest.raises(OperationalError):
         connection.init_db()
+
+
+def test_models_map_without_sys_modules_registration():
+    """The ORM module must map its classes even when the loader does not
+    register it in ``sys.modules``.
+
+    Hosted runtimes can execute application modules through their own loader
+    (observed on Streamlit Community Cloud, where page 4 died with
+    ``MappedAnnotationError: Could not interpret annotation Mapped[int]``).
+    SQLAlchemy resolves *string* annotations via ``sys.modules[__module__]``,
+    so ``database/models.py`` must keep real annotation objects - this test
+    fails the moment ``from __future__ import annotations`` comes back.
+    """
+    root = pathlib.Path(__file__).resolve().parents[1]
+    name = "database._models_loader_check"
+    sys.modules.pop(name, None)
+    spec = importlib.util.spec_from_file_location(
+        name, root / "database" / "models.py")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)   # deliberately never registered
+        assert "change_audit_events" in module.Base.metadata.tables
+    finally:
+        sys.modules.pop(name, None)

@@ -337,6 +337,14 @@ Two consequences of the Cloud runtime are worth stating plainly:
   Cloud (the `Dockerfile` does the same with `apt-get`); without it the page
   reports the probe as **not run** — an environment limitation, not a failed
   connectivity test — and records nothing.
+* **The ORM module avoids runtime string annotations.** `database/models.py`
+  deliberately omits `from __future__ import annotations`: the Cloud runtime
+  executes application modules through its own loader and leaves them out of
+  `sys.modules`, and SQLAlchemy resolves string `Mapped[...]` annotations
+  through that registry — which crashed page 4 at import with
+  `MappedAnnotationError: Could not interpret annotation Mapped[int]`.
+  `test_database.py::test_models_map_without_sys_modules_registration` keeps
+  that guarantee in place.
 
 ### AI Network Assistant (page 10)
 
