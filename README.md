@@ -93,7 +93,7 @@ netpilot-ai/
 │   ├── NetPilot_AI_Advanced_Roadmap.md   # v2 advanced-capabilities roadmap
 │   ├── Phase2_Delivery_Report.md
 │   └── Phase3_Delivery_Report.md
-├── .streamlit/config.toml      # shared dark theme (no server/secret settings)
+├── .streamlit/config.toml      # theme + file watcher off (never host/port/secrets)
 ├── .env.example                # configuration template (no secrets)
 ├── requirements.txt            # also what Streamlit Community Cloud installs
 ├── packages.txt                # apt packages for Cloud (iputils-ping)
@@ -337,14 +337,26 @@ Two consequences of the Cloud runtime are worth stating plainly:
   Cloud (the `Dockerfile` does the same with `apt-get`); without it the page
   reports the probe as **not run** — an environment limitation, not a failed
   connectivity test — and records nothing.
+* **The file watcher is off in the committed config**
+  (`server.fileWatcherType = "none"`). Streamlit's watcher evicts watched
+  application modules from `sys.modules` at the start of a run, and two libraries
+  resolve a class's defining module through that registry *while the class body
+  executes*: SQLAlchemy for `Mapped[...]` annotations, and CPython's `dataclasses`
+  for the `__module__`/`__qualname__` strings. A rebuild that made the watcher
+  fire therefore took the deployed app down twice — `MappedAnnotationError: Could
+  not interpret annotation Mapped[int]` from `database/models.py`, then
+  `AttributeError: 'NoneType' object has no attribute '__dict__'` from
+  `network/containerlab_manager.py`. Nothing edits files in deployment, so the
+  watcher stays off; `test_ship_hygiene.py::test_streamlit_config_is_theme_only_and_cloud_safe`
+  keeps host/port/secrets out of that file. The option is not scriptable, so no
+  environment variable or CLI flag overrides it — while developing locally, set
+  `fileWatcherType` back to `"auto"` in your working copy to keep
+  auto-rerun-on-save, and leave the committed value at `"none"`.
 * **The ORM module avoids runtime string annotations.** `database/models.py`
-  deliberately omits `from __future__ import annotations`: the Cloud runtime
-  executes application modules through its own loader and leaves them out of
-  `sys.modules`, and SQLAlchemy resolves string `Mapped[...]` annotations
-  through that registry — which crashed page 4 at import with
-  `MappedAnnotationError: Could not interpret annotation Mapped[int]`.
-  `test_database.py::test_models_map_without_sys_modules_registration` keeps
-  that guarantee in place.
+  deliberately omits `from __future__ import annotations`, so mapping never has
+  to consult the module registry at all — the belt to the watcher's braces above.
+  `test_database.py::test_models_map_without_sys_modules_registration` keeps that
+  guarantee in place.
 
 ### AI Network Assistant (page 10)
 

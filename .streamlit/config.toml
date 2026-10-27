@@ -23,5 +23,20 @@ textColor = "#C7D2E6"
 borderColor = "#1C2540"
 linkColor = "#7DD3FC"
 
+# Streamlit's file watcher evicts watched application modules from
+# ``sys.modules`` at the start of a run (watcher/local_sources_watcher.py,
+# ``flush_pending_evictions``). Two libraries resolve a class's defining module
+# through ``sys.modules`` *while its class body is executing* - SQLAlchemy for
+# ``Mapped[...]`` annotations and CPython's ``dataclasses`` for the ``__module__``
+# / ``__qualname__`` strings - so a concurrent eviction crashed the deployed app
+# right after a rebuild with ``MappedAnnotationError`` and then ``AttributeError:
+# 'NoneType' object has no attribute '__dict__'``. Deployment never edits files,
+# so the watcher is off. ``server.fileWatcherType`` is not a scriptable option,
+# so neither an environment variable nor a CLI flag can override this: while
+# developing locally, change this value back to "auto" in your working copy to
+# restore auto-rerun-on-save (the committed value must stay "none").
+[server]
+fileWatcherType = "none"
+
 [browser]
 gatherUsageStats = false

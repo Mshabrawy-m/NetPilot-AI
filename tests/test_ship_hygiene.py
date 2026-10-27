@@ -112,11 +112,23 @@ def test_readme_points_at_the_current_doc_paths():
 
 def test_streamlit_config_is_theme_only_and_cloud_safe():
     """Community Cloud owns host/port/secrets, so the checked-in config must not
-    try to override any of that (and must obviously hold no credential)."""
+    try to override any of that (and must obviously hold no credential).
+
+    The single exception is ``server.fileWatcherType = "none"``. Streamlit's
+    watcher evicts watched application modules from ``sys.modules`` at the start
+    of a run, and both SQLAlchemy (``Mapped[...]``) and CPython's ``dataclasses``
+    resolve a class's defining module through ``sys.modules`` while its class
+    body executes. One eviction during a rebuild therefore took the whole app
+    down, twice. Nothing edits files in deployment, so the watcher stays off (the
+    option is not scriptable, so no env var or CLI flag can override it — local
+    working copies flip it back to "auto" by hand).
+    """
     cfg = tomllib.loads((ROOT / ".streamlit" / "config.toml").read_text(
         encoding="utf-8"))
-    assert set(cfg) <= {"theme", "browser", "client"}, sorted(cfg)
-    assert "server" not in cfg and "secrets" not in cfg
+    assert set(cfg) <= {"theme", "browser", "client", "server"}, sorted(cfg)
+    assert "secrets" not in cfg
+    # Only the watcher switch - never host, port, address or headless.
+    assert cfg.get("server") == {"fileWatcherType": "none"}, cfg.get("server")
     for line in (ROOT / ".streamlit" / "config.toml").read_text(
             encoding="utf-8").splitlines():
         assert not scan._GROQ.search(line)
