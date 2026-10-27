@@ -43,6 +43,17 @@ if settings.demo_mode:
         "toolchain - they are NOT lab measurements and are stored with "
         "source='demo'.", icon="⚠️")
 
+# Capability check first: a runtime without a ping binary cannot measure
+# anything, and saying so up front beats a misleading per-probe failure.
+ping_ready = connectivity.ping_supported()
+if not ping_ready:
+    st.warning(
+        "`ping` is not available in this runtime, so no probe can run here. "
+        "Streamlit Community Cloud and `python:*-slim` base images omit the "
+        "binary: add a `packages.txt` file containing `iputils-ping` at the "
+        "repository root (the Docker image already installs it) and reboot "
+        "the app.", icon="🚫")
+
 col_src, col_dst = st.columns(2)
 source = col_src.selectbox("Source", ["collector-host"] + inventory.node_names,
                            index=0)
@@ -60,34 +71,42 @@ if run_ping:
     else:
         probe_result = connectivity.run_ping(inventory, destination)
 
-    if probe_result.success:
-        st.success(
-            f"Ping {probe_result.destination}: OK - "
-            f"avg RTT {probe_result.avg_rtt_ms if probe_result.avg_rtt_ms is not None else 'n/a'} ms, "
-            f"loss {probe_result.loss_pct if probe_result.loss_pct is not None else 'n/a'} %"
-        )
+    if probe_result.unsupported:
+        # The probe never ran: report the environment limitation and store
+        # nothing, so history holds no fake measurement or fake failure.
+        st.warning(f"Ping {probe_result.destination}: NOT RUN - "
+                   f"{probe_result.error or 'probe unsupported here'}")
+        st.caption("No packet was sent and nothing was recorded. This is an "
+                   "environment limitation, not a failed connectivity test.")
     else:
-        st.error(f"Ping {probe_result.destination}: FAILED - "
-                 f"{probe_result.error or 'no reply (see loss below)'}")
-    st.dataframe(pd.DataFrame([{
-        "destination": probe_result.destination,
-        "sent": probe_result.packets_sent, "received": probe_result.packets_received,
-        "loss %": probe_result.loss_pct, "avg RTT ms": probe_result.avg_rtt_ms,
-        "success": probe_result.success,
-    }]), hide_index=True, width="stretch")
-    if probe_result.raw_output:
-        with st.expander("Raw output (truncated by policy)"):
-            st.code(probe_result.raw_output[:2000])
+        if probe_result.success:
+            st.success(
+                f"Ping {probe_result.destination}: OK - "
+                f"avg RTT {probe_result.avg_rtt_ms if probe_result.avg_rtt_ms is not None else 'n/a'} ms, "
+                f"loss {probe_result.loss_pct if probe_result.loss_pct is not None else 'n/a'} %"
+            )
+        else:
+            st.error(f"Ping {probe_result.destination}: FAILED - "
+                     f"{probe_result.error or 'no reply (see loss below)'}")
+        st.dataframe(pd.DataFrame([{
+            "destination": probe_result.destination,
+            "sent": probe_result.packets_sent, "received": probe_result.packets_received,
+            "loss %": probe_result.loss_pct, "avg RTT ms": probe_result.avg_rtt_ms,
+            "success": probe_result.success,
+        }]), hide_index=True, width="stretch")
+        if probe_result.raw_output:
+            with st.expander("Raw output (truncated by policy)"):
+                st.code(probe_result.raw_output[:2000])
 
-    def _store(s):
-        repository.add_connectivity_test(
-            s, source=source, destination=destination, test_type="ping",
-            success=probe_result.success,
-            detail=(probe_result.error or "ok")[:500],
-            avg_latency_ms=probe_result.avg_rtt_ms,
-            packet_loss_pct=probe_result.loss_pct,
-            data_source="demo" if settings.demo_mode else "live")
-    read(_store)
+        def _store(s):
+            repository.add_connectivity_test(
+                s, source=source, destination=destination, test_type="ping",
+                success=probe_result.success,
+                detail=(probe_result.error or "ok")[:500],
+                avg_latency_ms=probe_result.avg_rtt_ms,
+                packet_loss_pct=probe_result.loss_pct,
+                data_source="demo" if settings.demo_mode else "live")
+        read(_store)
 
 if run_tr:
     if settings.demo_mode:

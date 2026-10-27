@@ -121,3 +121,14 @@ def test_streamlit_config_is_theme_only_and_cloud_safe():
             encoding="utf-8").splitlines():
         assert not scan._GROQ.search(line)
         assert not scan._ASSIGNED.search(line)
+
+
+def test_both_deploy_targets_ship_the_ping_binary():
+    """The connectivity page executes the real ``ping`` binary. Neither a
+    ``python:slim`` image nor Streamlit Community Cloud includes it by
+    default, which turned the loopback self-test into a misleading failure.
+    """
+    packages = _rules("packages.txt")
+    assert "iputils-ping" in packages, packages
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "iputils-ping" in dockerfile

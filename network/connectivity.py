@@ -13,6 +13,8 @@ average RTT when the underlying tool reported them; otherwise None.
 """
 from __future__ import annotations
 
+import errno
+import os
 import platform
 import re
 import shutil
@@ -33,6 +35,10 @@ class PingResult:
     avg_rtt_ms: float | None = None
     error: str | None = None
     raw_output: str | None = None
+    #: True when the probe could not run at all because *this host* lacks a
+    #: usable ping binary / ICMP permission. That is an environment
+    #: limitation, not a measured failure, and the UI/storage treat it so.
+    unsupported: bool = False
 
 
 @dataclass
@@ -46,6 +52,45 @@ class TracerouteResult:
 
 
 _WINDOWS = platform.system() == "Windows"
+
+#: Absolute locations probed when ``PATH`` lookup fails (slim container images
+#: and managed app hosts sometimes run with a narrow PATH).
+_PING_FALLBACK_PATHS: tuple[str, ...] = (
+    (r"C:\Windows\System32\PING.EXE",) if _WINDOWS else
+    ("/bin/ping", "/usr/bin/ping", "/sbin/ping", "/usr/sbin/ping")
+)
+_TRACEROUTE_FALLBACK_PATHS: tuple[str, ...] = (
+    (r"C:\Windows\System32\tracert.exe",) if _WINDOWS else
+    ("/bin/traceroute", "/usr/bin/traceroute", "/sbin/traceroute",
+     "/usr/sbin/traceroute")
+)
+
+
+def _which_with_fallbacks(names: tuple[str, ...],
+                          fallbacks: tuple[str, ...]) -> str | None:
+    """Resolve a system binary: PATH first, then well-known absolute paths."""
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    for path in fallbacks:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _ping_binary() -> str | None:
+    return _which_with_fallbacks(("ping",), _PING_FALLBACK_PATHS)
+
+
+def ping_supported() -> bool:
+    """True when this host exposes a usable ``ping`` binary.
+
+    Managed app hosts and ``python:*-slim`` images ship without it; the
+    dashboard uses this to explain the limitation up front instead of
+    surfacing a misleading probe failure.
+    """
+    return _ping_binary() is not None
 
 
 def run_selftest_ping(count: int | None = None,
@@ -110,16 +155,20 @@ def run_ping(inventory: LabInventory, destination: str,
         return PingResult(destination=str(destination), success=False,
                           error=str(exc))
 
-    if shutil.which("ping") is None:
-        return PingResult(destination=target, success=False,
-                          error="ping binary not available on this host")
+    binary = _ping_binary()
+    if binary is None:
+        return PingResult(
+            destination=target, success=False, unsupported=True,
+            error="ping binary not available on this host (install the "
+                  "iputils-ping package - on Streamlit Community Cloud add "
+                  "it to packages.txt)")
 
     if _WINDOWS:
         # -w per-reply timeout (ms), -n count.
-        argv = ["ping", "-n", str(count), "-w", str(timeout * 1000), target]
+        argv = [binary, "-n", str(count), "-w", str(timeout * 1000), target]
         hard_timeout = timeout * count + 10
     else:
-        argv = ["ping", "-c", str(count), "-W", str(timeout), target]
+        argv = [binary, "-c", str(count), "-W", str(timeout), target]
         hard_timeout = timeout * count + 10
 
     try:
@@ -129,8 +178,14 @@ def run_ping(inventory: LabInventory, destination: str,
         return PingResult(destination=target, success=False,
                           error=f"ping timed out after {hard_timeout}s")
     except OSError as exc:
+        # A denied ICMP socket means the sandbox forbids ping rather than the
+        # probe failing; report it as an environment limitation.
+        denied = exc.errno in (errno.EACCES, errno.EPERM)
+        reason = ("ping cannot open an ICMP socket in this environment"
+                  if denied else f"cannot execute {binary}")
         return PingResult(destination=target, success=False,
-                          error=f"{type(exc).__name__}")
+                          unsupported=denied,
+                          error=f"{reason}: {exc.strerror or type(exc).__name__}")
 
     output = _truncate((proc.stdout or "") + (proc.stderr or ""))
     loss, sent, recv, avg = _parse_ping_output(output)
@@ -182,10 +237,9 @@ def traceroute_supported() -> bool:
 
 
 def _traceroute_binary() -> str | None:
-    for candidate in ("tracert" if _WINDOWS else "traceroute",):
-        if shutil.which(candidate):
-            return candidate
-    return None
+    return _which_with_fallbacks(
+        ("tracert",) if _WINDOWS else ("traceroute",),
+        _TRACEROUTE_FALLBACK_PATHS)
 
 
 def _parse_traceroute(output: str) -> list[dict]:

@@ -15,6 +15,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# python:slim images ship without the ping binary, which the connectivity
+# probes and the demo loopback self-test execute. Streamlit Cloud gets the
+# same package through the root packages.txt file.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends iputils-ping \
+ && rm -rf /var/lib/apt/lists/*
+
 # Dependencies first so the layer cache survives source edits.
 # psycopg2-binary is pinned here (not in requirements.txt) because the local
 # development machine stays on SQLite; only the image carries the driver.

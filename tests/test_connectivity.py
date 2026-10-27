@@ -2,6 +2,8 @@
 allowlist enforcement, and one real loopback smoke test of the toolchain."""
 from __future__ import annotations
 
+import errno
+import os
 import subprocess
 
 import pytest
@@ -165,14 +167,65 @@ def test_ping_timeout_is_reported_not_raised(monkeypatch):
 
 
 def test_ping_missing_binary_is_reported(monkeypatch):
+    # Simulate a host with no ping anywhere: PATH lookup *and* the absolute
+    # fallback list must both be empty.
     monkeypatch.setattr(connectivity.shutil, "which", lambda name: None)
+    monkeypatch.setattr(connectivity, "_PING_FALLBACK_PATHS", ())
     result = connectivity.run_ping(LAB, "R1")
     assert result.success is False
+    assert result.unsupported is True     # environment limitation, not a probe
     assert "not available" in result.error
+    assert "iputils-ping" in result.error  # actionable hint for the operator
+
+
+def test_ping_binary_resolves_beyond_path(monkeypatch, tmp_path):
+    """Slim images/managed hosts can run with a narrow PATH, so the well-known
+    absolute locations are checked before declaring ping unavailable."""
+    stub = tmp_path / ("ping.exe" if os.name == "nt" else "ping")
+    stub.write_text("", encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setattr(connectivity.shutil, "which", lambda name: None)
+    monkeypatch.setattr(connectivity, "_PING_FALLBACK_PATHS", (str(stub),))
+    assert connectivity._ping_binary() == str(stub)
+    assert connectivity.ping_supported() is True
+
+
+def test_ping_icmp_denied_is_an_environment_limitation(monkeypatch):
+    monkeypatch.setattr(connectivity, "_ping_binary", lambda: "/usr/bin/ping")
+
+    def fake_run(*a, **k):
+        raise PermissionError(errno.EACCES, "Operation not permitted")
+    monkeypatch.setattr(connectivity.subprocess, "run", fake_run)
+    result = connectivity.run_ping(LAB, "R1")
+    assert result.success is False
+    assert result.unsupported is True
+    assert "ICMP socket" in result.error
+
+
+def test_ping_other_oserror_is_a_real_failure(monkeypatch):
+    monkeypatch.setattr(connectivity, "_ping_binary", lambda: "/usr/bin/ping")
+
+    def fake_run(*a, **k):
+        raise OSError(errno.ENOEXEC, "Exec format error")
+    monkeypatch.setattr(connectivity.subprocess, "run", fake_run)
+    result = connectivity.run_ping(LAB, "R1")
+    assert result.success is False
+    assert result.unsupported is False
+    assert "Exec format error" in result.error
+
+
+def test_selftest_ping_without_binary_measures_nothing(monkeypatch):
+    monkeypatch.setattr(connectivity.shutil, "which", lambda name: None)
+    monkeypatch.setattr(connectivity, "_PING_FALLBACK_PATHS", ())
+    result = connectivity.run_selftest_ping(count=1, timeout_seconds=1)
+    assert result.unsupported is True
+    # No invented latency/loss when no packet was ever sent.
+    assert result.packets_sent is None and result.avg_rtt_ms is None
 
 
 def test_traceroute_missing_binary_reports_unsupported(monkeypatch):
     monkeypatch.setattr(connectivity.shutil, "which", lambda name: None)
+    monkeypatch.setattr(connectivity, "_TRACEROUTE_FALLBACK_PATHS", ())
     result = connectivity.run_traceroute(LAB, "R1")
     assert result.supported is False
     assert result.success is False
@@ -188,6 +241,10 @@ def test_selftest_ping_loopback_executes_real_ping():
     # hosts where ping is blocked the error path must still be clean.
     assert result.destination.startswith("127.0.0.1")
     assert result.success or result.error
+    if result.unsupported:
+        # Runtime without a ping binary (e.g. python:*-slim, Streamlit Cloud
+        # before packages.txt): nothing measured, nothing invented.
+        assert result.packets_sent is None and result.avg_rtt_ms is None
     if result.success:
         assert result.packets_sent == 2
         assert result.avg_rtt_ms is None or result.avg_rtt_ms >= 0

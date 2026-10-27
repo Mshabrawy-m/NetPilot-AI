@@ -96,6 +96,7 @@ netpilot-ai/
 ├── .streamlit/config.toml      # shared dark theme (no server/secret settings)
 ├── .env.example                # configuration template (no secrets)
 ├── requirements.txt            # also what Streamlit Community Cloud installs
+├── packages.txt                # apt packages for Cloud (iputils-ping)
 ├── .gitattributes              # line-ending + GitHub language-stat filters
 └── pytest.ini
 ```
@@ -330,6 +331,12 @@ Two consequences of the Cloud runtime are worth stating plainly:
   data), and `NETPILOT_CHANGE_LOOP_ENABLED` **and**
   `NETPILOT_LAB_EXECUTION_ENABLED` must both stay unset — `apply` therefore
   refuses by design, with no executor to inject.
+* **The `ping` binary comes from `packages.txt`.** The Cloud base image, like
+  `python:*-slim`, ships without `iputils-ping`, so the loopback self-test of
+  page 4 cannot execute there. The committed root `packages.txt` installs it on
+  Cloud (the `Dockerfile` does the same with `apt-get`); without it the page
+  reports the probe as **not run** — an environment limitation, not a failed
+  connectivity test — and records nothing.
 
 ### AI Network Assistant (page 10)
 
@@ -439,7 +446,10 @@ Coverage (mapping to spec §6):
 - demo fixtures separate from live data, always labelled (`test_demo_mode.py`)
 - **live toolchain smoke**: a real `ping` subprocess run against the host's
   own loopback adapter only (127.0.0.1 — no network traffic), proving
-  execution → parsing → storage (`test_connectivity.py::test_selftest_ping...`)
+  execution → parsing → storage (`test_connectivity.py::test_selftest_ping...`).
+  It needs the system `ping` binary: the `Dockerfile` installs `iputils-ping`, a
+  root `packages.txt` does the same on Streamlit Community Cloud, and a runtime
+  without it is reported as *not run* rather than as a failure
 
 Phase 2 additions (spec §11; all synthetic fixtures clearly labelled as
 protocol tests, not real-world performance evidence):
