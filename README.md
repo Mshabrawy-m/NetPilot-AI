@@ -5,8 +5,10 @@ network-data collection, a replaceable storage layer (SQLite by default,
 PostgreSQL optional), a Streamlit dashboard for inspecting topology,
 device/interface status, connectivity tests, and metric history — Phase 2
 analytics: data-quality reporting, derived throughput from cumulative
-counters, EDA (Data Analysis), explainable anomaly detection and
-chronological forecast evaluation — and Phase 3: an evidence-grounded,
+counters, EDA (Data Analysis), explainable anomaly detection (rolling MAD /
+z-score, EWMA, CUSUM, seasonal residual) and chronological forecast
+evaluation with holdout-calibrated uncertainty bands, scale-free accuracy
+metrics and a model comparison — and Phase 3: an evidence-grounded,
 Arabic/English **AI Network Assistant** (Groq + LangGraph multi-agent
 workflow) that investigates, diagnoses, plans and *proposes* configuration
 for **human review**, gated by an independent deterministic verifier.
@@ -37,7 +39,8 @@ netpilot-ai/
 │   ├── 8_Anomalies.py          # Phase 2 anomaly events + explanations + context
 │   ├── 9_Forecasting.py        # Phase 2 model comparison + forecasts + warnings
 │   ├── 10_AI_Network_Assistant.py  # Phase 3 chat, evidence, verdict & review
-│   └── 11_Ops_Center.py        # v2: alerting, graph risk, insights, change loop, access
+│   ├── 11_Ops_Center.py        # v2: alerting, graph risk, insights, change loop, access
+│   └── 12_AI_Lab.py            # Phase 5: experiment wizard (sources, tasks, exports)
 ├── ai/                         # Phase 3 multi-agent core (LangGraph workflow)
 │   ├── groq_client.py          # single Groq SDK choke point (timeouts, retries)
 │   ├── schemas.py              # typed Pydantic schemas for every model output
@@ -52,11 +55,18 @@ netpilot-ai/
 ├── analytics/                  # Phase 2 computation core (no UI, no SQL writes)
 │   ├── time_series.py          # frame loading, dedupe, resample, labelled gaps
 │   ├── data_quality.py         # quality report + readiness gates per series
+│   ├── lab_dataset.py          # Phase 5: one validated telemetry contract
+│   │                           #   (provenance, lineage, splits, train-only prep)
+│   ├── lab_simulator.py        # Phase 5: deterministic simulator + ground-truth labels
+│   ├── lab_sources.py          # Phase 5: CSV upload / local file / stored adapters
+│   ├── lab_classification.py   # Phase 5: label-gated fault classification
 │   ├── derived_metrics.py      # counter → rate/delta with reset & gap handling
 │   ├── eda.py                  # summaries, distributions, gated correlations
-│   ├── anomaly_detection.py    # rolling MAD + z-score baselines (+ optional IF)
-│   ├── forecasting.py          # naive, seasonal naive, damped Holt, ridge-lag
-│   └── evaluation.py           # chronological splits, MAE/RMSE/R², leakage check
+│   ├── anomaly_detection.py    # MAD / z-score / EWMA / CUSUM / seasonal residual (+ IF)
+│   ├── forecasting.py          # naive, seasonal naive, damped Holt & Holt-Winters,
+│   │                           # ridge-lag, holdout-calibrated bands
+│   └── evaluation.py           # chronological splits, MAE/RMSE/R² + MAPE/sMAPE/
+│                               #   MASE/skill, detection F1, leakage check
 ├── config.py                   # env-driven settings (UTC timestamps)
 ├── network/
 │   ├── containerlab_manager.py # containerlab/docker CLI wrapper (allowlisted argv)
@@ -76,8 +86,13 @@ netpilot-ai/
 │   ├── topology_service.py     # topology graph + documented status rules
 │   ├── collection_service.py   # background scheduler (overlap-safe)
 │   ├── demo_data.py            # clearly labelled synthetic fixtures (demo mode)
-│   ├── anomaly_service.py      # detect → group/dedupe → persist lifecycle
-│   ├── forecast_service.py     # split → compare → persist → backfill actuals
+│   ├── anomaly_service.py      # detect → group/dedupe → persist + batch scan,
+│   │                           #   event summary, threshold calibration
+│   ├── forecast_service.py     # split → compare → persist → ensemble, crossing
+│   │                           #   warnings, backfill actuals → realized coverage
+│   ├── lab_tasks.py            # Phase 5: the four experiment tasks (bounded, gated)
+│   ├── lab_experiment.py       # Phase 5: runner + history + CSV/MD/HTML exports
+│   ├── prometheus_source.py    # Phase 5: optional read-only live source (off by default)
 │   ├── ai_workflow_service.py  # Phase 3: drive a run + persist its audit trail
 │   └── app_state.py            # shared Streamlit page bootstrap
 ├── lab/
@@ -91,8 +106,13 @@ netpilot-ai/
 │   ├── NetPilot_Phase_2_Data_Analysis_Forecasting_EN.md
 │   ├── NetPilot_Phase_3_Multi_Agent_AI_Safe_Operations_EN.md
 │   ├── NetPilot_AI_Advanced_Roadmap.md   # v2 advanced-capabilities roadmap
+│   ├── NetPilot_Forecasting_Anomaly_Enhancement_v2_Report.md
+│   │                           # forecasting/anomaly v2 pass (metrics, HW,
+│   │                           #   detectors, bands, scan, calibration)
 │   ├── Phase2_Delivery_Report.md
-│   └── Phase3_Delivery_Report.md
+│   ├── Phase3_Delivery_Report.md
+│   ├── NetPilot_Phase_5_AI_Lab_Guide_EN.md   # Phase 5 AI Lab user/ops guide
+│   └── Phase5_AI_Lab_Delivery_Report.md      # Phase 5 evidence + acceptance mapping
 ├── .streamlit/config.toml      # theme + file watcher off (never host/port/secrets)
 ├── .env.example                # configuration template (no secrets)
 ├── requirements.txt            # also what Streamlit Community Cloud installs
@@ -276,7 +296,9 @@ NETPILOT_DEMO_MODE=true streamlit run app.py
 Demo mode uses a **separate database** (`data/netpilot_demo.db`), seeds
 deterministic synthetic history labelled `data_source='demo'`, and shows a
 persistent warning banner on every page. It exists only to exercise the UI
-without Docker — it is never presented as real network data.
+without Docker — it is never presented as real network data. The Phase 5
+**AI Lab** page works fully inside demo mode: no lab, no credentials, no
+network.
 
 ### Deploying to Streamlit Community Cloud (public demo, no lab)
 
@@ -393,9 +415,14 @@ the real provider integration once (network + key required, prints no secret):
 | `NETPILOT_MIN_POINTS_ANALYSIS` / `_DETECTION` / `_FORECAST` | `5` / `12` / `30` | readiness gates (insufficient data → status, not a chart) |
 | `NETPILOT_MAX_RATE_GAP_SECONDS` | `300` | beyond this a derived rate is flagged unreliable |
 | `NETPILOT_DETECTOR_WINDOW` | `20` | trailing samples for rolling anomaly baselines |
-| `NETPILOT_MAD_THRESHOLD` / `NETPILOT_ZSCORE_THRESHOLD` | `3.5` / `3.0` | detector sensitivity |
+| `NETPILOT_MAD_THRESHOLD` / `NETPILOT_ZSCORE_THRESHOLD` | `3.5` / `3.0` | rolling detector sensitivity |
+| `NETPILOT_EWMA_THRESHOLD` | `3.0` | EWMA sensitivity (robust scales of the strictly-past weighted history; min `0.5`) |
+| `NETPILOT_CUSUM_DRIFT` / `NETPILOT_CUSUM_THRESHOLD` | `0.5` / `4.0` | CUSUM drift allowance `k` and decision boundary `h` — smaller = more sensitive |
 | `NETPILOT_ANOMALY_GROUP_WINDOW_SECONDS` | `300` | consecutive anomaly points group into one event |
+| `NETPILOT_SCAN_MAX_SERIES` | `12` | hard cap on series evaluated per batch scan (the scan reports its own cap) |
 | `NETPILOT_FORECAST_HORIZON` | `10` | default forecast horizon (steps) |
+| `NETPILOT_SEASON_HOURS` | `24.0` | one seasonal cycle for the season-aware models/detector (clamped to ≥ `1.0` h) |
+| `NETPILOT_BAND_COVERAGE` | `0.95` | nominal coverage the holdout-calibrated forecast bands are tuned to (clamped `0.5`–`0.999`) |
 | `GROQ_API_KEY` | *(empty)* | Phase 3 — read **only** from env / git-ignored `.env`; never hard-coded, logged or stored |
 | `GROQ_MODEL` | `openai/gpt-oss-20b` | Phase 3 — model id; **must exist on your Groq account** (catalog changes over time) |
 | `GROQ_TIMEOUT` | `30` | Phase 3 — per-call timeout (seconds) |
@@ -414,6 +441,13 @@ the real provider integration once (network + key required, prints no secret):
 | `NETPILOT_LAB_EXECUTION_ENABLED` | `false` | Phase 4 — second gate for lab device I/O; only on the isolated lab host |
 | `NETPILOT_LAB_EXECUTION_TIMEOUT` | `30` | Phase 4 — per-device config operation timeout (seconds) |
 | `NETPILOT_DIGITAL_TWIN_MAX_AGE_SECONDS` | *(unset)* | D3/D4 — optional snapshot freshness TTL; unset keeps freshness explicitly unknown |
+| `NETPILOT_SEASONAL_THRESHOLD` | `3.5` | robust scales a point may sit from its own same-phase history before the seasonal-residual detector flags it |
+| `NETPILOT_AI_LAB_SIM_MAX_POINTS` / `_SIM_MAX_DEVICES` | `20000` / `12` | Phase 5 — simulator input bounds; an oversized request is **refused with the bound named**, never silently shrunk |
+| `NETPILOT_AI_LAB_ML_MAX_POINTS` | `150` | Phase 5 — per-series evaluation cap for detectors that refit per judged point (disclosed in the result) |
+| `NETPILOT_AI_LAB_UPLOAD_MAX_BYTES` | `20000000` | Phase 5 — max CSV text one browser upload may carry |
+| `NETPILOT_AI_LAB_LOCAL_DIR` | *(empty)* | Phase 5 — allowlisted directory for historical imports; empty **disables local file import entirely** |
+| `NETPILOT_AI_LAB_PROMETHEUS_URL` / `_TIMEOUT` | *(empty)* / `10` | Phase 5 — optional read-only live telemetry; empty keeps the source disabled and reported as not configured |
+| `NETPILOT_AI_LAB_HISTORY_LIMIT` | `50` | Phase 5 — experiment-history rows listed in the UI |
 
 **Timezone convention:** every timestamp is **UTC**. Values are stored as
 naive-UTC datetimes (documented in `database/models.py`) and labelled
@@ -442,9 +476,9 @@ combinations that actually have non-null stored values.
 ## 8. Automated tests
 
 ```bash
-pytest                 # 692 unit/integration tests (full closure-audit suite)
-python tests\ui_smoke_check.py   # headless run of app.py + all 11 pages,
-                                 # clicking the detection/forecast buttons
+pytest                 # 966 unit/integration tests (full suite, offline)
+python tests\ui_smoke_check.py   # headless run of app.py + all 12 pages,
+                                 # clicking the detection/forecast/lab buttons
 ```
 
 The Phase 3 tests use **mocked Groq responses** (an injected fake client), so
@@ -485,7 +519,7 @@ protocol tests, not real-world performance evidence):
   (`test_anomaly_detection.py`)
 - temporal protocol: chronological splits, leakage rejection, exact
   MAE/RMSE/R², detection scoring (`test_temporal_splits.py`)
-- forecasting: naive/seasonal/Holt/ridge mathematics, refusal on
+- forecasting: naive/seasonal/Holt/Holt-Winters/ridge mathematics, refusal on
   insufficient data, reproducibility (`test_forecasting.py`)
 - persistence: runs+predictions stored with full metadata, identical
   comparison timestamps, raw samples immutable, backfill semantics,
@@ -548,14 +582,78 @@ v2 additions (advanced capabilities roadmap, Slices 1–8; all offline):
   + degree sizing + a demo-only large synthetic fabric
   (`test_topology_views.py`)
 
-Last recorded result on this machine (Windows, no Docker; 2026-10-26 closure
-audit): **692 passed**. UI smoke check: all 12 scripts (app + 11 pages incl.
-the AI Assistant and Ops Center) render without exceptions + both Phase 2
-action buttons verified + demo banner verified. The optional **live** Groq
-integration check (`tools/phase3_live_check.py`) was **not** re-run during the
-closure audit; live-provider behaviour is therefore unverified here. The
-previously exposed credential is treated as compromised and must be rotated
-(see `docs/FINAL_PROJECT_CLOSURE_REPORT.md`).
+Forecasting & anomaly enhancement pass (115 tests, all offline synthetic
+fixtures — **protocol tests, not real-network accuracy evidence**):
+
+- new accuracy metrics: hand-checked MAPE / sMAPE / MASE / skill-vs-naive,
+  NULL-instead-of-fabricated refusals, and points skipped by a metric's own
+  guard never being counted as scored (`test_forecast_metrics_v2.py`)
+- new detectors on strictly-past data: EWMA, two-sided CUSUM (reset after a
+  flag and across gaps), seasonal residual (same-phase baseline, abstention
+  when the season does not fit) (`test_anomaly_detectors_v2.py`)
+- forecast service: metrics persisted per run, `skill` identity asserted only
+  for full-holdout models (a partial-coverage model's skill must not be
+  back-derived), Holt-Winters beating both season-blind baselines on the
+  measured fixture, holdout band geometry + coverage clamping, ranking vs the
+  in-memory blend, ensemble weights, crossing ETA refusal without a known
+  interval, realized coverage after backfill, `skipped`/`insufficient_data`
+  refusals (`test_forecast_service_v2.py`)
+- anomaly service: stored-series inventory, the bounded device-level-only
+  batch scan (interface rows must not contaminate it; the scan reports its own
+  cap), event open/resolve semantics — an event is resolved only by a real
+  normal observation, never by the run finishing — event aggregate honesty on
+  an empty store, and label-driven detector calibration
+  (`test_anomaly_service_v2.py`)
+- rolling-origin backtest routing for the season-aware kwargs
+  (`test_backtest.py`)
+
+Phase 5 AI Lab additions (153 tests, all offline deterministic fixtures — no
+internet, no paid service, no live device):
+
+- unified telemetry contract: timestamp parsing (ISO / epoch-unit / already
+  datetime), rejected-vs-retained row counts, non-numeric value → missing
+  (never 0), duplicate/stale detection, mixed-unit quarantine, mixed-source
+  refusal, source identity through the whole pipeline, stable content
+  fingerprint (`test_ai_lab_dataset.py`, 35)
+- simulator: same seed ⇒ same data, a different seed changes the traffic not
+  the structure, declared units never mixed, injected events really move the
+  metric inside their labelled interval, labels non-overlapping, cpu/memory
+  flagged simulated-only, every input bound enforced, and neither config nor
+  dataset ever claims to be a real measurement (`test_ai_lab_simulator.py`, 21)
+- source adapters: stored project data keeps demo/live separation and states it
+  has no ground truth, CSV preview/mapping/validation with malformed and
+  duplicate lines counted, uploads treated as inert data (binary and oversized
+  refused, guards advertised), local import disabled until the allowlisted
+  directory is configured, live Prometheus disabled-by-default + bounded +
+  failure-honest against a mocked transport (`test_ai_lab_sources.py`, 40)
+- tasks: identical holdout timestamps for every model, recomputable metrics,
+  zero/near-zero actuals handled by each metric's own guard, one broken model
+  cannot poison the comparison, labelled vs unlabelled anomaly runs (accuracy
+  only when truth exists), classification blocked without valid labels, thin
+  and single-class refusals report the needed counts, unlabelled rows dropped
+  and disclosed, statistics disclaim causation (`test_ai_lab_tasks.py`, 30)
+- runner / history / exports / safety: additive `lab_experiments` persistence,
+  `persist=False` writes nothing, unknown task or parameter rejected, seed
+  reproducibility end to end, series-selection bound disclosed, raw samples
+  never duplicated into the store, oversized point payloads dropped overtly,
+  corrupt stored JSON reported not guessed, CSV/Markdown/HTML carry the actual
+  computed numbers with provenance first, formula-injection neutralised, HTML
+  escaped, the whole lab runs with `subprocess` poisoned, never imports the
+  execution layer, and the change/lab gates stay off before and after every
+  task (`test_ai_lab_experiment.py`, 27)
+
+Last recorded result on this machine (Windows, no Docker; 2026-10-27 Phase 5
+AI Lab pass): **966 passed**, 0 failed, 0 errors, 0 skipped (165.2 s, 13
+pre-existing `datetime.utcnow()` DeprecationWarnings from
+`services/ai_workflow_service.py`). UI
+smoke check: all 13 scripts (app + 12 pages) render without exceptions, the
+detection/forecast actions run, and the AI Lab round-trips a simulated
+experiment end to end while the unconfigured live source stays honestly
+disabled — exit code **0**. The optional **live** Groq integration check
+(`tools/phase3_live_check.py`) was **not** re-run during this pass; live-provider
+behaviour is therefore unverified here. The previously exposed credential is
+treated as compromised and must be rotated (see
+`docs/FINAL_PROJECT_CLOSURE_REPORT.md`).
 
 > The Phase 4 lab executor and the Gate 3 / Gate D harnesses are **not** part
 > of the published tip: they exist in the working tree and are covered by the
@@ -605,6 +703,21 @@ With the dashboard running (demo or live mode):
 7. With the lab deployed: stop a node (`docker stop R3`) → next collection
    marks it `down`, opens an incident, links touching it go `down`; restart
    (`docker start R3`) → incident resolves on the next cycle.
+8. **Anomalies (page 8)** — choose a series and press *Run detection*: each
+   flagged point carries its baseline, threshold and explanation; a detector
+   that cannot form an opinion (unknown interval, season that does not fit the
+   sample) reports an explicit abstention note instead of a clean result, and
+   *Scan ready series* states its own cap instead of quietly doing less.
+9. **Forecasting (page 9)** — press *Run forecast comparison*: all models are
+   scored on identical held-out timestamps, MAPE/sMAPE/MASE/skill are shown
+   only where they are defensible (otherwise blank, never 0), the band is
+   labelled with how it was calibrated, and coverage stays *unknown* until
+   real actuals are backfilled — after that it becomes realized coverage.
+10. **AI Lab (page 12)** — build a simulated dataset (or load project history /
+    upload a CSV), inspect the provenance badge and per-task gates, pick a task,
+    press *Run experiment*. A source that cannot support the task is refused
+    with the threshold named; the run (success **or** refusal) appears in the
+    history table and the four exports describe only that computed run.
 
 ---
 
@@ -659,6 +772,17 @@ With the dashboard running (demo or live mode):
    was not exercised in the closure environment (no driver/server); SQLite is
    the verified default. Real-browser E2E, live-provider evaluation,
    Docker/Containerlab and real-device tests were not run.
+8. **Forecasting/anomaly quality is proven on synthetic fixtures only.** The
+   new metrics, Holt-Winters, holdout-calibrated bands, EWMA/CUSUM/seasonal
+   detectors and the batch scan are verified by offline tests whose series are
+   generated in the test file, so they demonstrate the *mathematics and the
+   refusals* — not accuracy on this lab's traffic. Seasonal models and the
+   seasonal-residual detector additionally need a real cycle in the data: with
+   the default 60-second collection interval `NETPILOT_SEASON_HOURS=24` a
+   season is 1440 samples, so short histories legitimately report
+   `skipped`/abstention rather than a forecast. Detector calibration scores
+   against caller-supplied labels and is explicitly **not** real-world
+   accuracy. Long-horizon accuracy on a live lab has not been measured.
 
 ## 12. Phase 2 — Data Analysis, Anomaly Detection & Forecasting
 
@@ -681,38 +805,77 @@ With the dashboard running (demo or live mode):
   profile, unit-compatibility-checked group comparison, correlations
   only on ≥12 time-aligned points; `insert_gap_breaks` keeps chart
   discontinuities honest.
-* `anomaly_detection.py` — two explainable baselines: **rolling MAD**
-  and **rolling z-score**, both on strictly-past shifted windows (no
-  self-masking, no future leakage); optional Isolation Forest; every
-  point carries baseline, thresholds and a plain-language explanation.
+* `anomaly_detection.py` — five explainable detectors, all on
+  strictly-past shifted data (no self-masking, no future leakage):
+  **rolling MAD** and **rolling z-score** baselines, **EWMA** (robust
+  scale of the exponentially weighted past), **two-sided CUSUM** (catches
+  a sustained small shift a 3σ window misses; resets after a flag and
+  across sampling gaps) and **seasonal residual** (compares each point
+  only with the same phase of earlier cycles, refusing when the season
+  does not fit the sample); optional seeded Isolation Forest. The three
+  new detectors are **opt-in** — the shipped default set is unchanged.
+  Every point carries baseline, thresholds and a plain-language
+  explanation; a detector with no opinion reports an abstention note,
+  never a clean result.
 * `forecasting.py` — **naive** (mandatory baseline), **seasonal naive**
-  (refuses without ≥2 full seasons), **damped Holt** (pure-NumPy,
-  deterministic grid — statsmodels is blocked by this machine's Windows
-  App Control), **ridge-lag** (scikit-learn, scaler fitted on train
-  rows only).
+  (refuses without ≥2 full seasons), **damped Holt** and **additive
+  damped Holt-Winters** (both pure-NumPy, deterministic grid —
+  statsmodels is blocked by this machine's Windows App Control; HW is
+  initialised causally from the first two seasons only), **ridge-lag**
+  (scikit-learn, scaler fitted on train rows only). Prediction bands are
+  **holdout-calibrated** (empirical, or `√h`-scaled empirical, error
+  quantiles from the validation split — not a Gaussian assumption), and
+  the nominal coverage is clamped when the holdout is too small to
+  support it.
 * `evaluation.py` — chronological train|val|test split (never shuffled),
-  `validate_split_order` leakage guard, MAE/RMSE/R².
+  `validate_split_order` leakage guard, MAE/RMSE/R² plus the scale-free
+  comparators MAPE / sMAPE / MASE / skill-vs-naive — each scoring only the
+  timestamps where an actual *and* a prediction both exist, and each returning
+  NULL (never a plausible 0) when the denominators are not defensible;
+  `score_detection` (precision/recall/F1) for labelled detectors.
 
 **Services & persistence:** `services/anomaly_service.py` groups
 consecutive anomaly points into one deduplicated event (occurrence/peak
 escalation), resolves events **only** via a real normal observation
-(missing data never resolves anything); `services/forecast_service.py`
-compares all models on identical held-out timestamps, persists runs +
-future predictions in dedicated tables, and backfills actuals once an
-observation exists. Raw `metric_samples` are never modified, and
-demo/live provenance is preserved end-to-end (`data_source` on every
-row, filter, run and event).
+(missing data never resolves anything), walks a stored-series inventory
+in `scan_ready_series` (device-level series only, bounded by
+`NETPILOT_SCAN_MAX_SERIES` and reporting its own cap), summarises events
+(`event_summary`: open/resolved, severity, detector, episode and
+resolution durations — honest NULLs on an empty store) and calibrates
+detector sensitivity against caller-supplied labels
+(`calibrate_detectors` / `calibrate_series`, scored only where labels
+exist and explicitly *not* real-world accuracy).
+`services/forecast_service.py` compares all models on identical held-out
+timestamps, persists runs (+ MAPE/sMAPE/MASE/skill/band metadata) and
+future predictions in dedicated tables, reports a ranking with the best
+reproducible run, builds an MAE-weighted **ensemble** in memory (never
+persisted as a run, so nothing un-reproducible is presented as a model),
+converts the forecast into a threshold-crossing warning (direction,
+certain/possible, deterministic ETA — refused when the sampling interval
+is unknown), backfills actuals once an observation exists and turns them
+into **realized** coverage/error (a forecast whose bands were never
+verified reports coverage NULL rather than 100 %). Raw `metric_samples`
+are never modified, and demo/live provenance is preserved end-to-end
+(`data_source` on every row, filter, run and event).
 
 **New UI:** page 7 Data Analysis, page 8 Anomalies, page 9 Forecasting.
-Heavy analyses (detection, forecast comparison) run **only** on explicit
-button press, never on every rerun.
+Page 8 adds detector selection (including the opt-in change-point
+detectors), sensitivity controls, the bounded batch scan with its cap
+reported, and the event aggregate. Page 9 adds the accuracy KPIs, the
+model ranking + best-model callout, the ensemble blend, band-mode choice
+with realized coverage and the threshold-crossing warnings. Heavy
+analyses (detection, forecast comparison) run **only** on explicit button
+press, never on every rerun.
 
 **Database migration:** purely additive — `anomaly_events`,
 `forecast_runs`, `forecast_predictions` are created automatically on
-next start (`init_db()` → CREATE TABLE IF NOT EXISTS); no destructive or
-altering migration touches Phase 1 tables. Applying this Phase to an
-existing Phase 1 database adds the three new tables and leaves all
-stored samples untouched.
+next start (`init_db()` → CREATE TABLE IF NOT EXISTS) and the new
+hold-out metrics (`mape`, `smape`, `mase`, `skill`, `band_meta_json` on
+`forecast_runs`) are added by `ALTER TABLE … ADD COLUMN` for only
+missing **nullable** columns; no destructive or altering migration
+touches Phase 1 tables. Applying this Phase to an existing Phase 1
+database adds the tables/columns and leaves all stored samples untouched
+(old runs keep NULL for the new metrics rather than a back-filled guess).
 
 ## 13. Phase 3 — Multi-Agent AI Assistant & Safe Network Operations
 
@@ -876,3 +1039,54 @@ python -m uvicorn api.app:app --host 127.0.0.1 --port 8000
 # Prometheus-format metrics
 curl -H "Accept: text/plain" http://127.0.0.1:8000/metrics
 ```
+
+---
+
+## 16. Phase 5 — Real & Simulated Data Analytics Lab (AI Lab)
+
+Page **🧪 AI Lab** (`pages/12_AI_Lab.py`) turns the existing computation core
+into an experiment platform: pick a source → inspect it → pick a task →
+configure → run → evaluate → export. Full guide:
+`docs/NetPilot_Phase_5_AI_Lab_Guide_EN.md`; delivery evidence:
+`docs/Phase5_AI_Lab_Delivery_Report.md`.
+
+**Sources.** Built-in deterministic **simulator** (multi-device telemetry with
+injected congestion / latency-spike / packet-loss / CPU-overload /
+interface-outage events and ground-truth labels), **project history** from this
+app's own database, browser **CSV/TSV upload** with preview + editable column
+mapping and explicit rejected-vs-retained row counts, an **allowlisted local
+file** directory (disabled unless `NETPILOT_AI_LAB_LOCAL_DIR` is set), and an
+optional **read-only Prometheus** endpoint (disabled unless
+`NETPILOT_AI_LAB_PROMETHEUS_URL` is set). Every source is converted into one
+validated `LabDataset`, and its identity — Simulated / Historical / Uploaded /
+Live — is carried into the result, the stored history row and the exports.
+Synthetic data is labelled *not real-network traffic* wherever it appears; an
+upload's provenance is recorded as an unverified operator claim.
+
+**Tasks.** Anomaly detector comparison (6 detectors, labelled scoring when
+truth exists, agreement diagnostics, threshold-sensitivity curve, opt-in
+multivariate pass); forecast comparison (5 models + a marked ensemble blend,
+all scored on identical chronological holdout timestamps, MAE/RMSE/R²/MAPE/
+sMAPE/MASE/skill-vs-naive, holdout-calibrated bands); fault classification
+(**hard-gated on valid labels** — never faked — stratified or chronological
+split, confusion matrix, balanced accuracy / macro-F1 / per-class support plus
+a majority baseline); statistical analysis (distribution, trend, autocorrelation,
+correlation + cross-correlation peak, Mann-Whitney labelled-group test) with the
+standing note that correlation does not establish causation.
+
+**Safety posture.** Anything the data cannot support is **refused** with a
+status and a concrete reason rather than a fabricated number. Runs persist
+additively to a new `lab_experiments` table (created on next start; no existing
+table altered) and never duplicate raw samples. Exports neutralise spreadsheet
+formula injection and HTML-escape names. The lab imports nothing from the
+execution layer, cannot reach a device, and does **not** enable
+`NETPILOT_CHANGE_LOOP_ENABLED` or `NETPILOT_LAB_EXECUTION_ENABLED` — those
+gates are asserted off before and after every task in the tests.
+
+**No new dependencies**: pandas, scikit-learn, scipy, plotly and httpx were
+already required by `requirements.txt`.
+
+**Unverified integration**: the live Prometheus path is covered only against a
+mocked HTTP transport — it has never been exercised against a real Prometheus
+server, so it is documented as a boundary, not as working live operation.
+

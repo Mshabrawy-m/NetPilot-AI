@@ -854,6 +854,122 @@ def page2_flash_survives_rerun() -> bool:
     return True
 
 
+def _radio(at, label: str):
+    return next((r for r in at.radio if (r.label or "") == label), None)
+
+
+def page12_lab_roundtrip() -> bool:
+    """AI Lab: a simulated dataset has to produce a REAL anomaly experiment.
+
+    Guards the three things a placeholder UI would fake: a run that reports an
+    ``ok`` status only after computing, supervised metrics that exist because
+    the simulator supplied ground truth, and exports/history that reference
+    that stored run.
+    """
+    page = "pages/12_AI_Lab.py"
+    at = AppTest.from_file(str(ROOT / page), default_timeout=300)
+    at.run()
+    if at.exception:
+        print(f"[FAIL] {page}: initial render")
+        for exc in at.exception:
+            print("        ", str(exc)[:400])
+        return False
+    build = next((b for b in at.button
+                  if "Build simulated dataset" in (b.label or "")), None)
+    if build is None:
+        print(f"[FAIL] {page}: 'Build simulated dataset' not rendered")
+        return False
+    build.click()
+    at.run()
+    if at.exception:
+        print(f"[FAIL] {page}: after building the simulated dataset")
+        for exc in at.exception:
+            print("        ", str(exc)[:400])
+        return False
+    task_radio = _radio(at, "Experiment task")
+    if task_radio is None:
+        print(f"[FAIL] {page}: task picker missing after loading a dataset")
+        return False
+    anomaly = next((o for o in task_radio.options
+                    if str(o).startswith("anomaly")), None)
+    if anomaly is None:
+        print(f"[FAIL] {page}: anomaly task not offered")
+        return False
+    task_radio.set_value(anomaly)
+    at.run()
+    run = next((b for b in at.button
+                if "Run experiment" in (b.label or "")), None)
+    if run is None:
+        print(f"[FAIL] {page}: 'Run experiment' not rendered")
+        return False
+    run.click()
+    at.run()
+    if at.exception:
+        print(f"[FAIL] {page}: after running the anomaly experiment")
+        for exc in at.exception:
+            print("        ", str(exc)[:400])
+        return False
+    if not any("finished with status `ok`" in s.value for s in at.success):
+        print(f"[FAIL] {page}: no completed-run confirmation after running")
+        return False
+    if not any("supervised" in (m.label or "").lower()
+               and str(m.value).strip().lower() == "yes" for m in at.metric):
+        print(f"[FAIL] {page}: ground-truth evaluation was not reported even "
+              "though the simulator provides labels")
+        return False
+    downloads = [d.label or "" for d in at.get("download_button")]
+    missing = [name for name in ("Table CSV", "Metrics CSV",
+                                 "Markdown report", "HTML report")
+               if name not in downloads]
+    if missing:
+        print(f"[FAIL] {page}: exports missing: {missing}")
+        return False
+    history = next((s for s in at.selectbox
+                    if "Open a stored experiment" in (s.label or "")), None)
+    if history is None or not list(history.options):
+        print(f"[FAIL] {page}: the stored run is not inspectable in history")
+        return False
+    print(f"[ OK ] {page}: simulated dataset ran a real anomaly experiment, "
+          f"reported supervised metrics and exported "
+          f"({len(history.options)} stored run(s))")
+    return True
+
+
+def page12_lab_live_source_disabled() -> bool:
+    """AI Lab: the optional live telemetry source must stay visibly disabled
+    (and say why) when no endpoint is configured - never a fake success."""
+    page = "pages/12_AI_Lab.py"
+    at = AppTest.from_file(str(ROOT / page), default_timeout=300)
+    at.run()
+    source_radio = _radio(at, "Source type")
+    if source_radio is None:
+        print(f"[FAIL] {page}: source picker not rendered")
+        return False
+    live = next((o for o in source_radio.options if "Prometheus" in str(o)),
+                None)
+    if live is None:
+        print(f"[FAIL] {page}: live source option not offered")
+        return False
+    source_radio.set_value(live)
+    at.run()
+    if at.exception:
+        print(f"[FAIL] {page}: selecting the live source raised")
+        for exc in at.exception:
+            print("        ", str(exc)[:400])
+        return False
+    text = " ".join([w.value for w in at.warning] + [i.value for i in at.info])
+    if "disabled" not in text or "configur" not in text.lower():
+        print(f"[FAIL] {page}: unconfigured live source did not report the "
+              "disabled boundary")
+        return False
+    if any("Loaded" in s.value or "fetched" in s.value for s in at.success):
+        print(f"[FAIL] {page}: unconfigured live source claimed success")
+        return False
+    print(f"[ OK ] {page}: live source stays disabled and honest without an "
+          "endpoint")
+    return True
+
+
 page8_ok = press("pages/8_Anomalies.py", "Run detection",
                  select_metric="ping.loss_pct")
 page10_ok = page10_same_run_in_two_tabs()
@@ -868,6 +984,8 @@ page11_expiry_ok = page11_expiry_feedback()
 page11_cancel_ok = page11_cancel_and_audit_reload()
 page11_json_ok = page11_invalid_stored_json_is_safe()
 page2_flash_ok = page2_flash_survives_rerun()
+page12_lab_ok = page12_lab_roundtrip()
+page12_live_ok = page12_lab_live_source_disabled()
 
 actions_ok = (
     page8_ok
@@ -883,6 +1001,8 @@ actions_ok = (
     and page11_cancel_ok
     and page11_json_ok
     and page2_flash_ok
+    and page12_lab_ok
+    and page12_live_ok
     and press("pages/9_Forecasting.py", "Run forecast comparison")
     # Read-only insight action: it must never raise or write.
     and press("pages/11_Ops_Center.py", "Run multivariate check")

@@ -221,6 +221,53 @@ def get_available_metrics(
     return [tuple(row) for row in session.execute(stmt).all()]
 
 
+def get_series_inventory(
+    session: Session, *, data_source: str | None = None,
+    device_name: str | None = None, min_samples: int = 1,
+) -> list[dict]:
+    """Every stored series of one provenance, with how much data it holds.
+
+    A "series" is a distinct (device, metric, interface) triple; ``unit`` and
+    ``data_source`` travel with it so a caller can group without a second query.
+    ``n_samples`` counts NON-NULL values only, because a NULL is a metric that
+    was not available - it is not an observation and must not make a thin series
+    look analysis-ready. Ordered richest-first so a bounded batch pass spends its
+    cap on the series that can actually answer.
+    """
+    stmt = (
+        select(
+            MetricSample.device_name,
+            MetricSample.metric,
+            MetricSample.interface_name,
+            MetricSample.unit,
+            MetricSample.data_source,
+            func.count(MetricSample.id).label("n_samples"),
+        )
+        .where(MetricSample.value.is_not(None))
+        .group_by(MetricSample.device_name, MetricSample.metric,
+                  MetricSample.interface_name, MetricSample.unit,
+                  MetricSample.data_source)
+        .having(func.count(MetricSample.id) >= max(1, int(min_samples)))
+        .order_by(func.count(MetricSample.id).desc(),
+                  MetricSample.device_name, MetricSample.metric)
+    )
+    if data_source:
+        stmt = stmt.where(MetricSample.data_source == data_source)
+    if device_name:
+        stmt = stmt.where(MetricSample.device_name == device_name)
+    return [
+        {
+            "device_name": row.device_name,
+            "metric": row.metric,
+            "interface_name": row.interface_name,
+            "unit": row.unit,
+            "data_source": row.data_source,
+            "n_samples": int(row.n_samples),
+        }
+        for row in session.execute(stmt).all()
+    ]
+
+
 def latest_metric_values(
     session: Session, device_name: str,
 ) -> Sequence[MetricSample]:
@@ -1040,3 +1087,57 @@ def list_dt_snapshot_bindings(
         stmt = stmt.where(
             DigitalTwinSnapshotBinding.request_uuid == request_uuid)
     return list(session.scalars(stmt.limit(limit)).all())
+
+
+# ==========================================================================
+# Phase 5 - AI Lab experiment history (additive; nothing above is altered).
+#
+# A lab experiment records its protocol, metrics and warnings. It never
+# duplicates raw samples, and no lab frame is written into metric_samples or
+# anomaly_events, so stored experiment rows and stored measurements stay
+# separate concerns.
+# ==========================================================================
+from database.models import LabExperiment  # noqa: E402
+
+
+def add_lab_experiment(session: Session, **fields) -> LabExperiment:
+    """Insert one experiment row and flush it (caller commits).
+
+    Field names are passed through unchanged so the service owns validation;
+    an unknown key raises ``TypeError`` instead of silently dropping metadata.
+    """
+    row = LabExperiment(**fields)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def get_lab_experiments(
+    session: Session, *, task: str | None = None,
+    source_type: str | None = None, status: str | None = None,
+    dataset_fingerprint: str | None = None, limit: int = 50,
+) -> list[LabExperiment]:
+    """Most recent experiments first, with a bounded result set."""
+    stmt = select(LabExperiment).order_by(
+        LabExperiment.created_at.desc(), LabExperiment.id.desc())
+    if task:
+        stmt = stmt.where(LabExperiment.task == task)
+    if source_type:
+        stmt = stmt.where(LabExperiment.source_type == source_type)
+    if status:
+        stmt = stmt.where(LabExperiment.status == status)
+    if dataset_fingerprint:
+        stmt = stmt.where(
+            LabExperiment.dataset_fingerprint == dataset_fingerprint)
+    return list(session.scalars(stmt.limit(max(1, int(limit)))).all())
+
+
+def get_lab_experiment(session: Session,
+                       experiment_uuid: str) -> LabExperiment | None:
+    return session.scalar(
+        select(LabExperiment)
+        .where(LabExperiment.experiment_uuid == experiment_uuid))
+
+
+def count_lab_experiments(session: Session) -> int:
+    return int(session.scalar(select(func.count(LabExperiment.id))) or 0)

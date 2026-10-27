@@ -15,7 +15,7 @@ import math
 
 import pandas as pd
 
-from analytics.forecasting import FORECAST_MODELS
+from analytics.forecasting import FORECAST_MODELS, MODEL_KWARGS
 
 DEFAULT_MODELS = ("naive", "holt_damped", "seasonal_naive")
 
@@ -28,10 +28,19 @@ def _mape(actuals, preds, eps: float = 1e-9):
     return (sum(terms) / len(terms) * 100.0) if terms else None
 
 
-def _model_kwargs(name: str, interval_seconds):
-    if name == "seasonal_naive":
-        return {"interval_seconds": interval_seconds}
-    return {}
+def _model_kwargs(name: str, interval_seconds,
+                  season_hours: float = 24.0) -> dict:
+    """Only the extra arguments the registry entry declares are passed on.
+
+    ``interval_seconds`` is forwarded even when it is None: a seasonal model
+    must hear "unknown interval" and refuse with its own reason, instead of
+    failing on a missing argument. ``val``/``max_lags`` are not part of a
+    rolling-origin replay, so models declaring them simply do not receive them.
+    """
+    supplied = {"interval_seconds": interval_seconds,
+                "season_hours": season_hours}
+    return {key: supplied[key] for key in MODEL_KWARGS.get(name, ())
+            if key in supplied}
 
 
 def rolling_origin_backtest(
@@ -42,6 +51,7 @@ def rolling_origin_backtest(
     step: int = 1,
     max_origins: int = 12,
     interval_seconds: float | None = None,
+    season_hours: float = 24.0,
 ) -> dict:
     """Replay ``models`` across rolling origins of a chronological ``series``.
 
@@ -85,7 +95,8 @@ def rolling_origin_backtest(
                 continue
             try:
                 res = fn(train, horizon, future_timestamps=None,
-                         test=test, **_model_kwargs(name, interval_seconds))
+                         test=test, **_model_kwargs(name, interval_seconds,
+                                                    season_hours))
             except Exception as exc:  # a model error is reported, never hidden
                 skipped[name] = f"{type(exc).__name__}: {exc}"
                 continue

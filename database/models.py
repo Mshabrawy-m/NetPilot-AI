@@ -296,7 +296,19 @@ class ForecastRun(Base):
     mae: Mapped[float | None] = mapped_column(Float, nullable=True)
     rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
     r2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Scale-free hold-out metrics added by the advanced forecasting pass. They
+    #: are NULL whenever the metric is not defensible for the data (MAPE with a
+    #: zero actual, MASE on a flat training history), never silently 0.
+    mape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    smape: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mase: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: 1 - MAE / naive-MAE on the same holdout (NULL if not computable).
+    skill: Mapped[float | None] = mapped_column(Float, nullable=True)
     n_eval: Mapped[int] = mapped_column(Integer, default=0)
+    #: How the published uncertainty bands were produced (empirical half-width
+    #: measured on the model's own holdout errors, or the documented normal
+    #: approximation) plus the coverage actually achieved on that holdout.
+    band_meta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     status: Mapped[str] = mapped_column(String(24), default="ok")
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -706,3 +718,92 @@ class DigitalTwinSnapshotBinding(Base):
     #: Record insertion time (audit only; never used for TTL).
     registered_at: Mapped[dt.datetime] = mapped_column(
         DateTime, default=db_utcnow)
+
+
+# ==========================================================================
+# Phase 5 - AI Lab experiment history (additive, single table).
+#
+# One row per experiment: the source identity, the evaluation protocol, the
+# numbers and the caveats. Raw samples are deliberately NOT duplicated here -
+# lab frames are analysis input only and never enter ``metric_samples`` or
+# ``anomaly_events``. Chart points are stored only when they fit the bounded
+# budget enforced by ``services.lab_experiment``, and the row says which way
+# that went, so a history view can never imply it still has data it dropped.
+# Created by the existing ``init_db()`` (CREATE IF NOT EXISTS); no existing
+# table is altered.
+# ==========================================================================
+#: Version of the persisted experiment record. Readers must fail closed on a
+#: version they do not understand rather than guess at the payload shape.
+LAB_EXPERIMENT_SCHEMA_VERSION = "lab-1"
+LAB_TASKS = ("anomaly", "forecast", "classification", "statistics")
+LAB_SOURCE_TYPES = ("simulated", "historical", "uploaded", "live")
+LAB_STATUSES = ("ok", "refused", "insufficient_data", "no_labels", "error")
+
+
+class LabExperiment(Base):
+    """One AI Lab experiment run and everything needed to judge it."""
+
+    __tablename__ = "lab_experiments"
+    __table_args__ = (
+        UniqueConstraint("experiment_uuid", name="uq_lab_experiment_uuid"),
+        Index("ix_lab_task_created", "task", "created_at"),
+        Index("ix_lab_source_created", "source_type", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    #: Public identifier referenced by the UI, exports and logs.
+    experiment_uuid: Mapped[str] = mapped_column(String(36), index=True)
+    schema_version: Mapped[str] = mapped_column(
+        String(16), default=LAB_EXPERIMENT_SCHEMA_VERSION)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=db_utcnow, index=True)
+
+    # ---- what was run, and how it ended ---------------------------------
+    task: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32))
+    #: Refusals are stored results: the reason stays readable here.
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ---- source identity and provenance ---------------------------------
+    #: simulated | historical | uploaded | live (analytics.lab_dataset).
+    source_type: Mapped[str] = mapped_column(String(16), index=True)
+    source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: 'live' or 'demo' exactly as elsewhere in the schema: a demo-simulated
+    #: experiment is never recorded as live evidence.
+    data_source: Mapped[str] = mapped_column(String(16), default="live")
+    #: True when the numbers come from synthetic or demo data.
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Content hash of the validated dataset (short, secret-free).
+    dataset_fingerprint: Mapped[str | None] = mapped_column(String(64),
+                                                            nullable=True)
+    #: none | binary | multiclass - drives which scores were defensible.
+    label_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    # ---- shape of the data ----------------------------------------------
+    range_start: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    range_end: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    n_rows: Mapped[int] = mapped_column(Integer, default=0)
+    n_series: Mapped[int] = mapped_column(Integer, default=0)
+    n_values: Mapped[int] = mapped_column(Integer, default=0)
+    #: The features the model actually received, not the ones offered.
+    features_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # ---- protocol -------------------------------------------------------
+    split_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preprocessing_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # ---- results --------------------------------------------------------
+    metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    table_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warnings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Bounded chart payload; NULL when it exceeded the stored budget.
+    points_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Says explicitly whether the chart data above is the real payload.
+    points_stored: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    runtime_ms: Mapped[int] = mapped_column(Integer, default=0)
+    #: Verified principal only; NULL in open mode (no identity is invented).
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -105,6 +105,80 @@ def mae(actual, predicted) -> float | None:
     return float(sum(abs(x - y) for x, y in zip(a, p)) / len(a))
 
 
+def mape(actual, predicted) -> float | None:
+    """Mean absolute **percentage** error in percent, on a defensible subset.
+
+    Actuals at (or very near) zero make the ratio explode, so those points are
+    skipped rather than clipped. Returns None when nothing survives the guard -
+    an unavailable metric is never reported as 0% error. A metric with an
+    unbounded range (e.g. byte counters) can still be misleading; ``smape`` and
+    ``mase`` are offered alongside it for exactly that reason.
+    """
+    a, p = _pairs(actual, predicted)
+    if a is None:
+        return None
+    terms = [abs(x - y) / abs(x) for x, y in zip(a, p) if abs(x) > 1e-9]
+    if not terms:
+        return None
+    return sum(terms) / len(terms) * 100.0
+
+
+def smape(actual, predicted) -> float | None:
+    """Symmetric MAPE (0-200%), bounded so a near-zero *prediction* cannot
+    inflate it the way MAPE does. Points with an exactly-zero denominator
+    (actual and prediction both 0) are skipped; None when nothing is scoreable.
+    """
+    a, p = _pairs(actual, predicted)
+    if a is None:
+        return None
+    terms = []
+    for x, y in zip(a, p):
+        denom = abs(x) + abs(y)
+        if denom > 1e-12:
+            terms.append(2.0 * abs(x - y) / denom)
+    if not terms:
+        return None
+    return sum(terms) / len(terms) * 100.0
+
+
+def mase(actual, predicted, train) -> float | None:
+    """Mean absolute scaled error (the forecast-competition standard).
+
+    Scale = mean absolute **one-step difference of the training series**, i.e.
+    what the naive model would have achieved in-sample. <1 beats the naive
+    baseline on that history, >1 is worse than naive. Scale-free and unit-free,
+    so it is comparable across metrics with very different magnitudes. None when
+    the training history carries no variability (a flat series gives no
+    defensible scale) or when there is nothing to score.
+    """
+    a, p = _pairs(actual, predicted)
+    if a is None:
+        return None
+    t = pd.to_numeric(pd.Series(train), errors="coerce").dropna()
+    if len(t) < 2:
+        return None
+    scale = float(t.diff().abs().dropna().mean())
+    if scale <= 1e-12:
+        return None            # flat training history: no honest scale exists
+    numerator = sum(abs(x - y) for x, y in zip(a, p)) / len(a)
+    return numerator / scale
+
+
+def skill_vs_naive(actual, predicted, naive_predicted) -> float | None:
+    """1 - MAE(model)/MAE(naive) on the *same* timestamps.
+
+    Positive means the model beats the mandatory naive baseline on the holdout,
+    0 means identical, negative means worse. None when the naive reference is
+    missing or has zero error (a perfect naive baseline leaves no room to score
+    skill, and dividing by it would be meaningless).
+    """
+    base = mae(actual, naive_predicted) if naive_predicted is not None else None
+    model = mae(actual, predicted)
+    if base is None or model is None or abs(base) <= 1e-12:
+        return None
+    return 1.0 - model / base
+
+
 def rmse(actual, predicted) -> float | None:
     a, p = _pairs(actual, predicted)
     if a is None or len(a) == 0:

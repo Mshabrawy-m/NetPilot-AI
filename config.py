@@ -159,6 +159,49 @@ class Settings:
     #: unknown unless the caller supplies both a capture timestamp and a max
     #: age. It never enables approval, execution, or the change loop.
     digital_twin_snapshot_max_age_seconds: int | None = None
+    # ---- Phase 2 v2: richer forecast/detector tuning (all optional) --------
+    #: Nominal coverage of the empirical forecast bands the service cuts from
+    #: holdout errors. It is a *target*, always reported next to the coverage
+    #: that was actually measured, never as a guarantee.
+    band_nominal_coverage: float = 0.95
+    #: Hours that define one seasonal cycle for the seasonal-aware model and
+    #: the seasonal-residual detector (24 = a daily rhythm).
+    season_hours: float = 24.0
+    #: EWMA detector sensitivity: flagged when the deviation exceeds this many
+    #: robust scales of the exponentially weighted past.
+    ewma_threshold: float = 3.0
+    #: CUSUM drift allowance and decision boundary, in standard deviations of
+    #: the strictly-past window. Smaller ``k`` / smaller ``h`` = more sensitive.
+    cusum_drift_k: float = 0.5
+    cusum_threshold_h: float = 4.0
+    #: Seasonal-residual detector sensitivity: flagged when a value departs from
+    #: the fitted seasonal rhythm by more than this many robust residual scales.
+    seasonal_threshold: float = 3.5
+    #: Hard cap on how many series one batch scan evaluates (bounded work, the
+    #: UI never loops over an unbounded inventory).
+    scan_max_series: int = 12
+    # ---- Phase 5: AI Lab (data & experimentation) bounds ------------------
+    #: Simulator input bounds. The generator refuses a request whose
+    #: duration/interval/device count would exceed either cap, instead of
+    #: silently producing a smaller (and misleadingly labelled) dataset.
+    ai_lab_sim_max_points: int = 20000
+    ai_lab_sim_max_devices: int = 12
+    #: Per-series evaluation cap for detectors that refit for every judged
+    #: point (Isolation Forest). The lab scores only the most recent N samples
+    #: of a longer series and says so in the result - a bounded, disclosed
+    #: evaluation instead of an unbounded stall or a silent truncation.
+    ai_lab_ml_max_points: int = 150
+    #: Upload guard: how many bytes of CSV text one browser upload may carry.
+    ai_lab_upload_max_bytes: int = 20_000_000
+    #: Allowlisted directory for documented historical imports. Empty (the
+    #: default) disables local file import entirely - no arbitrary path read.
+    ai_lab_local_dir: str = ""
+    #: Read-only Prometheus endpoint. Empty (the default) keeps the live
+    #: telemetry source disabled and reported as "not configured".
+    ai_lab_prometheus_url: str = ""
+    ai_lab_prometheus_timeout_seconds: int = 10
+    #: Cap on experiment rows listed from the history table in the UI.
+    ai_lab_history_limit: int = 50
     data_source: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -230,4 +273,25 @@ def get_settings() -> Settings:
             5, _env_int("NETPILOT_LAB_EXECUTION_TIMEOUT", 30)),
         digital_twin_snapshot_max_age_seconds=_env_optional_int(
             "NETPILOT_DIGITAL_TWIN_MAX_AGE_SECONDS"),
+        # ---- Phase 2 v2: forecast bands, seasonal & change-point tuning ------
+        band_nominal_coverage=min(0.999, max(
+            0.5, _env_float("NETPILOT_BAND_COVERAGE", 0.95))),
+        season_hours=max(1.0, _env_float("NETPILOT_SEASON_HOURS", 24.0)),
+        ewma_threshold=max(0.5, _env_float("NETPILOT_EWMA_THRESHOLD", 3.0)),
+        cusum_drift_k=max(0.05, _env_float("NETPILOT_CUSUM_DRIFT", 0.5)),
+        cusum_threshold_h=max(1.0, _env_float("NETPILOT_CUSUM_THRESHOLD", 4.0)),
+        seasonal_threshold=max(
+            0.5, _env_float("NETPILOT_SEASONAL_THRESHOLD", 3.5)),
+        scan_max_series=max(1, _env_int("NETPILOT_SCAN_MAX_SERIES", 12)),
+        # ---- Phase 5: AI Lab bounds (analysis-only, no lab execution) ------
+        ai_lab_sim_max_points=max(50, _env_int("NETPILOT_AI_LAB_SIM_MAX_POINTS", 20000)),
+        ai_lab_sim_max_devices=max(1, _env_int("NETPILOT_AI_LAB_SIM_MAX_DEVICES", 12)),
+        ai_lab_ml_max_points=max(20, _env_int("NETPILOT_AI_LAB_ML_MAX_POINTS", 150)),
+        ai_lab_upload_max_bytes=max(
+            1024, _env_int("NETPILOT_AI_LAB_UPLOAD_MAX_BYTES", 20_000_000)),
+        ai_lab_local_dir=os.getenv("NETPILOT_AI_LAB_LOCAL_DIR", "").strip(),
+        ai_lab_prometheus_url=os.getenv("NETPILOT_AI_LAB_PROMETHEUS_URL", "").strip(),
+        ai_lab_prometheus_timeout_seconds=max(
+            1, _env_int("NETPILOT_AI_LAB_PROMETHEUS_TIMEOUT", 10)),
+        ai_lab_history_limit=max(1, _env_int("NETPILOT_AI_LAB_HISTORY_LIMIT", 50)),
     )

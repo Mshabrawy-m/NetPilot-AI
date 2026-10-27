@@ -1,7 +1,7 @@
 """NetPilot AI - entry point (Streamlit).
 
 Run with:  streamlit run app.py
-The ten functional pages live in ``pages/`` (Streamlit multipage app). This
+The functional pages live in ``pages/`` (Streamlit multipage app). This
 landing page presents a branded overview and steers the user into the app.
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _section(label: str) -> None:
     st.markdown(f"<div class='np-sec'>{label}</div>", unsafe_allow_html=True)
 
 
-c1, c2, c3 = st.columns(3, gap="medium")
+c1, c2, c3, c4 = st.columns(4, gap="medium")
 with c1:
     _section("🧭 Foundation")
     st.page_link("pages/1_Overview.py", label="Overview", icon="📊")
@@ -51,6 +51,13 @@ with c3:
     st.page_link("pages/9_Forecasting.py", label="Forecasting", icon="🔮")
     st.page_link("pages/10_AI_Network_Assistant.py", label="AI Network Assistant", icon="💬")
     st.page_link("pages/11_Ops_Center.py", label="Ops Center", icon="🛎️")
+with c4:
+    _section("🧪 Experimentation")
+    st.page_link("pages/12_AI_Lab.py", label="AI Lab", icon="🧪")
+    st.caption(
+        "Simulated, historical, uploaded or live telemetry run through the "
+        "same anomaly / forecasting / classification / statistics pipeline. "
+        "Read-only: nothing here touches a device.")
 
 st.divider()
 s1, s2 = st.columns([2, 1])

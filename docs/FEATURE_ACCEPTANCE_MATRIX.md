@@ -11,6 +11,18 @@
 > `docs/FINAL_PROJECT_CLOSURE_REPORT.md` for the current status. The rest of this
 > document remains the historical Phase C audit.
 
+> **Status update (v2 analytics pass, 2026-10-27):** rows B4, B6, B7 and B8
+> below are the historical Phase C audit and keep their original wording and
+> per-file test counts. The forecasting/anomaly capabilities they describe have
+> since been extended — MAPE/sMAPE/MASE/skill metrics, additive damped
+> Holt-Winters, holdout-calibrated bands with realized coverage, the ensemble
+> blend, threshold-crossing warnings, EWMA/CUSUM/seasonal-residual detectors,
+> the bounded batch scan, the event aggregate and label-driven detector
+> calibration — now covered by 115 additional offline tests (suite: **813
+> passed**). See
+> `docs/NetPilot_Forecasting_Anomaly_Enhancement_v2_Report.md`; no row status
+> regressed, and B11 remains the only open menu item.
+
 **Audit date:** 2026-10-26
 **Repository snapshot:** branch `main` @ `f5dcb5f5518a7d69af1bb36242536c60d2170526`
 **Working tree:** 17 modified tracked files + 13 B1–B4 untracked files (8

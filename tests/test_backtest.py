@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-from analytics.backtest import rolling_origin_backtest
+from analytics.backtest import _model_kwargs, rolling_origin_backtest
 
 
 def _series(values):
@@ -68,3 +68,53 @@ def test_refused_seasonal_baseline_is_skipped_not_fabricated():
                                      interval_seconds=None)
     assert "seasonal_naive" in result["skipped"]
     assert "seasonal_naive" not in result["models"]
+
+
+# ------------------------------------------------------- kwargs routing (A-4 v2)
+def _seasonal_series(n=90, interval_min=5):
+    """Level trend + a 3-sample rhythm on a regular grid (season = 15 min)."""
+    idx = pd.date_range("2026-01-01", periods=n, freq=f"{interval_min}min")
+    vals = [50.0 + 2.0 * (i // 3) + [0.0, 8.0, -4.0][i % 3] for i in range(n)]
+    return pd.Series(np.asarray(vals, dtype=float), index=idx)
+
+
+SEASON_H = 0.25          # 3 samples at 5 min
+INTERVAL_S = 300.0
+
+
+def test_model_kwargs_only_forwards_what_a_model_declares():
+    assert _model_kwargs("naive", INTERVAL_S) == {}
+    assert _model_kwargs("holt_damped", INTERVAL_S) == {}
+    # ridge_lag declares max_lags, which a rolling-origin replay never supplies
+    assert _model_kwargs("ridge_lag", INTERVAL_S) == {}
+    for seasonal in ("seasonal_naive", "holt_winters"):
+        assert _model_kwargs(seasonal, INTERVAL_S, SEASON_H) == {
+            "interval_seconds": INTERVAL_S, "season_hours": SEASON_H}
+        # None is forwarded, not dropped: the model must refuse with its own
+        # reason instead of crashing on a missing argument
+        assert _model_kwargs(seasonal, None)["interval_seconds"] is None
+
+
+def test_holt_winters_runs_through_the_backtest_kwargs_route():
+    result = rolling_origin_backtest(
+        _seasonal_series(), horizon=6, models=("holt_winters", "naive"),
+        interval_seconds=INTERVAL_S, season_hours=SEASON_H)
+    assert result["status"] == "ok"
+    assert "holt_winters" not in result["skipped"]
+    hw = result["models"]["holt_winters"]
+    assert hw["n_points"] > 0 and hw["mae"] < 4.0
+    assert len(hw["per_step_mae"]) == 6
+    # the season-blind naive baseline copies the previous sample and is wrecked
+    # by the rhythm, which is what the skill score is meant to expose
+    assert hw["mae"] < result["models"]["naive"]["mae"]
+    assert hw["skill_vs_naive"] > 0.0
+
+
+def test_holt_winters_without_an_interval_is_skipped_not_fabricated():
+    result = rolling_origin_backtest(
+        _seasonal_series(), horizon=6, models=("holt_winters",),
+        interval_seconds=None, season_hours=SEASON_H)
+    assert "holt_winters" in result["skipped"]
+    assert result["models"] == {}
+    assert result["best_model"] is None
+    assert "interval" in result["skipped"]["holt_winters"].lower()

@@ -296,7 +296,7 @@ simulation removes it and reports the isolation honestly.”
 5. Scroll to **Safety guarantees** and end the recording there.
 
 **Narration:** use the Scene 5 text. When you mention verification, say the
-offline checks were run in this environment: **692 tests passed**, headless UI
+offline checks were run in this environment: **813 tests passed**, headless UI
 smoke passed for all 12 scripts, safety/secret scans clean, offline AI-quality
 evaluation 27/27 with all safety gates passing. Then add the boundary: these
 are offline results and do not replace live validation of PostgreSQL,
