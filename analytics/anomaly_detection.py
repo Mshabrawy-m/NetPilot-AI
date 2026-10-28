@@ -31,7 +31,9 @@ The required, always-on pair stays ``rolling_mad`` + ``rolling_zscore``
 never silently widened under an existing deployment.
 
 Leakage rule honoured everywhere: every baseline for time *t* is computed
-only from samples at times <= *t* (trailing windows). Missing samples
+only from samples at times <= *t* (trailing windows). The rule is about time,
+not row position, so ``detect_frame`` puts an out-of-order frame back into
+timestamp order first. Missing samples
 (None/NaN) are skipped, never converted to zeros, and points near the
 start of the series (fewer than ``min_periods`` history) are not judged.
 
@@ -643,16 +645,36 @@ def detect_frame(
     Each detector receives only the knobs it actually declares (see
     ``MODEL_KWARGS``-style routing below), so adding a detector can never make
     an existing call pass an argument the function does not accept.
+
+    Row order is corrected here if the caller handed us an out-of-order frame:
+    every detector below walks the rows treating "already seen" as "in the
+    past", so ordering is a precondition of the leakage promise, not a nicety.
     """
     if frame.empty:
         return []
+    # Provenance is labelled from the row the caller put first, so it is read
+    # before the reorder: a mixed-source frame keeps the label it had.
+    data_source = str(frame["data_source"].iloc[0])
+    # Measured on a reversed frame: without this, rolling_mad, rolling_zscore
+    # and cusum returned NO verdict at all (the spike was judged against rows
+    # that follow it) and ``ewma`` flagged the four samples *before* the spike
+    # (steps 14-17) instead of the spike and the samples after it (17-19).
+    # Sorting once at the boundary covers all six detectors. The check
+    # short-circuits for the ascending frames the shipped loaders already
+    # return, so a normal detection run re-sorts nothing. mergesort keeps tied
+    # timestamps in arrival order - the same rule the seasonal detector's own
+    # reorder uses - and exact duplicate timestamps are already collapsed
+    # upstream by time_series.dedupe_frame before a detection run.
+    if not frame["collected_at"].is_monotonic_increasing:
+        frame = frame.sort_values(
+            "collected_at", kind="mergesort").reset_index(drop=True)
     common = dict(
         series=frame["value"].reset_index(drop=True),
         timestamps=frame["collected_at"].reset_index(drop=True),
         sample_ids=frame["sample_id"].reset_index(drop=True),
         device_name=device_name, metric=metric,
         interface_name=interface_name,
-        data_source=str(frame["data_source"].iloc[0]),
+        data_source=data_source,
     )
     points: list[AnomalyPoint] = []
     for name in detectors:

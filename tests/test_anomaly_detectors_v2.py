@@ -104,6 +104,48 @@ def test_detect_frame_aggregates_and_sorts_the_selected_detectors():
     assert {"rolling_mad", "ewma"} <= {p.detector for p in points}
 
 
+def test_detect_frame_sorts_an_out_of_order_frame_before_judging():
+    """Each detector treats "the rows I have already walked" as the past, so an
+    out-of-order frame has to be put back into time order at this boundary
+    instead of leaking a sample's own future into its baseline."""
+    frame = make_frame(SPIKE_SERIES)
+    kwargs = dict(window=8, ewma_threshold=3.0, cusum_drift=0.5,
+                  cusum_limit=4.0)
+    selected = ("rolling_mad", "rolling_zscore", "ewma", "cusum")
+    ordered = detect_frame(frame, device_name="R1", metric="m",
+                           detectors=selected, **kwargs)
+    scrambled = detect_frame(frame.iloc[::-1].reset_index(drop=True),
+                             device_name="R1", metric="m",
+                             detectors=selected, **kwargs)
+    key = lambda pts: [(p.detector, index_of(p.timestamp), p.sample_id,
+                        round(p.observed, 6), p.baseline) for p in pts]
+    assert ordered, "the fixture spike must be caught by the baselines"
+    assert key(scrambled) == key(ordered)
+    # Pinned separately as the measured form of the failure: without the
+    # boundary sort the reversed walk reports steps 14-17 - rows whose future
+    # contains the spike - and neither rolling baseline fires at all.
+    ewma_steps = [index_of(p.timestamp) for p in scrambled
+                  if p.detector == "ewma"]
+    assert ewma_steps == [17, 18, 19]
+
+
+def test_detect_frame_reorders_rows_without_breaking_pairing_or_provenance():
+    frame = make_frame(SPIKE_SERIES)
+    reversed_frame = frame.iloc[::-1].reset_index(drop=True)
+    # The caller's first row is now the NEWEST sample; its label must survive.
+    reversed_frame["data_source"] = ["demo"] + ["live"] * (len(frame) - 1)
+    points = detect_frame(reversed_frame, device_name="R1", metric="m",
+                          detectors=("rolling_mad", "ewma"), window=8,
+                          ewma_threshold=3.0)
+    assert points
+    for p in points:
+        # make_frame numbers rows in time order, so an id that matches the
+        # flagged step proves value/timestamp/sample_id travelled as one unit.
+        assert p.sample_id == index_of(p.timestamp) + 1
+        assert p.observed == pytest.approx(SPIKE_SERIES[index_of(p.timestamp)])
+    assert {p.data_source for p in points} == {"demo"}
+
+
 def test_detectors_label_provenance_and_scope_they_were_given():
     frame = make_frame(SPIKE_SERIES)
     ewma = run_detector("ewma", frame, window=8, threshold=3.0,
