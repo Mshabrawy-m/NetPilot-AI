@@ -164,7 +164,7 @@ def sidebar_status() -> None:
         "<div style='font-family:Space Grotesk;font-weight:700;font-size:1.15rem;"
         "letter-spacing:2px;color:#7DD3FC'>NETPILOT</div>"
         "<div style='font-size:.68rem;letter-spacing:3px;color:#8FA1BF;"
-        "text-transform:uppercase;margin-top:-4px'>Ops&nbsp;Console&nbsp;·&nbsp;Phases&nbsp;1–3</div>",
+        "text-transform:uppercase;margin-top:-4px'>Ops&nbsp;Console&nbsp;·&nbsp;Phases&nbsp;1–5</div>",
         unsafe_allow_html=True)
     mode = "🧪 Demo mode" if settings.demo_mode else "🔌 Live lab mode"
     st.sidebar.caption(mode)

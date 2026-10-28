@@ -17,7 +17,7 @@ sidebar_status()
 theme.page_header(
     "NetPilot AI",
     "Virtual network lab · real telemetry · anomaly & forecast analytics · "
-    "Arabic/English AI operations assistant  (Phases 1–3)",
+    "Arabic/English AI operations assistant  (Phases 1–5)",
     icon="🛰️")
 demo_banner_if_active()
 

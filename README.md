@@ -1,4 +1,4 @@
-# NetPilot AI — Phases 1–3: Network Foundation, Data Analysis & Multi-Agent AI Assistant
+# NetPilot AI — Phases 1–5: Network Foundation, Analytics, AI Assistant & Gated Change Loop
 
 A working virtual network lab (Containerlab + FRRouting), real periodic
 network-data collection, a replaceable storage layer (SQLite by default,
@@ -11,15 +11,18 @@ evaluation with holdout-calibrated uncertainty bands, scale-free accuracy
 metrics and a model comparison — and Phase 3: an evidence-grounded,
 Arabic/English **AI Network Assistant** (Groq + LangGraph multi-agent
 workflow) that investigates, diagnoses, plans and *proposes* configuration
-for **human review**, gated by an independent deterministic verifier.
+for **human review**, gated by an independent deterministic verifier. Phase 4
+adds a **gated, lab-only change loop** (apply → post-change verify → rollback,
+both execution flags off by default), and Phase 5 an **AI Lab** that runs the
+same anomaly / forecast / classification / statistics pipeline on simulated,
+stored, uploaded or allowlisted telemetry.
 
-> **Phase 3 scope boundary.** The assistant **only proposes**. It never
-> connects to a production network, never executes or deploys a
-> configuration, never modifies routes/ACLs/firewalls/interfaces, and
-> requires deterministic verification before anything is labelled
-> *statically verified*. Deployment, post-change verification and rollback
-> are **Phase 4** and are intentionally absent (there is no apply code path
-> to remove).
+> **Safety boundary.** The assistant **only proposes**. It never connects to a
+> production network and never deploys a configuration by itself. The Phase 4
+> apply/verify/rollback path is present but **disabled by default** (`change_loop`
+> and `lab_execution` both off), lab-only, and requires an authenticated,
+> non-self human approval. It has **no live-lab evidence** on this host
+> (no Docker/Containerlab); see §14 and `NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md`.
 
 ---
 
@@ -476,7 +479,7 @@ combinations that actually have non-null stored values.
 ## 8. Automated tests
 
 ```bash
-pytest                 # 966 unit/integration tests (full suite, offline)
+pytest                 # 971 unit/integration tests (full suite, offline)
 python tests\ui_smoke_check.py   # headless run of app.py + all 12 pages,
                                  # clicking the detection/forecast/lab buttons
 ```
@@ -642,23 +645,35 @@ internet, no paid service, no live device):
   execution layer, and the change/lab gates stay off before and after every
   task (`test_ai_lab_experiment.py`, 27)
 
-Last recorded result on this machine (Windows, no Docker; 2026-10-27 Phase 5
-AI Lab pass): **966 passed**, 0 failed, 0 errors, 0 skipped (165.2 s, 13
-pre-existing `datetime.utcnow()` DeprecationWarnings from
-`services/ai_workflow_service.py`). UI
-smoke check: all 13 scripts (app + 12 pages) render without exceptions, the
-detection/forecast actions run, and the AI Lab round-trips a simulated
-experiment end to end while the unconfigured live source stays honestly
-disabled — exit code **0**. The optional **live** Groq integration check
-(`tools/phase3_live_check.py`) was **not** re-run during this pass; live-provider
-behaviour is therefore unverified here. The previously exposed credential is
-treated as compromised and must be rotated (see
-`docs/FINAL_PROJECT_CLOSURE_REPORT.md`).
+Latest verification (2026-10-28, Windows, no Docker): **971 passed**, 0 failed,
+0 errors, 0 skipped; 13 pre-existing `datetime.utcnow()` DeprecationWarnings
+from `services/ai_workflow_service.py`. UI smoke check: all 13 scripts
+(app + 12 pages) render without exceptions, the detection/forecast actions run,
+and the AI Lab round-trips a simulated experiment end to end while the
+unconfigured live source stays honestly disabled — exit code **0**. GitHub
+Actions run
+[`40760222225`](https://github.com/Mshabrawy-m/NetPilot-AI/actions/runs/40760222225)
+is green on every job, including `test (3.11)`, `test (3.12)`, `ui-smoke`,
+`installability` (3.10–3.14) and `docker-build`.
 
-> The Phase 4 lab executor and the Gate 3 / Gate D harnesses are **not** part
-> of the published tip: they exist in the working tree and are covered by the
-> count above, but the live-lab evidence for them does not exist yet (no
-> Docker/Containerlab host). See §14 and
+Recent fixes on the tip:
+
+- `pages/12_AI_Lab.py` used a PEP 701 multi-line f-string replacement field,
+  which only parses on Python 3.12+; the CI 3.11 syntax gate failed and the app
+  could not launch on 3.10/3.11. The string is now built in two statements.
+- `pages/8_Anomalies.py` rendered its KPI row before handling the detection
+  buttons, so a scan's success message could contradict the still-stale
+  header. The result is now queued via `flash()` and followed by one rerun, the
+  same pattern used by Topology and Ops Center.
+
+The optional **live** Groq integration check (`tools/phase3_live_check.py`) was
+**not** re-run during this pass; live-provider behaviour is therefore unverified
+here. The previously exposed credential is treated as compromised and must be
+rotated (see `docs/FINAL_PROJECT_CLOSURE_REPORT.md`).
+
+> The Phase 4 lab executor and the Gate 3 / Gate D harnesses **are** part of the
+> published tip and covered by the count above, but the live-lab evidence for
+> them does not exist yet (no Docker/Containerlab host). See §14 and
 > `NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md`.
 
 ### Offline AI-quality / groundedness evaluation (B4)

@@ -3,7 +3,8 @@
 # needed to be green. Four gates, all required:
 #   1. secret hygiene scan  - nothing that looks like a .env or key lands
 #   2. installability       - requirements.txt resolves as Linux wheels, 3.10-3.14
-#   3. pytest matrix        - Python 3.11 + 3.12 (pure-Python deps, no lab)
+#   3. pytest matrix        - Python 3.11 + 3.12 (syntax gate + full suite,
+#                             pure-Python deps, no lab)
 #   4. headless UI smoke    - Streamlit AppTest over app.py + every page
 name: ci
 
@@ -105,7 +106,25 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pytest-cov
       - name: Syntax gate
-        run: python -m compileall -q app.py api analytics database network services pages ai
+        # Compile EVERY tracked package, not just the ones that existed when
+        # this list was written. The repo supports 3.10/3.11, but a multi-line
+        # expression inside an f-string field (PEP 701, 3.12+ only) reached a
+        # page and main stayed red for three runs - the old list stopped at the
+        # directories it was first written for. The existence loop below is not
+        # decoration: measured on 2026-10-28, `compileall -q` prints "Can't
+        # list 'x'" for a missing path and still exits 0, so without it a
+        # renamed package would quietly shrink this gate back to under-coverage.
+        # If a new top-level package with .py files appears, name it here.
+        run: |
+          set -euo pipefail
+          paths="app.py config.py api analytics database evaluation network services pages ai tests tools ui"
+          for p in $paths; do
+            if [ ! -e "$p" ]; then
+              echo "::error::Syntax gate path '$p' is gone: a package was renamed or deleted. Fix the list rather than let the gate under-cover."
+              exit 1
+            fi
+          done
+          python -m compileall -q $paths
       - name: Offline pytest suite (coverage summary)
         run: pytest --cov=. --cov-report=term-missing:skip-covered
         env:
