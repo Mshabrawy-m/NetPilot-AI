@@ -19,9 +19,10 @@ Interpretable detectors plus one optional ML detector:
    past samples; flags what is unusual *for that time of day* rather than
    unusual versus the last few minutes. The cycle position comes from the
    timestamps (elapsed time on the assumed grid), so dropped or resampled rows
-   no longer shift later phases; it resets on a collection gap and abstains on
-   an irregular cadence. Refuses (returns no verdicts) when the sampling
-   interval is unknown or the history holds too few same-phase samples.
+   no longer shift later phases; rows are placed in time order first, it resets
+   on a collection gap and abstains on an irregular cadence. Refuses (returns no
+   verdicts) when the sampling interval is unknown or the history holds too few
+   same-phase samples.
 6. ``isolation_forest`` - optional scikit-learn detector (seeded, hence
    reproducible). Never used as the default; must be chosen explicitly.
 
@@ -387,6 +388,11 @@ def detect_seasonal_residual(
     time-of-day.
 
     Honest limits, each reflected in the verdict rather than hidden:
+    - the samples are put in timestamp order before anything is judged (values,
+      clock and ``sample_ids`` travel together), because the walk builds each
+      baseline from the rows it has already seen: an unordered frame would
+      both break the strictly-past rule and lose every row that predates the
+      first one; a stable order keeps tied timestamps as they were given;
     - abstains entirely when the sampling interval is unknown or the season
       would be shorter than two samples;
     - a phase is judged only once it has ``min_hist`` strictly-prior samples;
@@ -408,6 +414,22 @@ def detect_seasonal_residual(
     ts = pd.to_datetime(timestamps, errors="coerce")
     if len(ts) != len(values):
         return []            # misaligned inputs: cannot place samples in time
+    # Order is a precondition of the walk, not a nicety: baselines are built
+    # from "the rows I have already seen", so unsorted input would judge a
+    # sample against its own future, and the fixed origin (first usable row)
+    # would make every earlier row's elapsed time negative - silently skipping
+    # real data. Re-sort instead of abstaining: nothing here is ambiguous once
+    # the rows are in time order. The three aligned inputs move as one unit,
+    # otherwise a verdict would report the sample_id/timestamp of whichever row
+    # happened to sit at that position. mergesort keeps tied timestamps in
+    # their given order, matching dedupe_frame's keep="last" choice.
+    if not ts.is_monotonic_increasing:
+        sorter = np.argsort(ts.to_numpy(), kind="mergesort")
+        values = values.iloc[sorter].reset_index(drop=True)
+        ts = ts.iloc[sorter].reset_index(drop=True)
+        if sample_ids is not None:
+            sample_ids = pd.Series(sample_ids).iloc[sorter].reset_index(
+                drop=True)
     valid_ts = ts.dropna()
     if valid_ts.empty:
         return []            # no usable clock: no defensible cycle position
@@ -415,9 +437,10 @@ def detect_seasonal_residual(
     global_scale = (MAD_SCALE
                     * float((clean - clean.median()).abs().median())
                     if len(clean) >= 2 else float("nan"))
-    # Fixed origin = first usable timestamp; elapsed time from here converts
-    # each timestamp into a position on the assumed regular grid, independent
-    # of how many rows survived upstream (gaps / dedupe / resampling).
+    # Fixed origin = the EARLIEST usable timestamp (after the reorder above,
+    # also the first row). Elapsed time from here converts each timestamp into
+    # a position on the assumed regular grid, independent of how many rows
+    # survived upstream (gaps / dedupe / resampling).
     origin = valid_ts.iloc[0]
     elapsed = (ts - origin).dt.total_seconds()
 
@@ -427,9 +450,10 @@ def detect_seasonal_residual(
     for i in range(len(values)):
         x = values.iloc[i]
         e = elapsed.iloc[i]
-        # A usable, non-negative elapsed time is required to locate the sample
-        # on the cycle; without it we can neither judge nor seed, and the
-        # cadence chain is broken so the next sample re-anchors.
+        # Backstop, not the mechanism: after the reorder above no usable row
+        # can precede the origin, so this only fires on input the sort could
+        # not make sense of (e.g. an unusable clock). Such a row neither judges
+        # nor seeds, and the cadence chain is broken so the next re-anchors.
         if pd.isna(e) or e < 0:
             prev_step = None
             continue
@@ -471,12 +495,12 @@ def detect_seasonal_residual(
         scale_note = " + global fallback scale" if used_fallback else ""
         points.append(AnomalyPoint(
             device_name=device_name, metric=metric,
-            interface_name=interface_name, timestamp=timestamps.iloc[i],
+            interface_name=interface_name, timestamp=ts.iloc[i],
             observed=float(x), baseline=baseline,
             threshold_upper=baseline + threshold * scale,
             threshold_lower=baseline - threshold * scale,
             deviation=float(ratio), severity=_severity(ratio, threshold),
-            detector="seasonal_residual", detector_version="1.1",
+            detector="seasonal_residual", detector_version="1.2",
             detector_config={"season_len_samples": m,
                              "season_hours": season_hours,
                              "phase": phase, "grid_step": nearest,

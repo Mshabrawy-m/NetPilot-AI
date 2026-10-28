@@ -165,7 +165,7 @@ def test_seasonal_residual_anchors_phase_by_time_on_a_regular_grid():
     assert p.detector_config["phase"] == 2       # 17 % 3, true cycle position
     assert p.detector_config["grid_step"] == 17
     assert p.detector_config["phase_basis"] == "timestamp"
-    assert p.detector_version == "1.1"
+    assert p.detector_version == "1.2"
     assert p.baseline is not None and p.baseline < 40
 
 
@@ -206,22 +206,52 @@ def test_seasonal_residual_skips_samples_off_the_assumed_grid():
 
 
 def test_seasonal_residual_survives_missing_timestamps_and_values():
-    # A NaN value and a NaT timestamp must not crash the walk or shift the
-    # surviving samples off their true time-of-day; the final outlier is still
-    # judged against its same-phase past.
+    # A NaT timestamp and a NaN value are different failures and must not be
+    # conflated. The NaN value leaves the cadence intact (its clock still
+    # anchors the grid), so the outlier is still judged against its true phase.
+    # The NaT clock leaves a hole the detector cannot place, so it resets the
+    # phase history exactly like an absent row would: before the input was put
+    # in time order, the NaT row sat mid-frame, broke the cadence chain and
+    # quietly excused a gap that the deleted-row frame reset - identical data,
+    # two answers. Measured: both now abstain.
     base = (10.0, 20.0, 30.0)
     vals = [1000.0 if s == 17 else base[s % 3] for s in range(18)]
     vals[5] = None                                 # missing value (phase 2)
     stamps = [BASE + dt.timedelta(seconds=s * 1200) for s in range(18)]
-    stamps[10] = pd.NaT                            # missing clock (phase 1)
     series = pd.Series([float("nan") if v is None else float(v)
                         for v in vals])
     ts = pd.Series(pd.to_datetime(stamps))
-    pts = detect_seasonal_residual(
-        series, ts, device_name="R1", metric="m",
-        interval_seconds=1200, season_hours=1.0)
-    assert pts
-    p = [q for q in pts if q.timestamp == ts.iloc[17]][0]
+    kw = dict(device_name="R1", metric="m", interval_seconds=1200,
+              season_hours=1.0)
+
+    nat_stamps = list(stamps)
+    nat_stamps[10] = pd.NaT                        # missing clock (phase 1)
+    nat_ts = pd.Series(pd.to_datetime(nat_stamps))
+    kept = [i for i in range(18) if i != 10]       # same hole, row just absent
+    gone_series = series.iloc[kept].reset_index(drop=True)
+    gone_ts = ts.iloc[kept].reset_index(drop=True)
+
+    assert detect_seasonal_residual(series, ts, **kw), (
+        "a missing value alone must not be read as a collection hole")
+    hole = detect_seasonal_residual(series, nat_ts, **kw)
+    assert hole == [], "the lost clock resets the phase history, like a gap"
+    assert detect_seasonal_residual(gone_series, gone_ts, **kw) == hole, (
+        "a lost clock and an absent row are the same hole: they may not "
+        "produce different verdicts")
+
+    # Widening the gap tolerance re-anchors the same two frames, and the
+    # surviving samples keep their true time-of-day phase either way.
+    wide = detect_seasonal_residual(series, nat_ts, max_gap_intervals=2.5,
+                                    **kw)
+    wide_gone = detect_seasonal_residual(gone_series, gone_ts,
+                                         max_gap_intervals=2.5, **kw)
+    assert [(p.timestamp, p.detector_config["grid_step"],
+             p.detector_config["phase"]) for p in wide] == \
+           [(p.timestamp, p.detector_config["grid_step"],
+             p.detector_config["phase"]) for p in wide_gone]
+    assert wide
+    p = wide[0]
+    assert p.timestamp == ts.iloc[17]
     assert p.detector_config["phase"] == 2
     assert p.detector_config["grid_step"] == 17
 
@@ -262,6 +292,68 @@ def test_seasonal_residual_resets_phase_history_after_a_collection_hole():
     assert point.timestamp == ts.iloc[-1]
     assert point.detector_config["phase"] == 2   # 20 % 3: its true cycle position
     assert point.detector_config["grid_step"] == 20
+
+
+def test_seasonal_residual_reorders_an_unsorted_frame_before_judging():
+    # The same data, two row orders. The detector walks rows to build each
+    # phase baseline, so a frame whose newest row arrives first used to make
+    # every other sample's elapsed time negative - and negative rows are
+    # skipped, so the run quietly degraded to no verdicts at all. Ordering the
+    # input must not be something the caller has to remember: the verdicts have
+    # to come out identical either way.
+    base = (10.0, 20.0, 30.0)
+    steps = list(range(18))
+    vals = [1000.0 if s == 17 else base[s % 3] for s in steps]
+    stamps = [BASE + dt.timedelta(seconds=s * 1200) for s in steps]
+    series = pd.Series(vals, dtype="float64")
+    ts = pd.Series(pd.to_datetime(stamps))
+    kw = dict(device_name="R1", metric="m", interval_seconds=1200,
+              season_hours=1.0)
+
+    ordered = detect_seasonal_residual(series, ts, **kw)
+    # Reverse it: the last (latest) sample now leads the frame.
+    rev_series = series.iloc[::-1].reset_index(drop=True)
+    rev_ts = ts.iloc[::-1].reset_index(drop=True)
+    reversed_pts = detect_seasonal_residual(rev_series, rev_ts, **kw)
+    # Rotate it: half the frame still lands before the first row's timestamp.
+    rot = list(range(9, 18)) + list(range(9))
+    rot_pts = detect_seasonal_residual(series.iloc[rot].reset_index(drop=True),
+                                       ts.iloc[rot].reset_index(drop=True), **kw)
+
+    key = lambda pts: [(p.timestamp, p.observed, p.baseline,
+                        p.detector_config["phase"],
+                        p.detector_config["grid_step"]) for p in pts]
+    assert len(ordered) == 1, "the fixture must keep exactly one real verdict"
+    assert reversed_pts, ("an out-of-order frame must not lose every sample to "
+                          "a negative elapsed time")
+    assert key(reversed_pts) == key(ordered)
+    assert key(rot_pts) == key(ordered)
+
+
+def test_seasonal_residual_keeps_rows_paired_when_it_reorders():
+    # Re-sorting three aligned inputs is only correct if they move together: a
+    # verdict must cite its own sample_id and its own timestamp, not the row
+    # that happened to sit at that position before the reorder.
+    base = (10.0, 20.0, 30.0)
+    steps = list(range(18))
+    vals = [1000.0 if s == 17 else base[s % 3] for s in steps]
+    stamps = [BASE + dt.timedelta(seconds=s * 1200) for s in steps]
+    ids = pd.Series([1000 + s for s in steps])
+    kw = dict(device_name="R1", metric="m", interval_seconds=1200,
+              season_hours=1.0)
+    order = [3, 0, 17, 2, 1, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14, 16]
+    pts = detect_seasonal_residual(
+        pd.Series(vals, dtype="float64").iloc[order].reset_index(drop=True),
+        pd.Series(pd.to_datetime(stamps)).iloc[order].reset_index(drop=True),
+        sample_ids=ids.iloc[order].reset_index(drop=True), **kw)
+
+    assert pts
+    for p in pts:
+        step = int((p.timestamp - pd.Timestamp(BASE)).total_seconds() // 1200)
+        assert p.sample_id == 1000 + step, (
+            f"verdict at {p.timestamp} carries the sample_id of a different "
+            "row: the reorder desynchronised the aligned inputs")
+    assert pts[0].observed == 1000.0
 
 
 def test_detect_frame_defaults_to_interpretable_pair():
