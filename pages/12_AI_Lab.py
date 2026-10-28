@@ -1058,10 +1058,10 @@ else:
         _sec("Task gates")
         for task in lab_dataset.TASKS:
             ok, why = lab_dataset.task_gate(dataset, task)
-            st.markdown(
-                f"- {theme.status_pill(task + ': ' + ('ready' if ok else 'blocked'),
-                                      'ok' if ok else 'warn')} {why}",
-                unsafe_allow_html=True)
+            state = "ready" if ok else "blocked"
+            pill = theme.status_pill(f"{task}: {state}",
+                                     "ok" if ok else "warn")
+            st.markdown(f"- {pill} {why}", unsafe_allow_html=True)
     with quality_col:
         _sec("Data provenance")
         st.json(dataset.provenance, expanded=False)

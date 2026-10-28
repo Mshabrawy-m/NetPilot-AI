@@ -21,8 +21,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from services.app_state import (bootstrap, demo_banner_if_active, read,
-                                sidebar_status)
+from services.app_state import (bootstrap, demo_banner_if_active, flash, read,
+                                render_flash, sidebar_status)
 from ui import theme
 
 bootstrap()
@@ -30,6 +30,7 @@ sidebar_status()
 theme.page_header("Anomalies",
                   "Explainable, persisted detection events", icon="🚨")
 demo_banner_if_active()
+render_flash()
 
 from analytics import data_quality
 from analytics.anomaly_detection import (
@@ -177,29 +178,40 @@ if st.button("🔍 Run detection on this series", width="stretch"):
                     zscore_threshold=z_thr, ewma_threshold=ewma_thr,
                     cusum_drift=cusum_k, cusum_limit=cusum_h,
                     device_level_only=(target_iface is None)))
-        if result is None:
-            pass
-        elif result["status"] == "insufficient_data":
-            st.warning("Insufficient data for detection: "
-                       + "; ".join(result["reasons"]), icon="📉")
-        elif result["status"] == "unknown_detector":
-            st.error("; ".join(result["reasons"]), icon="🧪")
-        else:
-            p = result["persisted"]
-            st.success(
-                f"Detection finished: {result['n_anomalies']} anomalous "
-                f"point(s) on {result['n_series_points']} samples → "
-                f"{p['created']} new event(s), {p['updated']} grouped "
-                f"update(s), {p['skipped']} suppressed, "
-                f"{result['resolved']} event(s) resolved by normal "
-                "observations.")
-            if result.get("by_detector"):
-                st.dataframe(pd.DataFrame(
-                    [{"detector": k, "points flagged": v}
-                     for k, v in sorted(result["by_detector"].items())]),
-                    hide_index=True, width="stretch")
-            for note in result.get("notes") or []:
-                st.info(note, icon="🤷")
+        if result is not None:
+            # Persist nothing here: the counts are already in the store. Queue
+            # a message and rerun so the KPI row at the top of the page (which
+            # is computed before this button is handled) shows the new state
+            # instead of contradicting the result printed below it.
+            st.session_state["_anom_result"] = result
+            if result["status"] == "insufficient_data":
+                flash("Insufficient data for detection: "
+                      + "; ".join(result["reasons"]), level="warning")
+            elif result["status"] == "unknown_detector":
+                flash("; ".join(result["reasons"]), level="error")
+            else:
+                p = result["persisted"]
+                flash(
+                    f"Detection finished: {result['n_anomalies']} anomalous "
+                    f"point(s) on {result['n_series_points']} samples → "
+                    f"{p['created']} new event(s), {p['updated']} grouped "
+                    f"update(s), {p['skipped']} suppressed, "
+                    f"{result['resolved']} event(s) resolved by normal "
+                    "observations.")
+            st.rerun()
+
+# Detail of the run that just finished, shown once (the headline counts are
+# the flash message above). Popping keeps it transient: a later rerun or a
+# filter change does not resurrect an old run's detector table.
+last_result = st.session_state.pop("_anom_result", None)
+if last_result and last_result.get("status") == "ok":
+    if last_result.get("by_detector"):
+        st.dataframe(pd.DataFrame(
+            [{"detector": k, "points flagged": v}
+             for k, v in sorted(last_result["by_detector"].items())]),
+            hide_index=True, width="stretch")
+    for note in last_result.get("notes") or []:
+        st.info(note, icon="🤷")
 
 # ------------------------------------------------------------ batch scanning
 st.markdown("**Batch scan** — one bounded pass over the stored series of this "
@@ -213,14 +225,16 @@ if st.button(f"📡 Scan all ready series (max "
             detectors=tuple(chosen_detectors) or None,
             window=det_window))
     st.session_state["_anom_scan"] = scan
+    t = scan["totals"]
+    flash(f"Scanned {scan['scanned']} of {scan['candidates']} ready series "
+          f"(cap {scan['limit']}) → {t['points']} point(s), "
+          f"{t['created']} new event(s), {t['updated']} grouped update(s), "
+          f"{t['resolved']} resolved.")
+    # Rerun for the same reason as single detection: the KPI row is rendered
+    # before this button is handled, so it would still show pre-scan counts.
+    st.rerun()
 scan = st.session_state.get("_anom_scan")
 if scan:
-    t = scan["totals"]
-    st.success(
-        f"Scanned {scan['scanned']} of {scan['candidates']} ready series "
-        f"(cap {scan['limit']}) → {t['points']} point(s), "
-        f"{t['created']} new event(s), {t['updated']} grouped update(s), "
-        f"{t['resolved']} resolved.")
     if scan["capped"]:
         st.warning(f"More series were ready than one click may evaluate: "
                    f"{scan['candidates'] - scan['limit']} were NOT scanned "
