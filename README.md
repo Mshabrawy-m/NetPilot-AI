@@ -1114,3 +1114,16 @@ already required by `requirements.txt`.
 mocked HTTP transport — it has never been exercised against a real Prometheus
 server, so it is documented as a boundary, not as working live operation.
 
+## 17. Interface navigation and workflows
+
+The Streamlit sidebar groups existing pages into **Overview**, **Network
+operations**, **AI lab**, and **System status** workflows. The overview focuses
+on inventory health and collection freshness; topology, device, connectivity,
+metrics, anomaly and operations-center views are grouped for network work; data
+analysis, forecasting, experiments and the network assistant are grouped for AI
+work. The Ops Center retains the structural Digital Twin report and human
+change-review workflow. No user-editable settings page is currently provided.
+
+See [`docs/UI_REDESIGN.md`](docs/UI_REDESIGN.md) for the page-to-feature map,
+workflow guide, shared UI modules and current interface limitations.
+

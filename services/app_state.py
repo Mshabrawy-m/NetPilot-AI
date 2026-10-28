@@ -47,8 +47,6 @@ def render_flash() -> None:
 
 def bootstrap() -> None:
     """Run at the top of every page: schema, scheduler, demo seeding."""
-    st.set_page_config(page_title="NetPilot AI", page_icon="🛰️",
-                       layout="wide")
     init_db()
     settings = get_settings()
     if settings.demo_mode:
@@ -161,10 +159,10 @@ def sidebar_status() -> None:
     """Sidebar: mode, lab/db connectivity and collection controls."""
     settings = get_settings()
     st.sidebar.markdown(
-        "<div style='font-family:Space Grotesk;font-weight:700;font-size:1.15rem;"
-        "letter-spacing:2px;color:#7DD3FC'>NETPILOT</div>"
-        "<div style='font-size:.68rem;letter-spacing:3px;color:#8FA1BF;"
-        "text-transform:uppercase;margin-top:-4px'>Ops&nbsp;Console&nbsp;·&nbsp;Phases&nbsp;1–5</div>",
+        "<div style='font-weight:750;font-size:1.05rem;color:#e5edf7'>"
+        "<span style='color:#55b9e8'>◉</span>&nbsp; NetPilot AI</div>"
+        "<div style='font-size:.72rem;color:#9aabc1;margin-top:2px'>"
+        "Network operations &amp; analytics</div>",
         unsafe_allow_html=True)
     mode = "🧪 Demo mode" if settings.demo_mode else "🔌 Live lab mode"
     st.sidebar.caption(mode)
