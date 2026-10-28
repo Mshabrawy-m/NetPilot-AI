@@ -150,11 +150,17 @@ button[data-testid="stTab"] { font-weight:600; letter-spacing:.3px; }
 
 
 def inject_css() -> None:
-    """Apply the global stylesheet once per session (idempotent)."""
-    if st.session_state.get("_np_css_injected"):
-        return
+    """Apply the global stylesheet (re-emitted on every run).
+
+    A session-level "already injected" flag cannot guard this: the ``<style>``
+    element lives in the page body, and switching pages clears that body while
+    the session keeps the flag. Every page after the first would then render
+    with Streamlit's default theme. Re-emitting the same sheet each run
+    replaces the previous element instead of stacking (Streamlit reconciles
+    markdown elements by position), so the cost is a few KB and the styling
+    survives navigation.
+    """
     st.markdown(f"<style>{_CSS}</style>", unsafe_allow_html=True)
-    st.session_state["_np_css_injected"] = True
 
 
 def apply_plotly_theme() -> None:

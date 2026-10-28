@@ -665,6 +665,15 @@ Recent fixes on the tip:
   buttons, so a scan's success message could contradict the still-stale
   header. The result is now queued via `flash()` and followed by one rerun, the
   same pattern used by Topology and Ops Center.
+- `pages/12_AI_Lab.py` was rebuilt as a five-tab workflow (data source /
+  inspect / configure & run / results / history) with KPI headers instead of
+  truncating `st.metric` tiles; nested JSON table cells now render as text
+  instead of `[object Object]`, and every successful dataset load flashes a
+  confirmation and reruns so the status strip and the tabs cannot disagree.
+- `ui/theme.py:inject_css()` re-emits the stylesheet on every run. The old
+  session-level "already injected" flag survived an in-app page switch while
+  Streamlit cleared the page body that held the `<style>` element, so every
+  page after the first rendered with Streamlit's default theme.
 
 The optional **live** Groq integration check (`tools/phase3_live_check.py`) was
 **not** re-run during this pass; live-provider behaviour is therefore unverified

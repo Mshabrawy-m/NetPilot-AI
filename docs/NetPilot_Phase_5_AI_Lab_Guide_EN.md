@@ -13,23 +13,27 @@ device, never imports the lab executor, and never turns on
 
 ## 1. Wizard flow
 
-The page follows one fixed order, and no step is pre-filled with sample
+The page follows one fixed order, laid out as five tabs under a status strip
+(loaded source, rows, series, last run). No step is pre-filled with sample
 numbers:
 
-1. **Select data source** — simulator / project history / CSV upload / local
-   historical file / live read-only Prometheus.
-2. **Inspect data** — provenance badge (Live / Historical / Uploaded /
-   Simulated), per-series inventory with readiness per task, data-quality
-   summary, lineage ("what happened to the rows"), task gates, raw values as
-   read.
-3. **Select task** — anomaly comparison, forecast comparison, fault
-   classification, statistical analysis.
-4. **Configure model / protocol** → **Run experiment** (one button that both
-   configures and launches the run).
-5. **Evaluate results** — status pill, synthetic/real pill, comparison table,
-   charts built from the computed run only, "how to read these numbers".
-6. **Export report** — Table CSV, Metrics CSV, Markdown, HTML; plus the
-   persisted **experiment history** table below it.
+1. **Data source** (tab ①) — simulator / project history / CSV upload / local
+   historical file / live read-only Prometheus. A successful load queues one
+   confirmation and reruns, so the status strip, the badges and every tab agree
+   on what is loaded.
+2. **Inspect** (tab ②) — provenance badge (Live / Historical / Uploaded /
+   Simulated), KPI tiles (rows, series, labels, median interval), task gates,
+   per-series inventory with readiness per task, data-quality summary, lineage
+   ("what happened to the rows"), and raw values as read.
+3. **Configure & run** (tab ③) — task selection (anomaly comparison, forecast
+   comparison, fault classification, statistical analysis), the model/protocol
+   form, and the single **Run experiment** button.
+4. **Results** (tab ④) — run KPI tiles (runtime, series/rows in scope,
+   outcome), supervised metrics, comparison table, charts built from the
+   computed run only, "how to read these numbers", and the exports: Table CSV,
+   Metrics CSV, Markdown, HTML.
+5. **History** (tab ⑤) — the persisted **experiment history**, which includes
+   refusals and their reasons, with stored table/metrics downloads.
 
 A run that cannot be supported is **refused** with a status
 (`refused` / `insufficient_data` / `no_labels`) and a concrete reason. A
