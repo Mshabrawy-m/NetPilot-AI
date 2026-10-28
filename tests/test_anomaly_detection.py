@@ -18,6 +18,7 @@ from analytics.anomaly_detection import (
     detect_isolation_forest,
     detect_rolling_mad,
     detect_rolling_zscore,
+    detect_seasonal_residual,
 )
 from services import anomaly_service
 
@@ -144,6 +145,123 @@ def test_detector_configuration_changes_results():
                                threshold=2.0)
     assert len(strict) <= len(loose)
     assert len(loose) >= 1
+
+
+def test_seasonal_residual_anchors_phase_by_time_on_a_regular_grid():
+    # A 3-sample season (interval 1200s, season_hours=1); only the final
+    # same-phase outlier deviates. On the regular grid the timestamp-derived
+    # cycle position must equal the row's elapsed-time step.
+    base = (10.0, 20.0, 30.0)
+    vals = [1000.0 if s == 17 else base[s % 3] for s in range(18)]
+    series = pd.Series(vals, dtype="float64")
+    ts = pd.Series(pd.to_datetime(
+        [BASE + dt.timedelta(seconds=s * 1200) for s in range(18)]))
+    pts = detect_seasonal_residual(
+        series, ts, device_name="R1", metric="m",
+        interval_seconds=1200, season_hours=1.0)
+    assert len(pts) == 1, "only the same-phase outlier should clear the bar"
+    p = pts[0]
+    assert p.timestamp == ts.iloc[17]
+    assert p.detector_config["phase"] == 2       # 17 % 3, true cycle position
+    assert p.detector_config["grid_step"] == 17
+    assert p.detector_config["phase_basis"] == "timestamp"
+    assert p.detector_version == "1.1"
+    assert p.baseline is not None and p.baseline < 40
+
+
+def test_seasonal_residual_phase_follows_time_not_row_index():
+    # Core regression: dropping an interior row shifts every later ROW INDEX,
+    # so an index-based phase (i % m) would map the final sample to phase 1.
+    # Deriving phase from timestamps keeps it on its true cycle position (2)
+    # even after the gap, provided the reset guard is widened for this test.
+    base = (10.0, 20.0, 30.0)
+    steps = [s for s in range(18) if s != 7]      # 17 rows, one removed
+    vals = [1000.0 if s == 17 else base[s % 3] for s in steps]
+    series = pd.Series(vals, dtype="float64")
+    ts = pd.Series(pd.to_datetime(
+        [BASE + dt.timedelta(seconds=s * 1200) for s in steps]))
+    pts = detect_seasonal_residual(
+        series, ts, device_name="R1", metric="m", interval_seconds=1200,
+        season_hours=1.0, max_gap_intervals=5.0)
+    assert pts
+    p = [q for q in pts if q.timestamp == ts.iloc[-1]][0]
+    assert p.detector_config["grid_step"] == 17, "time step, not row index 16"
+    assert p.detector_config["phase"] == 2, "time-based phase, not (16 % 3 = 1)"
+
+
+def test_seasonal_residual_skips_samples_off_the_assumed_grid():
+    # A single resampled timestamp that lands half an interval off the grid is
+    # not trusted to define a phase, so the deviating sample is skipped and the
+    # detector emits no verdict rather than judging it against a bogus baseline.
+    base = (10.0, 20.0, 30.0)
+    vals = [1000.0 if s == 17 else base[s % 3] for s in range(18)]
+    series = pd.Series(vals, dtype="float64")
+    stamps = [BASE + dt.timedelta(seconds=s * 1200) for s in range(18)]
+    stamps[17] = BASE + dt.timedelta(seconds=21000)   # 17.5 intervals: off-grid
+    ts = pd.Series(pd.to_datetime(stamps))
+    pts = detect_seasonal_residual(
+        series, ts, device_name="R1", metric="m",
+        interval_seconds=1200, season_hours=1.0)
+    assert pts == [], "an off-grid sample must never define a phase"
+
+
+def test_seasonal_residual_survives_missing_timestamps_and_values():
+    # A NaN value and a NaT timestamp must not crash the walk or shift the
+    # surviving samples off their true time-of-day; the final outlier is still
+    # judged against its same-phase past.
+    base = (10.0, 20.0, 30.0)
+    vals = [1000.0 if s == 17 else base[s % 3] for s in range(18)]
+    vals[5] = None                                 # missing value (phase 2)
+    stamps = [BASE + dt.timedelta(seconds=s * 1200) for s in range(18)]
+    stamps[10] = pd.NaT                            # missing clock (phase 1)
+    series = pd.Series([float("nan") if v is None else float(v)
+                        for v in vals])
+    ts = pd.Series(pd.to_datetime(stamps))
+    pts = detect_seasonal_residual(
+        series, ts, device_name="R1", metric="m",
+        interval_seconds=1200, season_hours=1.0)
+    assert pts
+    p = [q for q in pts if q.timestamp == ts.iloc[17]][0]
+    assert p.detector_config["phase"] == 2
+    assert p.detector_config["grid_step"] == 17
+
+
+def test_seasonal_residual_resets_phase_history_after_a_collection_hole():
+    # The v1.1 gap guard, isolated: identical data twice, only
+    # max_gap_intervals differs, so any difference in the verdicts is caused by
+    # the reset and by nothing else. A collector that was down for nine
+    # intervals must not be judged by baselines built before the hole.
+    base = (10.0, 20.0, 30.0)
+    steps = list(range(12)) + [20]              # 11 -> 20: a nine-interval hole
+    counts: dict[int, int] = {}
+    vals = []
+    for s in steps:
+        phase = s % 3
+        seen = counts.get(phase, 0)
+        counts[phase] = seen + 1
+        if s == 20:
+            vals.append(1000.0)                 # wild, but right after the hole
+        else:
+            # Alternate +/-0.5 so each phase keeps a non-zero MAD spread.
+            vals.append(base[phase] + (0.5 if seen % 2 else -0.5))
+    series = pd.Series(vals, dtype="float64")
+    ts = pd.Series(pd.to_datetime(
+        [BASE + dt.timedelta(seconds=s * 1200) for s in steps]))
+    kw = dict(device_name="R1", metric="m", interval_seconds=1200,
+              season_hours=1.0)
+
+    with_reset = detect_seasonal_residual(series, ts, **kw)
+    guard_off = detect_seasonal_residual(series, ts, max_gap_intervals=20.0,
+                                         **kw)
+
+    assert with_reset == [], ("a post-hole spike must not be judged against "
+                              "pre-gap history")
+    assert len(guard_off) == 1, ("the very same sample does flag when the "
+                                 "cadence is treated as continuous")
+    point = guard_off[0]
+    assert point.timestamp == ts.iloc[-1]
+    assert point.detector_config["phase"] == 2   # 20 % 3: its true cycle position
+    assert point.detector_config["grid_step"] == 20
 
 
 def test_detect_frame_defaults_to_interpretable_pair():

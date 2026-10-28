@@ -316,8 +316,8 @@ def test_seasonal_residual_flags_what_is_unusual_for_that_phase():
     assert p.baseline == pytest.approx(11.5)
     assert p.detector_config["season_len_samples"] == SEASON
     assert p.detector_config["phase"] == 0
-    assert f"phase 0/{SEASON}" in p.explanation
-    assert "assumed regular grid" in p.explanation
+    assert f"cycle position 0/{SEASON}" in p.explanation
+    assert "assumed grid" in p.explanation
 
 
 def test_seasonal_residual_sees_a_normal_ramp_as_normal():

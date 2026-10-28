@@ -15,10 +15,13 @@ Interpretable detectors plus one optional ML detector:
    test. A sustained small shift accumulates until it crosses the decision
    boundary, which is exactly what single-point z-scores are blind to. The
    statistic resets after a flag so one episode is reported once.
-5. ``seasonal_residual``- same-phase-of-day baseline built only from strictly
+5. ``seasonal_residual``- same-phase-of-cycle baseline built only from strictly
    past samples; flags what is unusual *for that time of day* rather than
-   unusual versus the last few minutes. Refuses (returns no verdicts) when the
-   sampling interval is unknown or the history holds too few same-phase samples.
+   unusual versus the last few minutes. The cycle position comes from the
+   timestamps (elapsed time on the assumed grid), so dropped or resampled rows
+   no longer shift later phases; it resets on a collection gap and abstains on
+   an irregular cadence. Refuses (returns no verdicts) when the sampling
+   interval is unknown or the history holds too few same-phase samples.
 6. ``isolation_forest`` - optional scikit-learn detector (seeded, hence
    reproducible). Never used as the default; must be chosen explicitly.
 
@@ -366,6 +369,8 @@ def detect_seasonal_residual(
     season_hours: float = 24.0,
     threshold: float = 3.5,
     min_hist: int = 4,
+    max_gap_intervals: float = 1.5,
+    phase_align_tol: float = 0.25,
 ) -> list[AnomalyPoint]:
     """Same-phase-of-cycle baseline detector (#5).
 
@@ -374,12 +379,25 @@ def detect_seasonal_residual(
     against the median of the *strictly past* samples that share its position
     in the seasonal cycle, scaled by the MAD of that same-phase history.
 
-    Honest limits, both stated in the explanation: the phase comes from the
-    sample's position on an assumed regular grid (irregular sampling weakens the
-    mapping), and the detector abstains entirely - producing no verdicts rather
-    than guesses - when the sampling interval is unknown, the season would be
-    shorter than two samples, or a phase has fewer than ``min_hist`` prior
-    observations.
+    The cycle position (phase) is derived from the *timestamps*, not the row
+    index: elapsed seconds from the first usable sample, divided by the
+    sampling interval, taken modulo the season length. This keeps the phase
+    honest when rows have been dropped, de-duplicated or resampled - an
+    index-based phase would silently shift every later verdict off its true
+    time-of-day.
+
+    Honest limits, each reflected in the verdict rather than hidden:
+    - abstains entirely when the sampling interval is unknown or the season
+      would be shorter than two samples;
+    - a phase is judged only once it has ``min_hist`` strictly-prior samples;
+    - when the gap between two consecutive samples exceeds
+      ``max_gap_intervals`` intervals the collection cadence has a hole, so the
+      phase history is reset and the re-anchored sample only seeds a fresh
+      baseline instead of being flagged against a pre-gap history;
+    - a sample that does not land within ``phase_align_tol`` of the assumed
+      grid, or carries an unusable (missing/NaT/negative) timestamp, is
+      skipped: an irregular or resampled cadence is not trusted to define a
+      phase.
     """
     if interval_seconds is None or interval_seconds <= 0:
         return []            # season not defensible: abstain, never guess
@@ -387,17 +405,51 @@ def detect_seasonal_residual(
     if m < 2:
         return []
     values = pd.to_numeric(series, errors="coerce")
+    ts = pd.to_datetime(timestamps, errors="coerce")
+    if len(ts) != len(values):
+        return []            # misaligned inputs: cannot place samples in time
+    valid_ts = ts.dropna()
+    if valid_ts.empty:
+        return []            # no usable clock: no defensible cycle position
     clean = values.dropna()
     global_scale = (MAD_SCALE
                     * float((clean - clean.median()).abs().median())
                     if len(clean) >= 2 else float("nan"))
+    # Fixed origin = first usable timestamp; elapsed time from here converts
+    # each timestamp into a position on the assumed regular grid, independent
+    # of how many rows survived upstream (gaps / dedupe / resampling).
+    origin = valid_ts.iloc[0]
+    elapsed = (ts - origin).dt.total_seconds()
+
     phase_hist: dict[int, list[float]] = {}
     points: list[AnomalyPoint] = []
+    prev_step: int | None = None
     for i in range(len(values)):
         x = values.iloc[i]
+        e = elapsed.iloc[i]
+        # A usable, non-negative elapsed time is required to locate the sample
+        # on the cycle; without it we can neither judge nor seed, and the
+        # cadence chain is broken so the next sample re-anchors.
+        if pd.isna(e) or e < 0:
+            prev_step = None
+            continue
+        stepf = float(e) / float(interval_seconds)
+        nearest = int(round(stepf))
+        # Only trust the phase when the timestamp actually sits on the assumed
+        # grid; a resampled/jittery cadence must not silently define a phase.
+        off_grid = abs(stepf - nearest) > phase_align_tol
+        gap = None if prev_step is None else nearest - prev_step
+        prev_step = nearest
         if pd.isna(x):
-            continue                     # missing: never enters the history
-        phase = i % m
+            continue                     # missing value: never enters history
+        if off_grid:
+            continue                     # irregular sampling: no defensible phase
+        if gap is not None and gap > max_gap_intervals:
+            # Collection hole: baselines from before the gap no longer describe
+            # this cadence, so rebuild from here and abstain on the boundary.
+            phase_hist = {nearest % m: [float(x)]}
+            continue
+        phase = nearest % m
         hist = phase_hist.setdefault(phase, [])
         if len(hist) < min_hist:
             hist.append(float(x))
@@ -424,18 +476,20 @@ def detect_seasonal_residual(
             threshold_upper=baseline + threshold * scale,
             threshold_lower=baseline - threshold * scale,
             deviation=float(ratio), severity=_severity(ratio, threshold),
-            detector="seasonal_residual", detector_version="1.0",
+            detector="seasonal_residual", detector_version="1.1",
             detector_config={"season_len_samples": m,
                              "season_hours": season_hours,
-                             "phase": phase, "threshold": threshold,
+                             "phase": phase, "grid_step": nearest,
+                             "phase_basis": "timestamp",
+                             "threshold": threshold,
                              "min_hist": min_hist},
             explanation=(
                 f"observed {float(x):.4g} is {ratio:.1f}x the spread "
-                f"({scale:.4g}{scale_note}) of phase {phase}/{m} "
+                f"({scale:.4g}{scale_note}) of cycle position {phase}/{m} "
                 f"(median {baseline:.4g} of {len(hist) - 1} prior same-phase "
-                "samples on an assumed regular grid). Unusual for this point "
-                "in the cycle, not necessarily unusual for the recent "
-                "minutes"),
+                "samples placed by elapsed time on the assumed grid). Unusual "
+                "for this point in the cycle, not necessarily unusual for the "
+                "recent minutes"),
             data_source=data_source,
             sample_id=(int(sample_ids.iloc[i]) if sample_ids is not None
                        and not pd.isna(sample_ids.iloc[i]) else None),
