@@ -228,6 +228,7 @@ def _set_dataset(label: str, dataset) -> None:
     st.session_state["np_lab_dataset_label"] = label
     st.session_state.pop("np_lab_run", None)
     st.session_state.pop("np_lab_refs_sel", None)
+    st.session_state.pop("np_lab_task", None)
 
 
 def _stored_dataset():
@@ -243,6 +244,35 @@ def _current_task() -> str | None:
     if _stored_dataset() is None:
         return None
     return TASK_BY_LABEL.get(st.session_state.get("np_lab_task"))
+
+
+def _recommended_task(dataset) -> tuple[str | None, str]:
+    """Recommend a task only when the validated dataset passes its real gate."""
+    readiness = {
+        task: lab_dataset.task_gate(dataset, task)
+        for task in lab_dataset.TASKS
+    }
+    ready = {task for task, (ok, _why) in readiness.items() if ok}
+    if dataset.label_kind != "none" and lab_dataset.TASK_CLASSIFICATION in ready:
+        return (lab_dataset.TASK_CLASSIFICATION,
+                "the source contains labels and enough examples for supervised "
+                "evaluation on a chronological holdout")
+    if lab_dataset.TASK_ANOMALY in ready:
+        if dataset.label_kind != "none":
+            return (lab_dataset.TASK_ANOMALY,
+                    "the source has ground-truth labels, so detector results "
+                    "can be compared with labelled intervals")
+        return (lab_dataset.TASK_ANOMALY,
+                "the selected data passes the anomaly readiness gate; results "
+                "will remain unsupervised because this source has no labels")
+    if lab_dataset.TASK_FORECAST in ready:
+        return (lab_dataset.TASK_FORECAST,
+                "the selected series passes the forecast data gate")
+    if lab_dataset.TASK_STATISTICS in ready:
+        return (lab_dataset.TASK_STATISTICS,
+                "descriptive statistics are supported by the available values")
+    return None, "No task currently passes the readiness gate. Review the " \
+        "series blockers and load more usable observations before modelling."
 
 
 # ---------------------------------------------------------------------------
@@ -889,6 +919,14 @@ def _render_inspect_step() -> None:
         with st.expander("Raw provenance record", expanded=False):
             st.json(dataset.provenance, expanded=False)
 
+    recommended, rationale = _recommended_task(dataset)
+    if recommended:
+        st.info(f"Suggested next experiment: **{TASK_LABELS[recommended]}** — "
+                f"{rationale}. This is a data-readiness suggestion, not a model "
+                "result or an automatic run.", icon="🧭")
+    else:
+        st.warning(rationale, icon="🧭")
+
     if dataset.warnings:
         with st.expander(f"Ingest warnings ({len(dataset.warnings)})",
                          expanded=False):
@@ -1066,7 +1104,16 @@ def _render_run_step() -> None:
                 "never assumed.", icon="🫙")
         return
 
-    task_picked = st.radio("Experiment task", list(TASK_LABELS.values()),
+    recommended, rationale = _recommended_task(dataset)
+    task_options = list(TASK_LABELS.values())
+    recommended_index = (task_options.index(TASK_LABELS[recommended])
+                          if recommended else 0)
+    st.caption(
+        f"Suggested task: {TASK_LABELS[recommended]} — {rationale}"
+        if recommended else rationale
+    )
+    task_picked = st.radio("Experiment task", task_options,
+                           index=recommended_index,
                            key="np_lab_task", horizontal=False)
     task = TASK_BY_LABEL[task_picked]
     ok, why = lab_dataset.task_gate(dataset, task)

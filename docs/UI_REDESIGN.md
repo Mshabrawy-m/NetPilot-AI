@@ -10,13 +10,13 @@ The Streamlit navigation is organized around workflows. The app keeps the existi
 | Network operations | Topology | Stored device/link graph, layout choices, demo fabric controls |
 | Network operations | Devices & interfaces | Device inventory and device details |
 | Network operations | Connectivity tests | Reachability probes and stored results |
-| Network operations | Metrics & history | Time-series metric inspection |
+| Network operations | Metrics & history | Provenance-filtered time-series exploration, descriptive summaries, recent-vs-earlier median comparison, and a prompt handoff to the Assistant |
 | Network operations | Anomalies | Detector runs, event review, batch scans and calibration |
 | Network operations | Operations center | Alerts, event and graph insights, Digital Twin structural report, impact analysis, human-reviewed change requests and audit history |
 | AI lab | Data analysis | Exploratory analysis and data quality over one selected stored source |
 | AI lab | Forecasting | Forecast comparison and evaluation on stored telemetry |
-| AI lab | Experiments | Simulated, stored, uploaded, allowlisted local, and configured read-only Prometheus sources; anomaly, forecasting, classification and statistics experiments; stored history and exports |
-| AI lab | Network assistant | Evidence-grounded investigation, proposal review, run history and knowledge queries |
+| AI lab | Experiments | Simulated, stored, uploaded, allowlisted local, and configured read-only Prometheus sources; readiness-based task suggestions; anomaly, forecasting, classification and statistics experiments; stored history and exports |
+| AI lab | Network assistant | Evidence-grounded investigation, source-aware prompt suggestions, persisted agent execution trace, proposal review, run history and knowledge queries |
 | System status | System status | Database/lab availability, collector state and runs, incidents, and disposable database reset |
 
 The Ops Center owns the structural Digital Twin and change-safety workflow because impact reports and human approval are part of request review. The Digital Twin is structural and read-only; its report must not be read as routing or traffic simulation. Change execution remains disabled by default and guarded by the existing approval and configuration checks.
@@ -31,13 +31,19 @@ There is no separate user settings page in this project. System configuration is
 
 Start at **Network overview** to see the stored inventory status and the timestamp and source of the most recent successful collection. Open **Topology** for device relationships, **Devices & interfaces** for inventory detail, or **Metrics & history** for measured time series. The mode indicator in the sidebar distinguishes demo mode from live-lab mode; missing live infrastructure is reported as unavailable.
 
+Metrics are queried for exactly one selected provenance, device, metric and interface. Summary statistics exclude unavailable values; gaps remain visible. The recent-versus-earlier comparison is descriptive and does not claim a cause. You can pass the selected series and its observed range into the Network Assistant as an editable, read-only investigation prompt.
+
 ### Run an AI Lab experiment
 
 Open **AI lab → Experiments**. Select a source, inspect the dataset and quality information, choose a supported task, configure and run it, then review actual evaluation output, stored history, and exports. Simulated data is identified as simulated and may include ground-truth labels. A Prometheus source is only usable when configured and available. Classification requires labels. The experiment workflow is analysis-only and does not execute network changes.
 
+The suggested task is selected from the dataset's actual task-readiness gates and its label provenance; it is a starting point only. Loading another dataset clears the previous task selection so the recommendation is recalculated.
+
 ### Review a proposed change
 
 Open **Network operations → Operations center** and inspect the impact evidence and request state before making an approval decision. Proposal, validation, approval, and execution are distinct persisted states. A structural impact report is not proof that a production change is safe. Execution remains subject to the existing disabled-by-default gates.
+
+In the Network Assistant, suggested prompts are based on the selected source's stored inventory, anomaly events and measured metrics. Completed runs expose their persisted stage transitions and next read-only checks. The assistant retains the existing LangGraph branches: informational requests stop before planning and configuration proposals; explicit change requests remain proposal-only and pass through the deterministic verifier.
 
 ## Shared UI organization
 

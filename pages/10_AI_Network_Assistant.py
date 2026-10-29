@@ -22,6 +22,7 @@ theme.page_header("AI Network Assistant",
 demo_banner_if_active()
 
 from config import get_settings
+from database import repository
 from database.connection import get_session
 from services import ai_workflow_service as ai_svc
 from services import nlquery, rag
@@ -48,6 +49,37 @@ def _jload(x):
     return json.loads(x) if isinstance(x, str) else x
 
 
+def _suggested_investigations(data_source: str) -> list[str]:
+    """Build useful prompt starters from stored inventory and evidence."""
+    def _load(session):
+        anomalies = repository.get_anomaly_events(
+            session, data_source=data_source, limit=3)
+        metrics = [row for row in repository.get_available_metrics(session)
+                   if row[3] == data_source]
+        return anomalies, metrics
+
+    anomalies, metrics = read(_load)
+    suggestions = [
+        "Summarize the current network evidence, including missing or stale "
+        "observations, and list the next read-only checks."
+    ]
+    if anomalies:
+        event = anomalies[0]
+        suggestions.append(
+            f"Investigate the recorded {event.severity} anomaly for "
+            f"{event.metric} on {event.device_name}. Cite the stored evidence "
+            "and suggest read-only checks."
+        )
+    if metrics:
+        device, metric, unit, _source = metrics[0]
+        suggestions.append(
+            f"Review recent {metric} measurements ({unit or 'unit not recorded'}) "
+            f"on {device}. Summarize their timestamps and limitations, then "
+            "suggest a read-only follow-up."
+        )
+    return suggestions[:3]
+
+
 def _render_detail(uuid: str, key_prefix: str) -> None:
     detail = read(lambda s: ai_svc.get_run_detail(s, uuid))
     if not detail:
@@ -58,6 +90,22 @@ def _render_detail(uuid: str, key_prefix: str) -> None:
         f"**Run** `{run.run_uuid[:8]}` · status: **{run.status}** · "
         f"source: `{run.data_source}` · type: `{run.request_type}` · "
         f"model: `{run.model}` · prompt v{run.prompt_version}")
+
+    transitions = detail.get("transitions") or []
+    if transitions:
+        with st.expander("Agent execution trace", expanded=False):
+            st.dataframe(pd.DataFrame([{
+                "step": transition.step_order,
+                "stage": transition.status,
+                "detail": transition.detail or "",
+                "recorded at (UTC)": transition.at,
+            } for transition in transitions]), hide_index=True,
+                width="stretch")
+            st.caption(
+                "These are persisted workflow transitions. Informational "
+                "requests stop before planning/configuration; only explicit "
+                "change requests reach the review-only proposal and verifier."
+            )
 
     if run.failure_reason:
         st.error(f"Safe stop: {run.failure_reason}")
@@ -101,6 +149,11 @@ def _render_detail(uuid: str, key_prefix: str) -> None:
         tag = "inference" if c.get("is_inference") else "evidence-backed"
         st.write(f"- **{c.get('cause')}** (confidence {c.get('confidence')}, "
                  f"{tag}; support {c.get('supporting_evidence')})")
+    checks = diag.get("next_read_only_checks") or []
+    if checks:
+        st.markdown("**Suggested next read-only checks:**")
+        for check in checks:
+            st.markdown(f"- {check}")
     if diag.get("missing_evidence"):
         st.caption(f"Missing/stale evidence disclosed: {diag['missing_evidence']}")
 
@@ -175,9 +228,29 @@ with tab_new:
     source = st.radio("Evidence source", ["demo", "live"], horizontal=True,
                       help="demo = clearly-labelled synthetic fixtures; "
                            "live = lab measurements already stored.")
+    st.markdown("#### Suggested investigations")
+    st.caption("Prompt starters are selected from this source's stored "
+               "inventory, anomalies, and measured metrics. Edit them before "
+               "running; the assistant still verifies evidence and intent.")
+    suggestions = _suggested_investigations(source)
+    suggestion_columns = st.columns(len(suggestions))
+    for index, (column, suggestion) in enumerate(
+            zip(suggestion_columns, suggestions)):
+        label = ("Network evidence" if index == 0 else
+                 "Recent anomaly" if "anomaly" in suggestion.lower() else
+                 "Metric review")
+        if column.button(label, key=f"np_ai_suggestion_{source}_{index}",
+                         width="stretch"):
+            st.session_state["np_ai_request_draft"] = suggestion
+            st.rerun()
+
+    draft = st.session_state.pop("np_ai_request_draft", None)
+    if draft is not None:
+        st.session_state["np_ai_request"] = draft
     request = st.text_area(
         "Your question or request (Arabic or English)",
-        placeholder="Why can’t PC1 reach PC2?  /  اعزل شبكة HR عن الخوادم باستثناء HTTPS")
+        placeholder="Why can’t PC1 reach PC2?  /  اعزل شبكة HR عن الخوادم باستثناء HTTPS",
+        key="np_ai_request")
     if st.button("🚀 Run investigation", width="stretch"):
         if not request.strip():
             st.warning("Please enter a request.")
