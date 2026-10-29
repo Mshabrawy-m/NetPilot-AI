@@ -807,3 +807,21 @@ class LabExperiment(Base):
     runtime_ms: Mapped[int] = mapped_column(Integer, default=0)
     #: Verified principal only; NULL in open mode (no identity is invented).
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class AgenticAnalysisRun(Base):
+    """Durable plan, tool-call outcomes and report for read-only analytics."""
+
+    __tablename__ = "agentic_analysis_runs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_uuid: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=db_utcnow)
+    status: Mapped[str] = mapped_column(String(16))
+    source_type: Mapped[str] = mapped_column(String(16))
+    source_id: Mapped[str] = mapped_column(String(128))
+    dataset_fingerprint: Mapped[str] = mapped_column(String(64))
+    request_text: Mapped[str] = mapped_column(String(1200))
+    objective: Mapped[str] = mapped_column(String(300))
+    plan_json: Mapped[str] = mapped_column(Text)
+    steps_json: Mapped[str] = mapped_column(Text)
+    report_text: Mapped[str] = mapped_column(Text)

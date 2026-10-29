@@ -40,8 +40,9 @@ if not settings.groq_api_key:
         "`.env` to enable live AI reasoning. Without it the assistant reports "
         "a safe failure rather than inventing an answer.", icon="🔑")
 
-tab_new, tab_hist, tab_know = st.tabs(["💬 New request", "🗂 Run history",
-                                        "📚 Knowledge & Ask"])
+tab_new, tab_agentic, tab_hist, tab_know = st.tabs([
+    "💬 New request", "🧭 Agentic Operations", "🗂 Run history",
+    "📚 Knowledge & Ask"])
 
 
 # ------------------------------------------------------------------ helpers
@@ -221,6 +222,119 @@ def _render_detail(uuid: str, key_prefix: str) -> None:
             st.success("Saved" if ok else "Run not found")
         st.caption(
             f"Currently: {run.human_review_outcome or 'not reviewed'}")
+
+
+with tab_agentic:
+    st.subheader("Agentic Operations")
+    st.caption(
+        "The planner selects registered, read-only analytics tools. Each task "
+        "runs through AI Lab services and is saved in experiment history. "
+        "No network changes, shell, SQL, or generated code are available.")
+    active_dataset = st.session_state.get("np_lab_dataset")
+    active_label = st.session_state.get("np_lab_dataset_label", "")
+    if active_dataset is None:
+        st.info("Load a dataset in AI Lab first. This workspace uses the same "
+                "validated dataset and its source provenance.")
+        if st.button("Open AI Lab", key="np_agentic_open_lab"):
+            st.switch_page("pages/12_AI_Lab.py")
+    else:
+        st.write(f"**Active data:** {active_dataset.source_type} · "
+                 f"{active_label or active_dataset.source_id} · "
+                 f"{len(active_dataset.inventory)} series")
+        st.caption(f"Dataset fingerprint: `{active_dataset.fingerprint}` · "
+                   f"latest observation: "
+                   f"{active_dataset.summary().get('time_max') or 'unknown'}")
+        if "np_agentic_draft" in st.session_state:
+            st.session_state["np_agentic_request"] = st.session_state.pop(
+                "np_agentic_draft")
+        st.markdown("**Suggested analyses**")
+        examples = [
+            "Summarize data quality and descriptive statistics for this dataset.",
+            "Detect anomalous behavior and identify which selected series merits follow-up.",
+            "Compare forecast models for the most relevant available metric.",
+        ]
+        cols = st.columns(len(examples))
+        for index, (column, example) in enumerate(zip(cols, examples)):
+            if column.button(f"Use suggestion {index + 1}",
+                             key=f"np_agentic_suggest_{index}",
+                             help=example, width="stretch"):
+                st.session_state["np_agentic_draft"] = example
+                st.rerun()
+        agent_request = st.text_area(
+            "Analysis request",
+            placeholder=("Identify the most problematic metric, run "
+                         "statistics and anomaly detection, then forecast it."),
+            max_chars=1200, key="np_agentic_request")
+        if st.button("🧭 Plan and run analyses", type="primary",
+                     key="np_agentic_run", disabled=not bool(agent_request.strip())):
+            from ai.groq_client import GroqAssistant
+            from services import agentic_analytics
+
+            session = get_session()
+            try:
+                with st.spinner("Planning registered tools and executing analyses…"):
+                    plan = agentic_analytics.plan_tools(
+                        GroqAssistant(), agent_request, active_dataset)
+                    result = agentic_analytics.execute_plan(
+                        session, active_dataset, plan,
+                        request_text=agent_request)
+                st.session_state["np_agentic_last"] = result
+            except Exception as exc:
+                st.error(f"Agent stopped safely: {type(exc).__name__}: "
+                         f"{str(exc)[:240]}")
+            finally:
+                session.close()
+        agent_result = st.session_state.get("np_agentic_last")
+        if agent_result and agent_result.get("fingerprint") == active_dataset.fingerprint:
+            st.divider()
+            st.write(f"**Run:** `{agent_result['run_uuid']}` · "
+                     f"status: **{agent_result['status']}**")
+            st.markdown(f"**Interpreted objective:** {agent_result['objective']}")
+            st.markdown("**Ordered plan**")
+            for index, step in enumerate(agent_result["plan"]["steps"], 1):
+                st.write(f"{index}. `{step['tool']}` — {step['purpose']} "
+                         f"(series {', '.join(step['series_ids']) or 'none'})")
+            st.markdown("**Observed execution**")
+            for index, step in enumerate(agent_result["steps"], 1):
+                with st.expander(
+                        f"{index}. {step['tool']} · {step['status']}" +
+                        (f" · experiment {step['experiment_id']}"
+                         if step.get("experiment_id") else ""),
+                        expanded=index == 1):
+                    if step.get("purpose"):
+                        st.caption(step["purpose"])
+                    if step.get("error"):
+                        st.error(f"Tool failed: {step['error']}")
+                    st.json(step.get("output", {}), expanded=False)
+            st.markdown("**Evidence-grounded report**")
+            st.markdown(agent_result["report"])
+        from services import agentic_analytics
+        persisted_runs = read(lambda db: agentic_analytics.list_runs(db, limit=20))
+        if persisted_runs:
+            st.divider()
+            st.markdown("**Recent Agentic Operations history**")
+            run_by_id = {row["run_uuid"]: row for row in persisted_runs}
+            selected_run = st.selectbox(
+                "Saved run", list(run_by_id),
+                format_func=lambda key: (
+                    f"{run_by_id[key]['created_at']} · "
+                    f"{run_by_id[key]['source_type']} · "
+                    f"{run_by_id[key]['status']} · "
+                    f"{run_by_id[key]['objective'][:55]}"),
+                key="np_agentic_history_select")
+            saved = run_by_id[selected_run]
+            st.caption(f"Request: {saved['request_text']} · source id: "
+                       f"{saved['source_id']} · fingerprint: "
+                       f"`{saved['dataset_fingerprint']}`")
+            st.json(saved["plan"], expanded=False)
+            st.dataframe(pd.DataFrame([
+                {"tool": step.get("tool"), "status": step.get("status"),
+                 "experiment id": step.get("experiment_id"),
+                 "series": ", ".join(step.get("series_ids", [])),
+                 "time": step.get("at"), "error": step.get("error")}
+                for step in (saved["steps"] or [])
+            ]), hide_index=True, width="stretch")
+            st.markdown(saved["report"])
 
 
 # ---------------------------------------------------------------- new request

@@ -15,7 +15,9 @@ for **human review**, gated by an independent deterministic verifier. Phase 4
 adds a **gated, lab-only change loop** (apply → post-change verify → rollback,
 both execution flags off by default), and Phase 5 an **AI Lab** that runs the
 same anomaly / forecast / classification / statistics pipeline on simulated,
-stored, uploaded or allowlisted telemetry.
+stored, uploaded or allowlisted telemetry. Its Agentic Operations workspace
+plans and invokes registered read-only statistics, anomaly and forecasting
+tools over the active validated dataset and persists the execution evidence.
 
 > **Safety boundary.** The assistant **only proposes**. It never connects to a
 > production network and never deploys a configuration by itself. The Phase 4
@@ -95,6 +97,7 @@ netpilot-ai/
 │   │                           #   warnings, backfill actuals → realized coverage
 │   ├── lab_tasks.py            # Phase 5: the four experiment tasks (bounded, gated)
 │   ├── lab_experiment.py       # Phase 5: runner + history + CSV/MD/HTML exports
+│   ├── agentic_analytics.py    # bounded planner + registered analysis tools
 │   ├── prometheus_source.py    # Phase 5: optional read-only live source (off by default)
 │   ├── ai_workflow_service.py  # Phase 3: drive a run + persist its audit trail
 │   └── app_state.py            # shared Streamlit page bootstrap
@@ -105,6 +108,7 @@ netpilot-ai/
 ├── tools/                      # one-off utilities (incl. optional live Groq check,
 │                               #   secret_scan_check.py used by CI)
 ├── docs/                       # design specs, roadmap and delivery reports
+│   ├── AGENTIC_ANALYTICS.md    # shared data path, tool limits and verification
 │   ├── NetPilot_Phase_1_Network_Foundation_EN.md
 │   ├── NetPilot_Phase_2_Data_Analysis_Forecasting_EN.md
 │   ├── NetPilot_Phase_3_Multi_Agent_AI_Safe_Operations_EN.md

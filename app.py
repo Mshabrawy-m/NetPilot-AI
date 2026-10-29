@@ -96,10 +96,10 @@ pages = st.navigation(
             st.Page("pages/11_Ops_Center.py", title="Operations center", icon="🛎️"),
         ],
         "AI lab": [
-            st.Page("pages/7_Data_Analysis.py", title="Data analysis", icon="🔬"),
-            st.Page("pages/9_Forecasting.py", title="Forecasting", icon="🔮"),
-            st.Page("pages/12_AI_Lab.py", title="Experiments", icon="🧪"),
-            st.Page("pages/10_AI_Network_Assistant.py", title="Network assistant", icon="💬"),
+            st.Page("pages/12_AI_Lab.py", title="AI Lab · data & forecasting", icon="🧪"),
+        ],
+        "Agentic Operations": [
+            st.Page("pages/10_AI_Network_Assistant.py", title="Network assistant & tools", icon="🤖"),
         ],
         "System status": [
             st.Page("pages/6_System_Status.py", title="System status", icon="🩺"),
