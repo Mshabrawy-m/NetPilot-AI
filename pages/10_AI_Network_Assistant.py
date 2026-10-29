@@ -308,8 +308,17 @@ with tab_agentic:
                     st.json(step.get("output", {}), expanded=False)
             st.markdown("**Evidence-grounded report**")
             st.markdown(agent_result["report"])
-        from services import agentic_analytics
-        persisted_runs = read(lambda db: agentic_analytics.list_runs(db, limit=20))
+        try:
+            from services import agentic_analytics
+            persisted_runs = read(
+                lambda db: agentic_analytics.list_runs(db, limit=20))
+        except Exception as exc:
+            # A history-reader import/DB issue must not make the whole
+            # Network Assistant page unavailable. Tool execution itself has
+            # a separate explicit safe-failure boundary above.
+            st.warning("Agentic run history is temporarily unavailable "
+                       f"({type(exc).__name__}).")
+            persisted_runs = []
         if persisted_runs:
             st.divider()
             st.markdown("**Recent Agentic Operations history**")
