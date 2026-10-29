@@ -40,12 +40,12 @@ netpilot-ai/
 │   ├── 4_Connectivity_Tests.py # allowlisted ping / traceroute
 │   ├── 5_Metrics_History.py    # time-series charts from stored measurements
 │   ├── 6_System_Status.py      # DB, lab, scheduler, runs, incidents, reset
-│   ├── 7_Data_Analysis.py      # Phase 2 EDA: quality, distributions, derived rates
+│   ├── 7_Data_Analysis.py      # retained legacy stored-data EDA page
 │   ├── 8_Anomalies.py          # Phase 2 anomaly events + explanations + context
-│   ├── 9_Forecasting.py        # Phase 2 model comparison + forecasts + warnings
-│   ├── 10_AI_Network_Assistant.py  # Phase 3 chat, evidence, verdict & review
+│   ├── 9_Forecasting.py        # retained legacy stored-data forecast page
+│   ├── 10_AI_Network_Assistant.py  # Phase 3 workflow + Agentic Operations tools
 │   ├── 11_Ops_Center.py        # v2: alerting, graph risk, insights, change loop, access
-│   └── 12_AI_Lab.py            # Phase 5: experiment wizard (sources, tasks, exports)
+│   └── 12_AI_Lab.py            # unified cross-source analysis, forecasts, history
 ├── ai/                         # Phase 3 multi-agent core (LangGraph workflow)
 │   ├── groq_client.py          # single Groq SDK choke point (timeouts, retries)
 │   ├── schemas.py              # typed Pydantic schemas for every model output
@@ -1121,11 +1121,11 @@ server, so it is documented as a boundary, not as working live operation.
 ## 17. Interface navigation and workflows
 
 The Streamlit sidebar groups existing pages into **Overview**, **Network
-operations**, **AI lab**, and **System status** workflows. The overview focuses
-on inventory health and collection freshness; topology, device, connectivity,
-metrics, anomaly and operations-center views are grouped for network work; data
-analysis, forecasting, experiments and the network assistant are grouped for AI
-work. The Ops Center retains the structural Digital Twin report and human
+operations**, **AI lab**, **Agentic Operations**, and **System status**. AI Lab
+unifies source selection, data quality, statistics, anomaly detection,
+forecasting, experiment history and exports. Network assistant also has a
+bounded read-only tool workflow over the active AI Lab dataset and stored
+topology. The Ops Center retains the structural Digital Twin report and human
 change-review workflow. No user-editable settings page is currently provided.
 
 See [`docs/UI_REDESIGN.md`](docs/UI_REDESIGN.md) for the page-to-feature map,

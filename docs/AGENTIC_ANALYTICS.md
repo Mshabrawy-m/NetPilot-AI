@@ -24,8 +24,8 @@ effective protocol, warnings, provenance and computed outputs.
 
 The Agentic Operations tab on Network assistant requires an active AI Lab
 dataset in the current Streamlit session. The existing Groq provider returns a
-strictly validated ordered plan with at most three calls. The registry exposes
-only:
+strictly validated ordered plan with at most three calls. A deterministic
+`inspect_dataset` operation runs first. The registered tools are:
 
 * `inspect_dataset` — deterministic read-only profile, source, quality and task
   readiness inspection.
@@ -34,20 +34,30 @@ only:
   rolling MAD and EWMA without the threshold sweep.
 * `run_forecast` — the existing AI Lab forecast comparison, limited to
   persistence, seasonal-naive and damped Holt, with a horizon capped at 48.
+* `get_topology_context` — bounded read of stored device/link status, graph
+  connectivity and articulation points.
+* `run_structural_impact_analysis` — stored-graph reachability impact for one
+  existing device, without device I/O or claims about runtime routing.
+* `inspect_experiment_history` — recent AI Lab runs for the current dataset
+  fingerprint, with a 1–20 row limit.
 
 The last three are selected by the validated plan. Series IDs are resolved
-against the active dataset inventory in Python. Unknown IDs and unknown tool or
-parameter fields fail closed. No model-provided code, shell, SQL, or arbitrary
-network access is accepted. Each task is persisted by the AI Lab experiment
-runner; the ordered plan, bounded outputs, status, request, dataset fingerprint,
+against the active dataset inventory in Python. Topology targets are matched
+against stored nodes. Unknown IDs and unknown tool or parameter fields fail
+closed; tools have one-call limits, and the complete plan has at most three
+steps. No model-provided code, shell, SQL, or arbitrary network access is
+accepted. Each analytics task is persisted by the AI Lab experiment runner; the
+ordered plan, bounded outputs, status, redacted request, dataset fingerprint,
 and evidence-based report are also persisted in `agentic_analysis_runs`. The UI
-shows executed operations and output separately from the final report.
+shows executed operations separately from the final report and exposes recent
+saved runs.
 
 The agent is analysis-only. It does not make topology or production changes.
 `change_loop_enabled` and `lab_execution_enabled` remain disabled. A missing
 provider key, invalid response, or missing active dataset stops the agent
-safely. The current agentic workspace does not yet query topology or operational
-anomaly tables; it analyzes only the dataset explicitly loaded in AI Lab.
+safely. Topology tools use the application’s stored topology; operational
+anomaly events are not queried by this agent. Analytics tools use only the
+validated dataset explicitly loaded in AI Lab.
 
 ## Verification
 

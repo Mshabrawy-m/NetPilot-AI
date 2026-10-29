@@ -23,6 +23,14 @@
 > `docs/NetPilot_Forecasting_Anomaly_Enhancement_v2_Report.md`; no row status
 > regressed, and B11 remains the only open menu item.
 
+> **Current audit supplement (2026-10-29):** use
+> `docs/PROJECT_STATUS_AND_HANDOVER.md` for current phase verdicts and evidence.
+> This matrix is an earlier snapshot: D6 is now implemented with a
+> source-scoped per-hop path inspection; the D1–D4 reports supersede the older
+> E4 “missing” row for the structural Digital Twin engine/registry. Routing-level
+> simulation and live change-loop acceptance remain unavailable and are not
+> claimed complete. Older counts and revisions below remain historical.
+
 **Audit date:** 2026-10-26
 **Repository snapshot:** branch `main` @ `f5dcb5f5518a7d69af1bb36242536c60d2170526`
 **Working tree:** 17 modified tracked files + 13 B1–B4 untracked files (8

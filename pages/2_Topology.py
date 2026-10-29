@@ -29,7 +29,7 @@ render_flash()
 from analytics import graph
 from config import get_settings
 from database.connection import get_session
-from services import demo_data, topology_service
+from services import demo_data, topology_path, topology_service
 
 settings = get_settings()
 
@@ -189,3 +189,56 @@ with c2:
         ]),
         hide_index=True, width="stretch", height=260,
     )
+
+st.divider()
+st.subheader("Path troubleshooting")
+st.caption("Inspect the shortest path in the stored topology and overlay "
+           "source-filtered measurements recorded on each hop. This is not "
+           "an active ping or a routing-table verification.")
+device_ids = sorted(g.nodes)
+path_cols = st.columns([1, 1, 1, 1])
+path_source = path_cols[0].selectbox("From", device_ids,
+                                     key="np_path_source")
+path_dest_options = [node for node in device_ids if node != path_source]
+path_destination = path_cols[1].selectbox(
+    "To", path_dest_options, key="np_path_destination")
+path_data_source = path_cols[2].selectbox(
+    "Measurement source", ["demo", "live"],
+    index=0 if settings.demo_mode else 1, key="np_path_data_source")
+inspect_clicked = path_cols[3].button(
+    "Inspect path", type="primary", key="np_path_inspect", width="stretch",
+    disabled=len(device_ids) < 2)
+if len(device_ids) < 2:
+    st.info("Path inspection needs at least two registered devices.")
+if inspect_clicked:
+    st.session_state["np_topology_path_result"] = read(
+        lambda session: topology_path.inspect_path(
+            session, path_source, path_destination,
+            data_source=path_data_source))
+
+path_result = st.session_state.get("np_topology_path_result")
+if path_result and path_result.get("source") == path_source \
+        and path_result.get("destination") == path_destination \
+        and path_result.get("data_source") == path_data_source:
+    if path_result["status"] == "no_documented_path":
+        st.warning(path_result["message"])
+    else:
+        st.success(f"Structural path: {' → '.join(path_result['path'])} · "
+                   f"{path_result['hop_count']} link(s)")
+        hop_rows = []
+        for hop in path_result["hops"]:
+            next_link = hop["next_link"]
+            measurements = hop["measurements"]
+            hop_rows.append({
+                "hop": hop["index"], "device": hop["device"],
+                "device status": hop["device_status"],
+                "next link": (f"{next_link['to']} · {next_link['status']}"
+                              if next_link else "destination"),
+                "latest source metrics": "; ".join(
+                    f"{item['metric']}={item['value']} {item['unit'] or ''} "
+                    f"({item['collected_at'] or 'timestamp missing'})"
+                    for item in measurements) or "no recorded metrics",
+            })
+        st.dataframe(pd.DataFrame(hop_rows), hide_index=True,
+                     width="stretch")
+        st.caption(path_result["caveat"])
