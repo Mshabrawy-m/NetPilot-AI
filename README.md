@@ -1,4 +1,4 @@
-# NetPilot AI — Phases 1–5: Network Foundation, Analytics, AI Assistant & Gated Change Loop
+# NetPilot AI — Network Monitoring, Analytics & Agentic Operations
 
 A working virtual network lab (Containerlab + FRRouting), real periodic
 network-data collection, a replaceable storage layer (SQLite by default,
@@ -26,6 +26,40 @@ tools over the active validated dataset and persists the execution evidence.
 > non-self human approval. It has **no live-lab evidence** on this host
 > (no Docker/Containerlab); see §14 and `NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md`.
 
+## Current project workflow
+
+NetPilot AI collects and stores network telemetry, then helps an operator
+inspect topology, review anomalies, compare forecasts, and investigate with
+bounded AI tools. The Streamlit UI is organized as **Overview**, **Network
+operations**, **AI lab**, **Agentic Operations**, and **System status**.
+
+The AI Lab is the unified path for simulated data, stored project measurements,
+uploaded CSV files, allowlisted historical files, and an optional read-only
+Prometheus source. Each dataset carries its source and provenance into the
+statistics, anomaly, forecasting, history, and export workflow. Simulated data
+is clearly marked and is not evidence from a live network.
+
+The Network Assistant can run a separate evidence-grounded investigation and
+has an Agentic Operations tab that asks the configured provider to select from
+registered, bounded application tools. The tools execute existing analytics
+and read-only topology services; their actual results are shown and saved. A
+provider timeout is a failed run. The Digital Twin in the Ops Center is a
+read-only structural reachability analysis, not a routing or traffic
+simulator. Any supported change remains subject to human review and disabled
+execution flags.
+
+For the quickest local demonstration, start in demo mode as described in §5,
+open **AI lab → AI Lab · data & forecasting**, build a simulated dataset, and
+run a supported experiment. Then use the Network Assistant's deterministic
+**Knowledge & Ask** tab for an offline evidence query. Demonstrating the
+provider-planned agent tools additionally requires a reachable Groq provider;
+see [`docs/PROJECT_STATUS_AND_HANDOVER.md`](docs/PROJECT_STATUS_AND_HANDOVER.md)
+for the current verification limits and [`docs/DEMO_RUNBOOK.md`](docs/DEMO_RUNBOOK.md)
+for the recording sequence.
+
+The detailed phase documents below preserve the project history. For current
+status and verified limitations, use the owner handover linked above.
+
 ---
 
 ## 1. Project structure
@@ -34,15 +68,15 @@ tools over the active validated dataset and persists the execution evidence.
 netpilot-ai/
 ├── app.py                      # Streamlit entry point
 ├── pages/
-│   ├── 1_Overview.py           # device counts, network status, last collection
+│   ├── 1_Overview.py           # retained standalone overview; app.py is current nav view
 │   ├── 2_Topology.py           # interactive graph generated from lab data
 │   ├── 3_Devices.py            # device/interface tables + per-device detail
 │   ├── 4_Connectivity_Tests.py # allowlisted ping / traceroute
 │   ├── 5_Metrics_History.py    # time-series charts from stored measurements
 │   ├── 6_System_Status.py      # DB, lab, scheduler, runs, incidents, reset
-│   ├── 7_Data_Analysis.py      # retained legacy stored-data EDA page
+│   ├── 7_Data_Analysis.py      # retained legacy stored-data EDA page (not in sidebar)
 │   ├── 8_Anomalies.py          # Phase 2 anomaly events + explanations + context
-│   ├── 9_Forecasting.py        # retained legacy stored-data forecast page
+│   ├── 9_Forecasting.py        # retained legacy stored-data forecast page (not in sidebar)
 │   ├── 10_AI_Network_Assistant.py  # Phase 3 workflow + Agentic Operations tools
 │   ├── 11_Ops_Center.py        # v2: alerting, graph risk, insights, change loop, access
 │   └── 12_AI_Lab.py            # unified cross-source analysis, forecasts, history
@@ -315,7 +349,7 @@ image and no external service is required to start the UI:
 | Cloud setting | Value |
 |---|---|
 | Repository | this repo (the free plan requires it to be public) |
-| **Main script path** | `app.py` (landing page; `pages/` is picked up automatically) |
+| **Main script path** | `app.py` (entry point and grouped navigation; legacy page files are not all listed in the sidebar) |
 | Requirements file | `requirements.txt` at the root (Linux wheels only; no Windows-only package, `psycopg2` deliberately left commented out) |
 | Python version | choose **3.11** or **3.12** in *Advanced settings* — both are the versions CI exercises. `runtime.txt` is not honoured by Community Cloud, so it is intentionally absent from this repo. |
 
@@ -717,35 +751,46 @@ dataset/harness error, `3` safety-gate failure.
 
 With the dashboard running (demo or live mode):
 
-1. **Overview** — device counters, network status badge, last collection time.
-2. **Topology** — graph with R1/R2/R3/PC1/PC2 rendered from the database
-   (status colors; hover shows IP and status; live mode after lab deploy).
-3. **Devices** — select a device, see interfaces, addresses, latest metrics.
-4. **Connectivity Tests** — pick source/destination (selector only offers
-   lab inventory), run ping; failure/timeout messages are explicit; results
-   are persisted (see Recent tests).
-5. **Metrics & History** — choose device + metric + range → chart; metrics
-   without data are not offered.
-6. **System Status** — DB/lab connectivity, scheduler state, run history,
+1. **Overview → Network overview** — device counters, network status, latest
+   successful collection time and its source.
+2. **Network operations → Topology** — graph with R1/R2/R3/PC1/PC2 rendered
+   from the database (status colors; hover shows IP and status; live mode
+   after lab deploy).
+3. **Network operations → Devices & interfaces** — select a device, see
+   interfaces, addresses and latest metrics.
+4. **Network operations → Connectivity tests** — pick source/destination
+   (selector only offers lab inventory), run ping; failure/timeout messages
+   are explicit; results are persisted (see Recent tests).
+5. **Network operations → Metrics & history** — choose device, metric and
+   range to chart; metrics without data are not offered.
+6. **System status** — DB/lab connectivity, scheduler state, run history,
    open incidents, guarded data reset.
 7. With the lab deployed: stop a node (`docker stop R3`) → next collection
    marks it `down`, opens an incident, links touching it go `down`; restart
    (`docker start R3`) → incident resolves on the next cycle.
-8. **Anomalies (page 8)** — choose a series and press *Run detection*: each
-   flagged point carries its baseline, threshold and explanation; a detector
+8. **Network operations → Anomalies** — choose a series and press
+   *Run detection*: each flagged point carries its baseline, threshold and
+   explanation; a detector
    that cannot form an opinion (unknown interval, season that does not fit the
    sample) reports an explicit abstention note instead of a clean result, and
    *Scan ready series* states its own cap instead of quietly doing less.
-9. **Forecasting (page 9)** — press *Run forecast comparison*: all models are
-   scored on identical held-out timestamps, MAPE/sMAPE/MASE/skill are shown
-   only where they are defensible (otherwise blank, never 0), the band is
-   labelled with how it was calibrated, and coverage stays *unknown* until
-   real actuals are backfilled — after that it becomes realized coverage.
-10. **AI Lab (page 12)** — build a simulated dataset (or load project history /
-    upload a CSV), inspect the provenance badge and per-task gates, pick a task,
-    press *Run experiment*. A source that cannot support the task is refused
-    with the threshold named; the run (success **or** refusal) appears in the
-    history table and the four exports describe only that computed run.
+9. **Network operations → Operations center** — review alerts, graph risk,
+   structural impact analysis, and the change approval boundary. Do not
+   enable application flags for a demo.
+10. **AI lab → AI Lab · data & forecasting** — build a simulated dataset,
+    load stored measurements, or upload a CSV; inspect source/provenance and task gates,
+    then run statistics, anomaly detection, forecasting or another supported
+    task. Results, history and exports describe the actual computed run.
+11. **Agentic Operations → Network assistant & tools** — with the active AI
+    Lab dataset and a reachable Groq provider, request an analysis and inspect
+    the validated plan, registered-tool outputs and saved run. A provider
+    timeout is a failed run, not a diagnosis; the deterministic **Knowledge &
+    Ask** tab is an offline evidence-query fallback, not an agent run.
+
+The older **Data Analysis** and **Forecasting** page modules remain in the
+repository for their existing stored-data workflows and regression coverage;
+they are not part of the current sidebar. Use AI Lab as the unified workflow
+for new experiments across supported data sources.
 
 ---
 
@@ -886,7 +931,9 @@ verified reports coverage NULL rather than 100 %). Raw `metric_samples`
 are never modified, and demo/live provenance is preserved end-to-end
 (`data_source` on every row, filter, run and event).
 
-**New UI:** page 7 Data Analysis, page 8 Anomalies, page 9 Forecasting.
+**UI at the Phase 2 release:** page 7 Data Analysis, page 8 Anomalies,
+page 9 Forecasting. The current sidebar consolidates stored and imported
+analysis under AI Lab; see §17 for the current navigation.
 Page 8 adds detector selection (including the opt-in change-point
 detectors), sensitivity controls, the bounded batch scan with its cap
 reported, and the event aggregate. Page 9 adds the accuracy KPIs, the
@@ -1055,9 +1102,10 @@ whole stack stays importable under restrictive App-Control policies.
 **CI (`.github/workflows/ci.yml`).** On every PR/push: a secret-hygiene gate
 (`tools/secret_scan_check.py` + a `git ls-files` check that no `.env` is
 committed), the offline **pytest matrix** on Python 3.11 and 3.12 with a
-syntax `compileall` gate, the **headless UI smoke** over every page, and a
-build-only Docker smoke. The suite needs no keys, network or Docker, so CI is
-green wherever the code is.
+syntax `compileall` gate, the **headless UI smoke** over the configured pages,
+and a build-only Docker smoke. These are workflow definitions, not proof of a
+green run on the current revision. Remote CI status was not checked for this
+handover; the local UI smoke also remains unverified.
 
 ```bash
 # run the whole stack
@@ -1091,6 +1139,14 @@ Live — is carried into the result, the stored history row and the exports.
 Synthetic data is labelled *not real-network traffic* wherever it appears; an
 upload's provenance is recorded as an unverified operator claim.
 
+**Quick CSV workflow.** In AI Lab, choose **Upload a CSV/TSV file from the
+browser**, select a file, review the preview and guessed column types, confirm
+the timestamp/device/metric/value mapping and units, then click **Validate and
+load upload**. Open **② Inspect** to review source, time range, quality and
+rejected-row warnings. Choose a task in **③ Configure & run**, check its gate,
+and click **Run experiment**. The upload is parsed as data, never executed;
+the app records the provided provenance as an operator claim.
+
 **Tasks.** Anomaly detector comparison (6 detectors, labelled scoring when
 truth exists, agreement diagnostics, threshold-sensitivity curve, opt-in
 multivariate pass); forecast comparison (5 models + a marked ensemble blend,
@@ -1120,13 +1176,16 @@ server, so it is documented as a boundary, not as working live operation.
 
 ## 17. Interface navigation and workflows
 
-The Streamlit sidebar groups existing pages into **Overview**, **Network
+The Streamlit sidebar groups the application into **Overview**, **Network
 operations**, **AI lab**, **Agentic Operations**, and **System status**. AI Lab
 unifies source selection, data quality, statistics, anomaly detection,
 forecasting, experiment history and exports. Network assistant also has a
 bounded read-only tool workflow over the active AI Lab dataset and stored
-topology. The Ops Center retains the structural Digital Twin report and human
-change-review workflow. No user-editable settings page is currently provided.
+topology. The Ops Center retains structural Digital Twin reporting and human
+change review. The Digital Twin does not simulate routing or traffic. The
+older stored-data Data Analysis and Forecasting pages remain in the repository
+but are not listed in navigation; AI Lab is the canonical cross-source user
+workflow. No user-editable settings page is currently provided.
 
 See [`docs/UI_REDESIGN.md`](docs/UI_REDESIGN.md) for the page-to-feature map,
 workflow guide, shared UI modules and current interface limitations.

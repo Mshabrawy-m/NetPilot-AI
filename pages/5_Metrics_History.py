@@ -9,6 +9,7 @@ import plotly.express as px
 import streamlit as st
 
 from services.app_state import bootstrap, demo_banner_if_active, read, samples_to_frame, sidebar_status
+from services.metric_summary import summarize_link_state
 
 from ui import theme
 
@@ -83,15 +84,26 @@ elif frame["value"].dropna().empty:
 else:
     valid = frame.dropna(subset=["value"]).sort_values("collected_at")
     values = valid["value"].astype(float).tolist()
-    latest = values[-1]
-    p95 = float(valid["value"].quantile(0.95))
+    is_link_state = metric == "if.operstate" or unit == "link"
+    unavailable_count = int(frame["value"].isna().sum())
     summary = st.columns(4)
-    summary[0].metric("Latest", f"{latest:,.4g} {unit or ''}".strip())
-    summary[1].metric("Median", f"{statistics.median(values):,.4g} {unit or ''}".strip())
-    summary[2].metric("95th percentile", f"{p95:,.4g} {unit or ''}".strip())
-    summary[3].metric("Unavailable samples", int(frame["value"].isna().sum()))
+    if is_link_state:
+        link = summarize_link_state(frame["value"].tolist())
+        summary[0].metric("Latest link state", str(link["latest"]))
+        summary[1].metric("Link up samples", int(link["up"]))
+        summary[2].metric("Link down samples", int(link["down"]))
+        summary[3].metric("Unavailable samples", unavailable_count)
+        if int(link["unknown"]):
+            st.warning(f"{link['unknown']} samples contain an unrecognized link-state value.")
+    else:
+        latest = values[-1]
+        p95 = float(valid["value"].quantile(0.95))
+        summary[0].metric("Latest", f"{latest:,.4g} {unit or ''}".strip())
+        summary[1].metric("Median", f"{statistics.median(values):,.4g} {unit or ''}".strip())
+        summary[2].metric("95th percentile", f"{p95:,.4g} {unit or ''}".strip())
+        summary[3].metric("Unavailable samples", unavailable_count)
 
-    if len(values) >= 6:
+    if not is_link_state and len(values) >= 6:
         half = max(3, len(values) // 2)
         earlier = statistics.median(values[:len(values) - half])
         recent = statistics.median(values[-half:])
@@ -109,7 +121,7 @@ else:
             )
         st.info(f"{trend_summary} This describes the selected samples; it does "
                 "not establish a cause.")
-    elif len(values) > 1:
+    elif not is_link_state and len(values) > 1:
         st.caption("Trend comparison needs at least six non-null samples; "
                    "widen the time range to see a recent-versus-earlier comparison.")
 
@@ -121,7 +133,7 @@ else:
         start = valid["collected_at"].iloc[0]
         end = valid["collected_at"].iloc[-1]
         trend_note = ""
-        if len(values) >= 6:
+        if not is_link_state and len(values) >= 6:
             trend_note = f" The recent-half median changed by {change}."
         st.session_state["np_ai_request_draft"] = (
             f"Investigate the observed {metric} series on {device_name}"
@@ -138,6 +150,9 @@ else:
                   y="value", markers=True,
                   labels={"value": f"{metric}{' [' + unit + ']' if unit else ''}",
                           "collected_at": "Time (UTC)"})
+    if is_link_state:
+        fig.update_yaxes(tickmode="array", tickvals=[0, 1],
+                         ticktext=["Down", "Up"], title="Link state")
     fig.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10))
     st.plotly_chart(fig, width="stretch")
 

@@ -207,3 +207,71 @@ The test run generated/updated ignored artifacts such as the temporary pytest
 directory, caches, and the UI smoke database. Existing ignored evidence
 directories and reports were preserved. No destructive Git command or
 production-network operation was run.
+
+## Final-submission cleanup addendum (2026-10-29)
+
+This supplementary pass started from a clean `main` at `f258f36`, matching
+`origin/main`. It changed documentation only; the historical base revision at
+the top of this report remains the base for the original audit.
+
+The README's current workflow and manual checklist and the demo runbook were
+updated to use the actual grouped sidebar navigation. They now describe the
+AI Lab simulator and experiment flow, separate the deterministic Knowledge &
+Ask query from provider-planned Agentic Operations, and avoid stale UI/test
+claims. The demo runbook marks its topology seed values as previously observed
+and tells the presenter to verify them on the recording machine. Its initial
+overview no longer promises a separate landing page or a “Safety guarantees”
+panel.
+
+The older stored-data EDA and forecasting page modules were retained. The
+unified AI Lab is the current cross-source workflow, while the older modules
+remain referenced by the Phase 2 requirements/delivery history and the
+forecast page is still exercised by the UI smoke script. Removing them would
+break an existing workflow or documented test surface without improving the
+current sidebar. `pages/1_Overview.py` was also left intact; `app.py` supplies
+the current grouped-navigation overview.
+
+Cleanup verification:
+
+* The focused AI Lab, Agentic Operations, topology path, forecast, RAG, and
+  ship-hygiene selection collected **250 tests: 250 passed, 0 failed, 0
+  skipped, 0 errors** (exit status 0). Four existing `datetime.utcnow()`
+  deprecation warnings were emitted by workflow-routing tests.
+* The broad offline suite collected **977 tests: 977 passed, 0 failed, 0
+  skipped, 0 errors** (exit status 0), using the documented `.venv` Python
+  3.12.10 and excluding `tests/test_api.py`. A `--collect-only` pass
+  independently confirmed 977 items. The four API read-model tests also passed
+  separately. Running the HTTP/WebSocket `TestClient` tests stalled while
+  creating their local client and was interrupted; no HTTP API integration
+  result is claimed.
+* Python compilation, the AI-package safety scan, dependency imports, and
+  `git diff --check` passed. The repository secret-scan script was run after
+  pytest and flagged a deliberately planted fake key in pytest's generated
+  temporary test fixture; this is not a credential in project code. Re-run it
+  after clearing that temporary fixture directory in an unrestricted clean
+  checkout.
+* Both `change_loop_enabled` and `lab_execution_enabled` remain `False`.
+* Streamlit startup was instrumented with stdout/stderr capture and Python
+  faulthandler for 45.6 seconds. The process stayed alive without emitting its
+  startup log or binding HTTP. Its stack remained inside Python 3.12 Windows
+  Proactor event-loop initialization (`_fallback_socketpair` / `socket.accept`)
+  before Streamlit app initialization. An independent `asyncio.new_event_loop()`
+  also timed out, and a synchronous loopback TCP bind/connect raised
+  `PermissionError`. This confirms a local sandbox loopback-socket restriction;
+  it does not establish an application startup defect. No HTTP 200 was observed.
+* A direct Streamlit `AppTest` attempt stalled at initial AI Lab render, so no
+  browser-rendered page or sidebar was verified. No UI claims should be made
+  from the passing Python tests.
+* The focused tests exercise simulated dataset generation, provenance and
+  quality gates, computed statistics/anomaly/forecast services, evaluation,
+  persistence/history, registered Agentic Operations tools with a deterministic
+  planner, and provider-failure handling. The planner is a test fake; live Groq
+  tool selection was not verified. The demo workflow is therefore supported
+  by offline service tests but remains unverified end to end in the UI.
+* Both feature flags were inspected in-process and were `False`. No test or
+  verification step changed network state, applied a device operation, or
+  claimed live telemetry/routing execution.
+
+No application code, data source, credentials, or execution setting was
+changed in this cleanup. No commit, push, tag, deployment, or destructive Git
+operation was performed.
