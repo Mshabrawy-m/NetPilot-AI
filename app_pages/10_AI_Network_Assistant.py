@@ -236,7 +236,7 @@ with tab_agentic:
         st.info("Load a dataset in AI Lab first. This workspace uses the same "
                 "validated dataset and its source provenance.")
         if st.button("Open AI Lab", key="np_agentic_open_lab"):
-            st.switch_page("pages/12_AI_Lab.py")
+            st.switch_page("app_pages/12_AI_Lab.py")
     else:
         st.write(f"**Active data:** {active_dataset.source_type} · "
                  f"{active_label or active_dataset.source_id} · "

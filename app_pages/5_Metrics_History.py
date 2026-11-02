@@ -144,7 +144,7 @@ else:
             "supports, disclose missing or stale evidence, and suggest read-only "
             "checks only. Do not propose or apply a network change."
         )
-        st.switch_page("pages/10_AI_Network_Assistant.py")
+        st.switch_page("app_pages/10_AI_Network_Assistant.py")
 
     fig = px.line(valid, x="collected_at",
                   y="value", markers=True,

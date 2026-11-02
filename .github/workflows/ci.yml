@@ -117,7 +117,7 @@ jobs:
         # If a new top-level package with .py files appears, name it here.
         run: |
           set -euo pipefail
-          paths="app.py config.py api analytics database evaluation network services pages ai tests tools ui"
+          paths="app.py config.py api analytics database evaluation network services app_pages ai tests tools ui"
           for p in $paths; do
             if [ ! -e "$p" ]; then
               echo "::error::Syntax gate path '$p' is gone: a package was renamed or deleted. Fix the list rather than let the gate under-cover."

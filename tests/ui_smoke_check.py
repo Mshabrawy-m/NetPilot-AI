@@ -34,7 +34,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{(ROOT / 'data' / 'uitest.db').as_posix
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 TARGETS = ["app.py"] + sorted(str(p.relative_to(ROOT))
-                              for p in (ROOT / "pages").glob("*.py"))
+                              for p in (ROOT / "app_pages").glob("*.py"))
 
 failed = False
 for target in TARGETS:
@@ -103,16 +103,16 @@ def page10_same_run_in_two_tabs() -> bool:
         session.close()
 
     at = AppTest.from_file(
-        str(ROOT / "pages/10_AI_Network_Assistant.py"), default_timeout=180)
+        str(ROOT / "app_pages/10_AI_Network_Assistant.py"), default_timeout=180)
     at.session_state["last_ai_run"] = run_uuid
     at.run()
     if at.exception:
-        print("[FAIL] pages/10_AI_Network_Assistant.py: same run in two tabs "
+        print("[FAIL] app_pages/10_AI_Network_Assistant.py: same run in two tabs "
               "(duplicate element key)")
         for exc in at.exception:
             print("       ", str(exc)[:400])
         return False
-    print("[ OK ] pages/10_AI_Network_Assistant.py: same run in two tabs")
+    print("[ OK ] app_pages/10_AI_Network_Assistant.py: same run in two tabs")
     return True
 
 
@@ -135,29 +135,29 @@ def page11_flash_survives_rerun() -> bool:
 
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.run()
         field = next((t for t in at.text_input
                       if "Rule name" in (t.label or "")), None)
         if field is None:
-            print("[FAIL] pages/11_Ops_Center.py: rule-name field not rendered")
+            print("[FAIL] app_pages/11_Ops_Center.py: rule-name field not rendered")
             return False
         field.set_value(rule_name)
         button = next((b for b in at.button
                        if "Create rule" in (b.label or "")), None)
         if button is None:
-            print("[FAIL] pages/11_Ops_Center.py: 'Create rule' not rendered")
+            print("[FAIL] app_pages/11_Ops_Center.py: 'Create rule' not rendered")
             return False
         button.click()
         at.run()
         if at.exception:
-            print("[FAIL] pages/11_Ops_Center.py: after creating a rule")
+            print("[FAIL] app_pages/11_Ops_Center.py: after creating a rule")
             for exc in at.exception:
                 print("       ", str(exc)[:400])
             return False
         expected = f"Rule '{rule_name}' created"
         if not any(expected in s.value for s in at.success):
-            print("[FAIL] pages/11_Ops_Center.py: confirmation lost after "
+            print("[FAIL] app_pages/11_Ops_Center.py: confirmation lost after "
                   "st.rerun()")
             return False
         session = get_session()
@@ -167,9 +167,9 @@ def page11_flash_survives_rerun() -> bool:
         finally:
             session.close()
         if not persisted:
-            print("[FAIL] pages/11_Ops_Center.py: rule was not persisted")
+            print("[FAIL] app_pages/11_Ops_Center.py: rule was not persisted")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: confirmation survives st.rerun()")
+        print("[ OK ] app_pages/11_Ops_Center.py: confirmation survives st.rerun()")
         return True
     finally:
         session = get_session()
@@ -302,33 +302,33 @@ def page11_open_mode_approval_feedback() -> bool:
     uuid = _create_smoke_change(None, False)
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.run()
         impact = _selectbox(at, "Impact analysis request")
         if impact is None:
-            print("[FAIL] pages/11_Ops_Center.py: impact selector not rendered")
+            print("[FAIL] app_pages/11_Ops_Center.py: impact selector not rendered")
             return False
         impact.select(uuid)
         at.run()
         box = _selectbox(at, "Approve (validated)")
         if box is None:
-            print("[FAIL] pages/11_Ops_Center.py: approve selector not rendered")
+            print("[FAIL] app_pages/11_Ops_Center.py: approve selector not rendered")
             return False
         box.select(uuid)
         at.run()
         button = _button(at, "✅ Approve")
         if button is None:
-            print("[FAIL] pages/11_Ops_Center.py: approve button not rendered")
+            print("[FAIL] app_pages/11_Ops_Center.py: approve button not rendered")
             return False
         button.click()
         at.run()
         if at.exception:
-            print("[FAIL] pages/11_Ops_Center.py: open-mode approval click")
+            print("[FAIL] app_pages/11_Ops_Center.py: open-mode approval click")
             for exc in at.exception:
                 print("       ", str(exc)[:400])
             return False
         if not any("authenticated principal" in w.value for w in at.warning):
-            print("[FAIL] pages/11_Ops_Center.py: open-mode approval feedback "
+            print("[FAIL] app_pages/11_Ops_Center.py: open-mode approval feedback "
                   "lost after st.rerun()")
             return False
 
@@ -341,10 +341,10 @@ def page11_open_mode_approval_feedback() -> bool:
         finally:
             session.close()
         if status != "validated" or approved_by is not None:
-            print("[FAIL] pages/11_Ops_Center.py: open-mode approval changed "
+            print("[FAIL] app_pages/11_Ops_Center.py: open-mode approval changed "
                   f"the request (status={status}, approved_by={approved_by})")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: open-mode approval fails closed "
+        print("[ OK ] app_pages/11_Ops_Center.py: open-mode approval fails closed "
               "with durable feedback")
         return True
     finally:
@@ -359,82 +359,82 @@ def page11_authenticated_decision_feedback() -> bool:
              _create_smoke_change("alice", True)]
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.session_state["_np_user"] = {"username": "bob",
                                         "role": "operator"}
         at.run()
 
         impact = _selectbox(at, "Impact analysis request")
         if impact is None:
-            print("[FAIL] pages/11_Ops_Center.py: impact selector missing "
+            print("[FAIL] app_pages/11_Ops_Center.py: impact selector missing "
                   "with auth enabled")
             return False
         impact.select(uuids[0])
         at.run()
         box = _selectbox(at, "Approve (validated)")
         if box is None:
-            print("[FAIL] pages/11_Ops_Center.py: approve selector not "
+            print("[FAIL] app_pages/11_Ops_Center.py: approve selector not "
                   "rendered with auth enabled")
             return False
         box.select(uuids[0])
         at.run()
         reason = _text_input(at, "Approval reason (optional)")
         if reason is None:
-            print("[FAIL] pages/11_Ops_Center.py: approval reason missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: approval reason missing")
             return False
         reason.set_value("UI smoke approval reason")
         button = _button(at, "✅ Approve")
         if button is None:
-            print("[FAIL] pages/11_Ops_Center.py: approve button missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: approve button missing")
             return False
         button.click()
         at.run()
         if at.exception:
-            print("[FAIL] pages/11_Ops_Center.py: authenticated approval")
+            print("[FAIL] app_pages/11_Ops_Center.py: authenticated approval")
             for exc in at.exception:
                 print("       ", str(exc)[:400])
             return False
         if not any("approved." in s.value for s in at.success):
-            print("[FAIL] pages/11_Ops_Center.py: approval confirmation lost "
+            print("[FAIL] app_pages/11_Ops_Center.py: approval confirmation lost "
                   "after st.rerun()")
             return False
         approve_box = _selectbox(at, "Approve (validated)")
         if approve_box is not None and uuids[0] in list(approve_box.options):
-            print("[FAIL] pages/11_Ops_Center.py: an approved request is still "
+            print("[FAIL] app_pages/11_Ops_Center.py: an approved request is still "
                   "offered for a second approval")
             return False
 
         impact = _selectbox(at, "Impact analysis request")
         if impact is None:
-            print("[FAIL] pages/11_Ops_Center.py: impact selector missing "
+            print("[FAIL] app_pages/11_Ops_Center.py: impact selector missing "
                   "before rejection")
             return False
         impact.select(uuids[1])
         at.run()
         box = _selectbox(at, "Reject (validated)")
         if box is None:
-            print("[FAIL] pages/11_Ops_Center.py: reject selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: reject selector missing")
             return False
         box.select(uuids[1])
         at.run()
         reason = _text_input(at, "Rejection reason (required)")
         if reason is None:
-            print("[FAIL] pages/11_Ops_Center.py: rejection reason missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: rejection reason missing")
             return False
         reason.set_value("UI smoke rejection reason")
         button = _button(at, "❌ Reject")
         if button is None:
-            print("[FAIL] pages/11_Ops_Center.py: reject button missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: reject button missing")
             return False
         button.click()
         at.run()
         if at.exception:
-            print("[FAIL] pages/11_Ops_Center.py: authenticated rejection")
+            print("[FAIL] app_pages/11_Ops_Center.py: authenticated rejection")
             for exc in at.exception:
                 print("       ", str(exc)[:400])
             return False
         if not any("rejected." in s.value for s in at.success):
-            print("[FAIL] pages/11_Ops_Center.py: rejection confirmation lost "
+            print("[FAIL] app_pages/11_Ops_Center.py: rejection confirmation lost "
                   "after st.rerun()")
             return False
 
@@ -453,10 +453,10 @@ def page11_authenticated_decision_feedback() -> bool:
         finally:
             session.close()
         if not persisted:
-            print("[FAIL] pages/11_Ops_Center.py: decisions/reasons not "
+            print("[FAIL] app_pages/11_Ops_Center.py: decisions/reasons not "
                   "persisted")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: authenticated approval/rejection "
+        print("[ OK ] app_pages/11_Ops_Center.py: authenticated approval/rejection "
               "feedback survives st.rerun()")
         return True
     finally:
@@ -470,17 +470,17 @@ def page11_impact_report_visible_before_approval() -> bool:
     uuid = _create_smoke_change(None, False)
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.run()
         box = _selectbox(at, "Impact analysis request")
         if box is None:
-            print("[FAIL] pages/11_Ops_Center.py: impact-analysis selector "
+            print("[FAIL] app_pages/11_Ops_Center.py: impact-analysis selector "
                   "not rendered before approval")
             return False
         box.select(uuid)
         at.run()
         if at.exception:
-            print("[FAIL] pages/11_Ops_Center.py: after selecting an impact "
+            print("[FAIL] app_pages/11_Ops_Center.py: after selecting an impact "
                   "request")
             for exc in at.exception:
                 print("       ", str(exc)[:400])
@@ -488,28 +488,28 @@ def page11_impact_report_visible_before_approval() -> bool:
         markdown = " ".join(str(m.value) for m in at.markdown)
         warnings = " ".join(str(w.value) for w in at.warning)
         if "Topology impact analysis" not in markdown:
-            print("[FAIL] pages/11_Ops_Center.py: impact report header not "
+            print("[FAIL] app_pages/11_Ops_Center.py: impact report header not "
                   "rendered")
             return False
         if "Directly targeted (confirmed)" not in markdown:
-            print("[FAIL] pages/11_Ops_Center.py: direct-target section not "
+            print("[FAIL] app_pages/11_Ops_Center.py: direct-target section not "
                   "rendered")
             return False
         if "Digital Twin simulation" not in markdown:
-            print("[FAIL] pages/11_Ops_Center.py: Digital Twin panel not "
+            print("[FAIL] app_pages/11_Ops_Center.py: Digital Twin panel not "
                   "rendered")
             return False
         captions = " ".join(str(c.value) for c in at.caption)
         if "not approval" not in captions.lower():
-            print("[FAIL] pages/11_Ops_Center.py: Digital Twin panel does not "
+            print("[FAIL] app_pages/11_Ops_Center.py: Digital Twin panel does not "
                   "disclaim approval/execution")
             return False
         if "demo" not in warnings.lower():
-            print("[FAIL] pages/11_Ops_Center.py: demo topology not labelled "
+            print("[FAIL] app_pages/11_Ops_Center.py: demo topology not labelled "
                   "in the impact report")
             return False
         if _button(at, "✅ Approve") is None:
-            print("[FAIL] pages/11_Ops_Center.py: approval control missing "
+            print("[FAIL] app_pages/11_Ops_Center.py: approval control missing "
                   "after the impact report")
             return False
         labels = [box.label for box in at.selectbox]
@@ -517,10 +517,10 @@ def page11_impact_report_visible_before_approval() -> bool:
                 and "Approve (validated)" in labels
                 and labels.index("Impact analysis request")
                 > labels.index("Approve (validated)")):
-            print("[FAIL] pages/11_Ops_Center.py: approval control rendered "
+            print("[FAIL] app_pages/11_Ops_Center.py: approval control rendered "
                   "before the impact report")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: impact report visible before "
+        print("[ OK ] app_pages/11_Ops_Center.py: impact report visible before "
               "approval and demo-labelled")
         return True
     finally:
@@ -534,32 +534,32 @@ def page11_impact_mismatch_guard() -> bool:
              _create_smoke_change(None, False)]
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.run()
         impact = _selectbox(at, "Impact analysis request")
         if impact is None:
-            print("[FAIL] pages/11_Ops_Center.py: impact selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: impact selector missing")
             return False
         impact.select(uuids[0])
         at.run()
 
         approve = _selectbox(at, "Approve (validated)")
         if approve is None:
-            print("[FAIL] pages/11_Ops_Center.py: approve selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: approve selector missing")
             return False
         approve.select(uuids[1])
         at.run()
 
         button = _button(at, "✅ Approve")
         if button is None:
-            print("[FAIL] pages/11_Ops_Center.py: approve button missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: approve button missing")
             return False
         if not button.proto.disabled:
-            print("[FAIL] pages/11_Ops_Center.py: approve enabled while the "
+            print("[FAIL] app_pages/11_Ops_Center.py: approve enabled while the "
                   "impact report belongs to another request")
             return False
         if not any("different request" in w.value for w in at.warning):
-            print("[FAIL] pages/11_Ops_Center.py: mismatch warning missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: mismatch warning missing")
             return False
 
         impact = _selectbox(at, "Impact analysis request")
@@ -567,16 +567,16 @@ def page11_impact_mismatch_guard() -> bool:
         at.run()
         button = _button(at, "✅ Approve")
         if button is None or button.proto.disabled:
-            print("[FAIL] pages/11_Ops_Center.py: matching impact selection "
+            print("[FAIL] app_pages/11_Ops_Center.py: matching impact selection "
                   "did not re-enable approval")
             return False
 
         if (_change_snapshot(uuids[0])["status"] != "validated"
                 or _change_snapshot(uuids[1])["status"] != "validated"):
-            print("[FAIL] pages/11_Ops_Center.py: mismatch guard mutated a "
+            print("[FAIL] app_pages/11_Ops_Center.py: mismatch guard mutated a "
                   "request")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: impact/action mismatch is "
+        print("[ OK ] app_pages/11_Ops_Center.py: impact/action mismatch is "
               "blocked and no request was mutated")
         return True
     finally:
@@ -589,11 +589,11 @@ def page11_insufficient_impact_evidence() -> bool:
     uuid = _create_smoke_change(None, False, device="GHOST")
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.run()
         impact = _selectbox(at, "Impact analysis request")
         if impact is None:
-            print("[FAIL] pages/11_Ops_Center.py: impact selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: impact selector missing")
             return False
         impact.select(uuid)
         at.run()
@@ -604,22 +604,22 @@ def page11_insufficient_impact_evidence() -> bool:
 
         warnings = " ".join(str(w.value) for w in at.warning)
         if "INSUFFICIENT EVIDENCE" not in warnings:
-            print("[FAIL] pages/11_Ops_Center.py: insufficient evidence not "
+            print("[FAIL] app_pages/11_Ops_Center.py: insufficient evidence not "
                   "reported for an unknown target")
             return False
         if "demo" not in warnings.lower():
-            print("[FAIL] pages/11_Ops_Center.py: demo topology not labelled "
+            print("[FAIL] app_pages/11_Ops_Center.py: demo topology not labelled "
                   "for an insufficient-evidence report")
             return False
         button = _button(at, "✅ Approve")
         if button is None or button.proto.disabled:
-            print("[FAIL] pages/11_Ops_Center.py: impact evidence incorrectly "
+            print("[FAIL] app_pages/11_Ops_Center.py: impact evidence incorrectly "
                   "blocks the explicit human decision")
             return False
         if _change_snapshot(uuid)["status"] != "validated":
-            print("[FAIL] pages/11_Ops_Center.py: analysis changed the request")
+            print("[FAIL] app_pages/11_Ops_Center.py: analysis changed the request")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: insufficient impact evidence is "
+        print("[ OK ] app_pages/11_Ops_Center.py: insufficient impact evidence is "
               "reported honestly")
         return True
     finally:
@@ -636,47 +636,47 @@ def page11_apply_gating_feedback() -> bool:
     _approve_smoke_change(uuid)
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.run()
         impact = _selectbox(at, "Impact analysis request")
         if impact is None:
-            print("[FAIL] pages/11_Ops_Center.py: impact selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: impact selector missing")
             return False
         impact.select(uuid)
         at.run()
         apply_box = _selectbox(at, "Apply (approved)")
         if apply_box is None:
-            print("[FAIL] pages/11_Ops_Center.py: apply selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: apply selector missing")
             return False
         apply_box.select(uuid)
         at.run()
         button = _button(at, "🚀 Apply")
         if button is None or button.proto.disabled:
-            print("[FAIL] pages/11_Ops_Center.py: apply button missing or "
+            print("[FAIL] app_pages/11_Ops_Center.py: apply button missing or "
                   "disabled for an approved request")
             return False
         button.click()
         at.run()
         if at.exception:
-            print("[FAIL] pages/11_Ops_Center.py: apply click raised")
+            print("[FAIL] app_pages/11_Ops_Center.py: apply click raised")
             for exc in at.exception:
                 print("       ", str(exc)[:400])
             return False
         warnings = " ".join(str(w.value) for w in at.warning)
         if "change loop disabled" not in warnings:
-            print("[FAIL] pages/11_Ops_Center.py: disabled-loop refusal "
+            print("[FAIL] app_pages/11_Ops_Center.py: disabled-loop refusal "
                   "feedback missing")
             return False
         if any("applied." in s.value for s in at.success):
-            print("[FAIL] pages/11_Ops_Center.py: apply reported success "
+            print("[FAIL] app_pages/11_Ops_Center.py: apply reported success "
                   "while the loop was disabled")
             return False
         snap = _change_snapshot(uuid)
         if snap["status"] != "approved" or snap["applied_at"] is not None:
-            print("[FAIL] pages/11_Ops_Center.py: disabled loop still mutated "
+            print("[FAIL] app_pages/11_Ops_Center.py: disabled loop still mutated "
                   "the request")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: apply is gated by the disabled "
+        print("[ OK ] app_pages/11_Ops_Center.py: apply is gated by the disabled "
               "loop and reports the refusal")
         return True
     finally:
@@ -690,37 +690,37 @@ def page11_expiry_feedback() -> bool:
         None, False, ttl_minutes=1, now=dt.datetime(2020, 1, 1, 0, 0, 0))
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.run()
         impact = _selectbox(at, "Impact analysis request")
         if impact is None:
-            print("[FAIL] pages/11_Ops_Center.py: impact selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: impact selector missing")
             return False
         impact.select(uuid)
         at.run()
         approve = _selectbox(at, "Approve (validated)")
         if approve is None:
-            print("[FAIL] pages/11_Ops_Center.py: approve selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: approve selector missing")
             return False
         approve.select(uuid)
         at.run()
         button = _button(at, "✅ Approve")
         if button is None or button.proto.disabled:
-            print("[FAIL] pages/11_Ops_Center.py: expired request approve "
+            print("[FAIL] app_pages/11_Ops_Center.py: expired request approve "
                   "control unavailable")
             return False
         button.click()
         at.run()
         warnings = " ".join(str(w.value) for w in at.warning)
         if "expired" not in warnings:
-            print("[FAIL] pages/11_Ops_Center.py: expiry refusal feedback "
+            print("[FAIL] app_pages/11_Ops_Center.py: expiry refusal feedback "
                   "missing")
             return False
         snap = _change_snapshot(uuid)
         if snap["status"] != "expired" or snap["approved_by"] is not None:
-            print("[FAIL] pages/11_Ops_Center.py: expired request was approved")
+            print("[FAIL] app_pages/11_Ops_Center.py: expired request was approved")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: expiry refusal is durable and "
+        print("[ OK ] app_pages/11_Ops_Center.py: expiry refusal is durable and "
               "persisted")
         return True
     finally:
@@ -733,47 +733,47 @@ def page11_cancel_and_audit_reload() -> bool:
     uuid = _create_smoke_change(None, False)
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.run()
         cancel = _selectbox(at, "Cancel")
         if cancel is None:
-            print("[FAIL] pages/11_Ops_Center.py: cancel selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: cancel selector missing")
             return False
         cancel.select(uuid)
         at.run()
         reason = _text_input(at, "Cancellation reason (optional)")
         if reason is None:
-            print("[FAIL] pages/11_Ops_Center.py: cancel reason missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: cancel reason missing")
             return False
         reason.set_value("smoke cancellation reason")
         button = _button(at, "🚫 Cancel")
         if button is None or button.proto.disabled:
-            print("[FAIL] pages/11_Ops_Center.py: cancel button missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: cancel button missing")
             return False
         button.click()
         at.run()
         if at.exception:
-            print("[FAIL] pages/11_Ops_Center.py: cancel click raised")
+            print("[FAIL] app_pages/11_Ops_Center.py: cancel click raised")
             for exc in at.exception:
                 print("       ", str(exc)[:400])
             return False
         if not any("cancelled." in s.value for s in at.success):
-            print("[FAIL] pages/11_Ops_Center.py: cancellation confirmation "
+            print("[FAIL] app_pages/11_Ops_Center.py: cancellation confirmation "
                   "lost after st.rerun()")
             return False
         snap = _change_snapshot(uuid)
         if (snap["status"] != "cancelled"
                 or snap["cancellation_reason"] != "smoke cancellation reason"):
-            print("[FAIL] pages/11_Ops_Center.py: cancellation not persisted")
+            print("[FAIL] app_pages/11_Ops_Center.py: cancellation not persisted")
             return False
         if _audit_actions(uuid) != ["proposed", "cancelled"]:
-            print("[FAIL] pages/11_Ops_Center.py: cancellation audit events "
+            print("[FAIL] app_pages/11_Ops_Center.py: cancellation audit events "
                   "do not match persisted state")
             return False
 
         inspect = _selectbox(at, "Inspect a request")
         if inspect is None:
-            print("[FAIL] pages/11_Ops_Center.py: inspect selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: inspect selector missing")
             return False
         inspect.select(uuid)
         at.run()
@@ -782,10 +782,10 @@ def page11_cancel_and_audit_reload() -> bool:
             and "cancelled" in set(df.value["action"].astype(str))
             for df in at.dataframe)
         if not audit_rendered:
-            print("[FAIL] pages/11_Ops_Center.py: audit trail not reloaded "
+            print("[FAIL] app_pages/11_Ops_Center.py: audit trail not reloaded "
                   "after cancellation")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: cancellation and audit reload "
+        print("[ OK ] app_pages/11_Ops_Center.py: cancellation and audit reload "
               "match persisted state")
         return True
     finally:
@@ -799,30 +799,30 @@ def page11_invalid_stored_json_is_safe() -> bool:
     _corrupt_validation_json(uuid)
     try:
         at = AppTest.from_file(
-            str(ROOT / "pages/11_Ops_Center.py"), default_timeout=180)
+            str(ROOT / "app_pages/11_Ops_Center.py"), default_timeout=180)
         at.run()
         inspect = _selectbox(at, "Inspect a request")
         if inspect is None:
-            print("[FAIL] pages/11_Ops_Center.py: inspect selector missing")
+            print("[FAIL] app_pages/11_Ops_Center.py: inspect selector missing")
             return False
         inspect.select(uuid)
         at.run()
         if at.exception:
-            print("[FAIL] pages/11_Ops_Center.py: invalid stored JSON crashed "
+            print("[FAIL] app_pages/11_Ops_Center.py: invalid stored JSON crashed "
                   "the page")
             for exc in at.exception:
                 print("       ", str(exc)[:400])
             return False
         warnings = " ".join(str(w.value) for w in at.warning)
         if "Stored JSON is invalid" not in warnings:
-            print("[FAIL] pages/11_Ops_Center.py: invalid stored JSON warning "
+            print("[FAIL] app_pages/11_Ops_Center.py: invalid stored JSON warning "
                   "missing")
             return False
         codes = " ".join(str(c.value) for c in at.code)
         if "not valid json" not in codes:
-            print("[FAIL] pages/11_Ops_Center.py: raw invalid JSON not shown")
+            print("[FAIL] app_pages/11_Ops_Center.py: raw invalid JSON not shown")
             return False
-        print("[ OK ] pages/11_Ops_Center.py: invalid stored JSON is handled "
+        print("[ OK ] app_pages/11_Ops_Center.py: invalid stored JSON is handled "
               "safely")
         return True
     finally:
@@ -832,25 +832,25 @@ def page11_invalid_stored_json_is_safe() -> bool:
 def page2_flash_survives_rerun() -> bool:
     """Regression: the demo-fabric seed confirmation was also lost because
     the page reran immediately after ``st.success``."""
-    at = AppTest.from_file(str(ROOT / "pages/2_Topology.py"),
+    at = AppTest.from_file(str(ROOT / "app_pages/2_Topology.py"),
                            default_timeout=180)
     at.run()
     button = next((b for b in at.button
                    if "Seed / refresh demo fabric" in (b.label or "")), None)
     if button is None:
-        print("[FAIL] pages/2_Topology.py: seed button not rendered")
+        print("[FAIL] app_pages/2_Topology.py: seed button not rendered")
         return False
     button.click()
     at.run()
     if at.exception:
-        print("[FAIL] pages/2_Topology.py: after seeding the demo fabric")
+        print("[FAIL] app_pages/2_Topology.py: after seeding the demo fabric")
         for exc in at.exception:
             print("       ", str(exc)[:400])
         return False
     if not any("Fabric seeded:" in s.value for s in at.success):
-        print("[FAIL] pages/2_Topology.py: confirmation lost after st.rerun()")
+        print("[FAIL] app_pages/2_Topology.py: confirmation lost after st.rerun()")
         return False
-    print("[ OK ] pages/2_Topology.py: confirmation survives st.rerun()")
+    print("[ OK ] app_pages/2_Topology.py: confirmation survives st.rerun()")
     return True
 
 
@@ -866,7 +866,7 @@ def page12_lab_roundtrip() -> bool:
     the simulator supplied ground truth, and exports/history that reference
     that stored run.
     """
-    page = "pages/12_AI_Lab.py"
+    page = "app_pages/12_AI_Lab.py"
     at = AppTest.from_file(str(ROOT / page), default_timeout=300)
     at.run()
     if at.exception:
@@ -938,7 +938,7 @@ def page12_lab_roundtrip() -> bool:
 def page12_lab_live_source_disabled() -> bool:
     """AI Lab: the optional live telemetry source must stay visibly disabled
     (and say why) when no endpoint is configured - never a fake success."""
-    page = "pages/12_AI_Lab.py"
+    page = "app_pages/12_AI_Lab.py"
     at = AppTest.from_file(str(ROOT / page), default_timeout=300)
     at.run()
     source_radio = _radio(at, "Source type")
@@ -970,7 +970,7 @@ def page12_lab_live_source_disabled() -> bool:
     return True
 
 
-page8_ok = press("pages/8_Anomalies.py", "Run detection",
+page8_ok = press("app_pages/8_Anomalies.py", "Run detection",
                  select_metric="ping.loss_pct")
 page10_ok = page10_same_run_in_two_tabs()
 page11_flash_ok = page11_flash_survives_rerun()
@@ -1003,13 +1003,13 @@ actions_ok = (
     and page2_flash_ok
     and page12_lab_ok
     and page12_live_ok
-    and press("pages/9_Forecasting.py", "Run forecast comparison")
+    and press("app_pages/9_Forecasting.py", "Run forecast comparison")
     # Read-only insight action: it must never raise or write.
-    and press("pages/11_Ops_Center.py", "Run multivariate check")
+    and press("app_pages/11_Ops_Center.py", "Run multivariate check")
     # Regression guard: submitting a change proposal used to raise sqlalchemy
     # DetachedInstanceError, because the page read an ORM attribute after the
-    # committing session had closed. See pages/11_Ops_Center.py.
-    and press("pages/11_Ops_Center.py", "Validate & record proposal")
+    # committing session had closed. See app_pages/11_Ops_Center.py.
+    and press("app_pages/11_Ops_Center.py", "Validate & record proposal")
 )
 
 # Demo banner must be present on the landing page (spec: clearly labelled).

@@ -480,7 +480,7 @@ def test_lab_modules_never_import_the_execution_layer():
     files = sorted((root / "analytics").glob("lab_*.py")) + sorted(
         (root / "services").glob("lab_*.py")) + [
         root / "services" / "prometheus_source.py",
-        root / "pages" / "12_AI_Lab.py"]
+        root / "app_pages" / "12_AI_Lab.py"]
     assert files, "the lab modules must exist to be scanned"
     banned = ("lab_executor", "containerlab", "change_service",
               "change_execution", "ops_center_actions", "netmiko",

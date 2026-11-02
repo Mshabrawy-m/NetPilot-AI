@@ -1,4 +1,4 @@
-"""Shared helpers for all Streamlit pages (imported by app.py and pages/*).
+"""Shared helpers for all Streamlit pages (imported by app.py and app_pages/*).
 
 Keeps UI glue in one place: DB initialisation, demo-mode labelling,
 scheduler controls and cached reads of lab data. Business logic stays in
