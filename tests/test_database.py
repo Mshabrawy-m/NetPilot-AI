@@ -230,3 +230,28 @@ def test_models_map_without_sys_modules_registration():
         assert "change_audit_events" in module.Base.metadata.tables
     finally:
         sys.modules.pop(name, None)
+
+
+def test_check_connection_never_leaks_credentials(tmp_path, monkeypatch):
+    """A failed connection probe must not echo driver credentials anywhere.
+
+    ``check_connection()`` is the single source for three surfaces: the
+    token-less ``/health`` API response, the sidebar caption and the System
+    Status page's error text. Several DBAPIs (psycopg2, pyodbc) quote the
+    full DSN - including ``user:password@host`` - inside their exception
+    strings, so the failure detail has to be scrubbed at this choke point
+    before it can ever reach a viewer.
+    """
+    from database import connection
+
+    class _FailEngine:
+        def connect(self):
+            raise RuntimeError(
+                "connection to server failed: "
+                "postgresql+psycopg2://admin:Sup3rS3cret@db.internal:5432"
+                "/netpilot (password=Sup3rS3cret rejected)")
+
+    monkeypatch.setattr(connection, "get_engine", lambda: _FailEngine())
+    ok, detail = connection.check_connection()
+    assert ok is False
+    assert "Sup3rS3cret" not in detail

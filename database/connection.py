@@ -8,6 +8,7 @@ The connection URL comes only from configuration/environment variables.
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -168,7 +169,27 @@ def check_connection() -> tuple[bool, str]:
             conn.execute(text("SELECT 1"))
         return True, get_engine().url.render_as_string(hide_password=True)
     except Exception as exc:  # pragma: no cover - depends on environment
-        return False, f"{type(exc).__name__}: {exc}"
+        # The failure text reaches the token-less /health response and the
+        # UI. Several DBAPIs echo the full DSN (``user:password@host``,
+        # ``password=...``) inside their exception strings, so scrub any
+        # credential-shaped substring before returning the detail.
+        return False, _redact_credentials(f"{type(exc).__name__}: {exc}")
+
+
+_URL_USERINFO = re.compile(r"://[^/@\s]*@")
+_SECRET_KV = re.compile(
+    r"(?i)\b(password|passwd|pwd|token|api[_-]?key)(\s*[=:]\s*)[^\s,;]+")
+
+
+def _redact_credentials(message: str) -> str:
+    """Strip credential-shaped fragments from a driver error message.
+
+    ``scheme://user:pass@host`` userinfo runs and ``password=value``-style
+    pairs are replaced with ``***``; everything else (error class, host,
+    diagnostic text) is kept so the status pages stay useful.
+    """
+    message = _URL_USERINFO.sub("://***@", message)
+    return _SECRET_KV.sub(r"\1\2***", message)
 
 
 #: Tables that are configuration, identity or audit evidence rather than
