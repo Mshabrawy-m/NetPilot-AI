@@ -160,6 +160,7 @@ def get_metric_series(
     since: dt.datetime | None = None, until: dt.datetime | None = None,
     interface_name: str | None = None,
     data_source: str | None = None,
+    unit: str | None = None, unit_is_null: bool = False,
 ) -> Sequence[MetricSample]:
     stmt = (
         select(MetricSample)
@@ -175,6 +176,10 @@ def get_metric_series(
         stmt = stmt.where(MetricSample.interface_name == interface_name)
     if data_source is not None:
         stmt = stmt.where(MetricSample.data_source == data_source)
+    if unit_is_null:
+        stmt = stmt.where(MetricSample.unit.is_(None))
+    elif unit is not None:
+        stmt = stmt.where(MetricSample.unit == unit)
     return session.scalars(stmt).all()
 
 

@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Mapping
 
 import pandas as pd
+import numpy as np
 
 from analytics import time_series
 from analytics.lab_dataset import (SOURCE_HISTORICAL, SOURCE_SIMULATED,
@@ -237,8 +238,11 @@ def _read_table(text: str, *, max_bytes: int) -> tuple[pd.DataFrame, dict]:
 def _column_profile(table: pd.DataFrame, column: str) -> dict:
     series = table[column]
     non_null = series.notna().sum()
-    numeric = pd.to_numeric(series, errors="coerce")
-    numeric_hits = int(numeric.notna().sum())
+    parsed_numeric = pd.to_numeric(series, errors="coerce")
+    finite_mask = parsed_numeric.notna() & np.isfinite(parsed_numeric)
+    non_finite = int((parsed_numeric.notna() & ~np.isfinite(parsed_numeric)).sum())
+    numeric = parsed_numeric.where(finite_mask)
+    numeric_hits = int(finite_mask.sum())
     parsed = parse_timestamps(series)
     timestamp_hits = int(parsed.notna().sum())
     distinct = int(series.dropna().astype(str).nunique())
@@ -251,6 +255,7 @@ def _column_profile(table: pd.DataFrame, column: str) -> dict:
                              / max(1, len(series)), 1),
         "distinct": distinct,
         "numeric_rows": numeric_hits,
+        "non_finite": non_finite,
         "timestamp_rows": timestamp_hits,
         "guess": ("timestamp" if timestamp_hits >= 0.9 * max(1, non_null)
                   and distinct > 1 else

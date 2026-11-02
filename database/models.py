@@ -115,7 +115,7 @@ class Link(Base):
     device_b: Mapped[str] = mapped_column(String(128), index=True)
     if_b: Mapped[str] = mapped_column(String(64))
     subnet: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    #: One of LINK_STATUSES; 'up' when both endpoints were reachable last run.
+    #: One of LINK_STATUSES; derived from observed endpoint operstates.
     status: Mapped[str] = mapped_column(String(16), default="unknown")
     discovered_at: Mapped[dt.datetime] = mapped_column(DateTime, default=db_utcnow)
 

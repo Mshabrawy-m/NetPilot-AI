@@ -9,9 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 
-import numpy as np
 import pandas as pd
-import pytest
 
 from analytics.forecasting import (
     FORECAST_MODELS,
@@ -138,10 +136,18 @@ def test_ridge_lag_fits_and_predicts_autoregressive_pattern():
     assert res.ok
     assert len(res.future) == 3
     assert len(res.test_pred) == 20
-    assert all(not math.isnan(p) for p in res.test_pred)
+    assert all(math.isfinite(p) for p in res.test_pred[:3])
+    assert all(math.isnan(p) for p in res.test_pred[3:]), (
+        "direct models are fitted only through the configured horizon")
     # reasonable on a smooth series: MAE under half the signal amplitude
     from analytics.evaluation import mae
-    assert mae(s.iloc[100:].to_numpy(), res.test_pred) < 5.0
+    assert mae(s.iloc[100:103].to_numpy(), res.test_pred[:3]) < 5.0
+    changed_test = ts_series([999.0] * 20)
+    unchanged = ridge_lag_forecast(s.iloc[:100], 3,
+                                   test=changed_test, max_lags=8)
+    assert unchanged.test_pred[:3] == res.test_pred[:3]
+    assert all(math.isnan(a) and math.isnan(b) for a, b in zip(
+        unchanged.test_pred[3:], res.test_pred[3:]))
 
 
 def test_ridge_lag_refuses_too_short_series():

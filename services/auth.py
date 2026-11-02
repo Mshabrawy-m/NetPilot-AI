@@ -20,6 +20,12 @@ _ALGO = "pbkdf2_sha256"
 _SALT_BYTES = 16
 DEFAULT_ITERATIONS = 240_000
 MIN_PASSWORD_LENGTH = 8
+#: Fixed, non-secret hash used only to burn the same PBKDF2 work for an unknown
+#: or inactive user as for a real one. One iteration here would make the
+#: unknown-user path *faster* and turn the mitigation into a stronger timing
+#: oracle. The salt/hash are all-zero; no password matches them.
+_DUMMY_HASH = (f"{_ALGO}${DEFAULT_ITERATIONS}$" + "00" * _SALT_BYTES
+               + "$" + "00" * 32)
 
 
 # --------------------------------------------------------------------------
@@ -89,8 +95,9 @@ def authenticate(session, username: str, password: str):
     from database import repository
     user = repository.get_user_by_name(session, username)
     if user is None or not user.is_active:
-        # Still run a hash to reduce username-enumeration timing signal.
-        verify_password(password, f"{_ALGO}$1$00$00")
+        # Burn the same PBKDF2 work as a real verification so response time
+        # does not reveal whether the username exists (or is inactive).
+        verify_password(password, _DUMMY_HASH)
         return None
     if not verify_password(password, user.password_hash):
         return None

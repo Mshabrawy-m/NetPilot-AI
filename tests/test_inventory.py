@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from network import containerlab_manager, device_inventory
-from network.device_inventory import DestinationNotAllowed, LabInventory
+from network.device_inventory import DestinationNotAllowed
 
 TOPOLOGY = str(Path(__file__).resolve().parents[1] / "lab" / "topology.clab.yml")
 

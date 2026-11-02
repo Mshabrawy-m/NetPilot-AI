@@ -33,10 +33,12 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import hashlib
+import json
 import math
 import warnings
 from typing import Iterable, Mapping
 
+import numpy as np
 import pandas as pd
 
 from analytics import data_quality
@@ -133,8 +135,13 @@ def parse_timestamps(values) -> pd.Series:
     numeric = pd.to_numeric(series, errors="coerce")
     non_null = int(series.notna().sum())
     if non_null and int(numeric.notna().sum()) == non_null:
-        unit = _epoch_unit(float(numeric.dropna().abs().max()))
-        return pd.to_datetime(numeric, unit=unit, utc=True)
+        finite = numeric.notna() & np.isfinite(numeric)
+        if not finite.any():
+            return pd.Series(pd.NaT, index=series.index,
+                             dtype="datetime64[ns, UTC]")
+        unit = _epoch_unit(float(numeric[finite].abs().max()))
+        return pd.to_datetime(numeric.where(finite), unit=unit, utc=True,
+                               errors="coerce")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return pd.to_datetime(series, errors="coerce", utc=True)
@@ -540,20 +547,26 @@ def canonicalize(
     # -- values ------------------------------------------------------------
     numeric = pd.to_numeric(df["value"], errors="coerce")
     non_numeric = int((df["value"].notna() & numeric.isna()).sum())
+    non_finite = int((numeric.notna() & ~np.isfinite(numeric)).sum())
+    numeric = numeric.where(np.isfinite(numeric), np.nan)
     df["value"] = numeric
+    invalid_values = non_numeric + non_finite
     _lineage(lineage, "value-coercion",
-             f"{non_numeric} non-numeric value(s) kept as NULL (never 0)",
+             f"{invalid_values} non-numeric or non-finite value(s) kept as "
+             "NULL (never 0)",
              len(df), len(df))
-    if non_numeric:
-        warnings.append(f"{non_numeric} row(s) had a non-numeric value; kept "
-                        "as missing (NULL), not as zero.")
+    if invalid_values:
+        warnings.append(f"{non_numeric} non-numeric and {non_finite} non-finite "
+                        "value(s) kept as missing (NULL), not as zero.")
 
     # -- labels ------------------------------------------------------------
     df["label"], label_kind = _normalize_labels(df["label"])
 
     # -- chronology + duplicates -------------------------------------------
-    df = df.sort_values(["device", "interface", "metric", "collected_at"],
-                        na_position="first").reset_index(drop=True)
+    df["__lab_input_order"] = np.arange(len(df))
+    df = df.sort_values(["device", "interface", "metric", "collected_at",
+                         "__lab_input_order"], na_position="first").reset_index(
+                             drop=True)
     key_cols = ["device", "interface", "metric", "collected_at"]
     dupes = int(df.duplicated(subset=key_cols).sum())
     if dupes:
@@ -563,6 +576,7 @@ def canonicalize(
                         "reading kept).")
     _lineage(lineage, "dedupe", f"{dupes} duplicate row(s) removed",
              len(df) + dupes, len(df))
+    df = df.drop(columns=["__lab_input_order"])
 
     # -- unit consistency --------------------------------------------------
     frame, unit_warnings = _enforce_unit_consistency(df, lineage)
@@ -571,7 +585,7 @@ def canonicalize(
     if frame.empty:
         raise LabDataError("no usable series remained after validation")
 
-    inventory, inv_reasons = _build_inventory(frame, label_kind, now)
+    inventory, inv_reasons = _build_inventory(frame, label_kind)
     warnings.extend(inv_reasons)
     if not inventory:
         raise LabDataError("every series failed the readiness check: "
@@ -724,13 +738,11 @@ def _enforce_unit_consistency(frame: pd.DataFrame,
     return kept, warnings
 
 
-def _build_inventory(frame: pd.DataFrame, label_kind: str,
-                     now: dt.datetime | None
+def _build_inventory(frame: pd.DataFrame, label_kind: str
                      ) -> tuple[list[SeriesInventory], list[str]]:
     inventory: list[SeriesInventory] = []
     reasons: list[str] = []
     settings = get_settings()
-    reference_now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     for (device, interface, metric), part in frame.groupby(
             ["device", "interface", "metric"], dropna=False):
         ref = SeriesRef(str(device), str(metric),
@@ -819,24 +831,28 @@ def _is_constant(frame: pd.DataFrame, ref: SeriesRef) -> bool:
 
 
 def _fingerprint(frame: pd.DataFrame, source_type: str) -> str:
-    """One-way digest of the validated content (no reversible raw data).
-
-    Stable for identical inputs, changes with any value/timestamp/series
-    change, and is short enough to store with every experiment.
-    """
+    """Digest every canonical field without storing or exposing raw data."""
     digest = hashlib.sha256()
-    digest.update(f"v1|{source_type}|".encode())
+    digest.update(f"v2|{source_type}|".encode())
     ordered = frame.sort_values(["device", "interface", "metric",
                                  "collected_at"], na_position="first")
-    for (device, interface, metric), part in ordered.groupby(
-            ["device", "interface", "metric"], dropna=False, sort=True):
-        values = pd.to_numeric(part["value"], errors="coerce")
-        finite = values.dropna()
-        digest.update(
-            f"{device}|{interface}|{metric}|{len(part)}|"
-            f"{part['collected_at'].iloc[0]}|{part['collected_at'].iloc[-1]}|"
-            f"{finite.round(6).sum():.6f}|"
-            f"{finite.mul(finite).round(6).sum():.6f}".encode())
+    for row in ordered[LONG_COLUMNS].itertuples(index=False, name=None):
+        normalized = []
+        for value in row:
+            if pd.isna(value):
+                normalized.append(None)
+            elif isinstance(value, (pd.Timestamp, dt.datetime)):
+                normalized.append(pd.Timestamp(value).isoformat())
+            elif isinstance(value, (int, np.integer)):
+                normalized.append(int(value))
+            elif isinstance(value, (float, np.floating)):
+                normalized.append(float(value))
+            else:
+                normalized.append(str(value))
+        encoded = json.dumps(normalized, ensure_ascii=False,
+                             separators=(",", ":"), allow_nan=False).encode()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
     return digest.hexdigest()[:32]
 
 

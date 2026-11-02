@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import typing
 
 import pytest
 
@@ -371,6 +372,25 @@ def test_delimiter_is_detected_from_the_header():
     assert preview["parse"]["n_parsed_rows"] == 10
 
 
+def test_upload_preview_excludes_non_finite_values_from_numeric_summary():
+    raw = ("timestamp,device,metric,value\n"
+           "2026-10-01T00:00:00Z,R1,rtt,1\n"
+           "2026-10-01T00:01:00Z,R1,rtt,inf\n"
+           "2026-10-01T00:02:00Z,R1,rtt,-inf\n")
+    preview = lab_sources.preview_upload(raw, filename="non-finite.csv")
+    value = next(column for column in preview["columns"]
+                 if column["column"] == "value")
+    assert value["numeric_rows"] == 1
+    assert value["non_finite"] == 2
+    assert value["min"] == value["max"] == value["mean"] == 1.0
+    dataset, report = lab_sources.load_uploaded_csv(
+        raw, filename="non-finite.csv",
+        mapping={"format": "long", "timestamp": "timestamp",
+                 "device": "device", "metric": "metric", "value": "value"})
+    assert dataset.profile["n_values"] == 1
+    assert report["values_missing"] == 2
+
+
 # ==========================================================================
 # B - documented historical import from ONE allowlisted directory
 # ==========================================================================
@@ -549,6 +569,14 @@ def test_health_check_reports_identity_prom(prom, monkeypatch):
     ("bad-shape", dict(payload={"status": "success",
                                 "data": {"result": "not-a-list"}}),
      "unexpected 'result' shape"),
+    ("invalid-timestamp", dict(payload={"status": "success", "data": {
+        "result": [{"metric": {"instance": "R1"},
+                    "values": [[float("inf"), "1"]]}]}}),
+     "timestamp inf is not finite"),
+    ("out-of-range-timestamp", dict(payload={"status": "success", "data": {
+        "result": [{"metric": {"instance": "R1"},
+                    "values": [[1e100, "1"]]}]}}),
+     "outside the supported datetime range"),
 ])
 def test_live_failures_are_reported_instead_of_invented(prom, monkeypatch,
                                                         case):
@@ -608,3 +636,14 @@ def test_live_label_values_stay_inert_text(prom, monkeypatch):
     assert ref.device == "$(whoami); ../../etc/passwd | id"
     assert ref.interface == "`echo pwned`"
     assert ds.profile["n_rows"] == 2      # and it was still only data
+
+
+def test_live_range_return_annotation_resolves_to_lab_dataset():
+    """``fetch_range`` promises a LabDataset; the annotation must resolve.
+
+    Regression: with ``from __future__ import annotations`` the missing
+    ``LabDataset`` import stayed invisible until something called
+    ``typing.get_type_hints`` or a type checker.
+    """
+    hints = typing.get_type_hints(prometheus_source.fetch_range)
+    assert hints["return"] is lab_dataset.LabDataset

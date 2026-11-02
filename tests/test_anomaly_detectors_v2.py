@@ -92,6 +92,40 @@ def test_detect_frame_empty_frame_returns_nothing():
     assert detect_frame(pd.DataFrame(), device_name="R1", metric="m") == []
 
 
+def test_nonfinite_detector_values_are_gaps_and_never_become_events():
+    frame = make_frame([10.0, 11.0, 9.0, 10.5, 9.5, 11.0, 10.0,
+                        float("inf"), float("nan"), 500.0])
+    points = detect_frame(frame, device_name="R1", metric="m",
+                          detectors=("rolling_mad", "rolling_zscore", "ewma",
+                                     "cusum", "isolation_forest"),
+                          window=8, mad_threshold=2.0,
+                          zscore_threshold=2.0, ewma_threshold=2.0)
+    assert all(math.isfinite(p.observed) and math.isfinite(p.baseline)
+               for p in points)
+    invalid_ts = set(frame.loc[
+        ~frame["value"].map(lambda v: math.isfinite(float(v))), "collected_at"])
+    assert all(p.timestamp not in invalid_ts for p in points)
+
+
+def test_short_configured_window_has_valid_default_minimum_history():
+    frame = make_frame([10.0, 10.2, 9.9, 10.1, 100.0])
+    points = detect_frame(frame, device_name="R1", metric="m", window=3,
+                          detectors=("rolling_mad", "rolling_zscore"))
+    assert points
+    assert all(p.detector_config["min_periods"] <= 3 for p in points)
+
+
+def test_invalid_detector_window_and_min_periods_are_rejected():
+    frame = make_frame([1.0, 2.0, 3.0])
+    with pytest.raises(ValueError, match="window"):
+        detect_frame(frame, device_name="R1", metric="m", window=1)
+    with pytest.raises(ValueError, match="min_periods"):
+        from analytics.anomaly_detection import detect_rolling_mad
+        detect_rolling_mad(frame["value"], frame["collected_at"],
+                           device_name="R1", metric="m", window=3,
+                           min_periods=4)
+
+
 def test_detect_frame_aggregates_and_sorts_the_selected_detectors():
     frame = make_frame(SPIKE_SERIES)
     points = detect_frame(

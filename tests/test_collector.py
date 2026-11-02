@@ -12,6 +12,7 @@ import pytest
 
 from database import repository
 from database.connection import get_session
+from database.models import Interface
 from network import containerlab_manager, metrics_collector
 from network.connectivity import PingResult
 from network.device_inventory import (
@@ -122,9 +123,9 @@ def test_collect_once_stores_real_measurements(db_url, fake_inventory, fake_dock
         incidents = repository.get_open_incidents(session)
         assert [i.device_name for i in incidents] == ["PC1"]
 
-        # Link status derived from endpoint statuses.
+        # A failed management ping does not prove the interface link is down.
         links = repository.get_links(session)
-        assert links[0].status == "down"
+        assert links[0].status == "unknown"
 
         run = repository.get_last_successful_run(session)
         assert run is not None and run.status == "partial"
@@ -143,6 +144,48 @@ def test_collect_once_rejects_no_lab(db_url, tmp_path, fake_docker):
         runs = repository.get_recent_runs(session)
         assert runs[0].status == "error"
         assert "topology" in (runs[0].error_message or "").lower()
+    finally:
+        session.close()
+
+
+def test_unsupported_ping_does_not_mark_devices_or_links_down(
+        db_url, fake_inventory, fake_docker):
+    """An unavailable ICMP tool is an unknown observation, not a failure."""
+    def unsupported(target, _inventory):
+        return PingResult(destination=target, success=False, unsupported=True,
+                          error="ICMP unavailable")
+
+    summary = metrics_collector.collect_once(
+        inventory=fake_inventory, host_ping=unsupported,
+        inlab_ping=_fake_inlab_ping, counter_reader=_fake_counters,
+        route_reader=_fake_routes, data_source="live")
+    assert summary.status == "error" and summary.devices_up == 0
+    session = get_session()
+    try:
+        assert {d.status for d in repository.get_devices(session)} == {"unknown"}
+        assert repository.get_open_incidents(session) == []
+        assert {link.status for link in repository.get_links(session)} == {
+            "unknown"}
+    finally:
+        session.close()
+
+
+def test_link_status_uses_observed_endpoint_operstate(
+        db_url, fake_inventory, fake_docker):
+    def counters(container, _iface):
+        return {"operstate": 1.0 if container == "R1" else 0.0}
+
+    metrics_collector.collect_once(
+        inventory=fake_inventory, host_ping=_fake_ping({"R1", "PC1"}),
+        inlab_ping=_fake_inlab_ping, counter_reader=counters,
+        route_reader=_fake_routes, data_source="live")
+    session = get_session()
+    try:
+        links = repository.get_links(session)
+        assert len(links) == 1 and links[0].status == "down"
+        interfaces = {i.device.name: i.status for i in
+                      session.query(Interface).all()}
+        assert interfaces == {"R1": "up", "PC1": "down"}
     finally:
         session.close()
 

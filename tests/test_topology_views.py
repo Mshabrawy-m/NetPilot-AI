@@ -77,6 +77,35 @@ def test_degree_map_counts_links():
     assert deg["R1"] == 2 and deg["S1"] == 3 and deg["H1"] == 1
 
 
+def test_database_topology_labels_dangling_devices_and_skips_invalid_edges(
+        session):
+    from database import repository
+
+    repository.upsert_device(session, "R1", type_="router", status="up")
+    repository.upsert_device(session, "R2", type_="router", status="up")
+    repository.upsert_link(session, "R1", "eth1", "R2", "eth1",
+                           status="up")
+    # Reversed duplicate must not become a second visual connection.
+    repository.upsert_link(session, "R2", "eth1", "R1", "eth1",
+                           status="up")
+    # Legacy/malformed records have no relational endpoint constraint.
+    repository.upsert_link(session, "R1", "eth2", "GHOST", "eth1",
+                           status="invalid")
+    repository.upsert_link(session, "R1", "eth9", "R1", "eth9",
+                           status="up")
+    session.commit()
+
+    result = ts.get_topology(session)
+    node_ids = {node["id"] for node in result["nodes"]}
+    assert node_ids == {"R1", "R2", "GHOST"}
+    ghost = next(node for node in result["nodes"] if node["id"] == "GHOST")
+    assert ghost["status"] == "unknown" and ghost["inventory_missing"]
+    assert len(result["edges"]) == 2
+    assert all(edge["status"] == "unknown" for edge in result["edges"]
+               if edge["target"] == "GHOST")
+    assert len(result["warnings"]) == 4
+
+
 # ----------------------------------------------------------------- fabric
 @pytest.fixture()
 def demo_env(tmp_path, monkeypatch):

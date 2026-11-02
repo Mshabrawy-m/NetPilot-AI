@@ -81,6 +81,22 @@ def test_load_metric_frame_source_separation(session):
     assert demo["value"].tolist() == [2.0]
 
 
+def test_repository_metric_query_can_select_exact_unit_and_unknown_unit(session):
+    from database import repository
+    for i, (value, unit) in enumerate(((1.0, "ms"), (2.0, "s"),
+                                       (3.0, None))):
+        repository.add_metric_sample(
+            session, "R1", "ping.avg_rtt_ms", value, unit=unit,
+            data_source="live", collected_at=BASE + dt.timedelta(seconds=i))
+    session.commit()
+    ms = repository.get_metric_series(session, "R1", "ping.avg_rtt_ms",
+                                      unit="ms")
+    unknown = repository.get_metric_series(
+        session, "R1", "ping.avg_rtt_ms", unit_is_null=True)
+    assert [row.value for row in ms] == [1.0]
+    assert [row.value for row in unknown] == [3.0]
+
+
 # ------------------------------------------------------------------ dedupe
 def test_dedupe_keeps_last_deterministically():
     frame = make_frame([1.0, 2.0, 3.0])
@@ -193,6 +209,23 @@ def test_quality_flags_mixed_sources():
     q = data_quality.summarize_quality(frame, "R1", "m")
     assert q.mixed_sources
     assert any("mixes data sources" in r for r in q.reasons)
+
+
+def test_quality_blocks_series_with_inconsistent_known_units():
+    frame = make_frame([10.0, 20.0, 30.0, 40.0])
+    frame.loc[2:, "unit"] = "s"
+    quality = data_quality.summarize_quality(
+        frame, "R1", "latency", expected_interval_seconds=60,
+        now=BASE + dt.timedelta(minutes=4))
+    assert quality.mixed_units
+    assert quality.unit is None
+    assert not quality.ready(data_quality.ANALYSIS)
+    assert not quality.ready(data_quality.DETECTION)
+    assert not quality.ready(data_quality.FORECAST)
+    for purpose in (data_quality.ANALYSIS, data_quality.DETECTION,
+                    data_quality.FORECAST):
+        assert any("inconsistent units" in reason
+                   for reason in quality.reasons_for(purpose))
 
 
 def test_quality_readiness_matrix():

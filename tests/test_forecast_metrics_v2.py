@@ -47,6 +47,33 @@ def test_mape_returns_none_on_length_mismatch_not_a_partial_number():
     assert evaluation.mape([1.0, 2.0, 3.0], [1.0, 2.0]) is None
 
 
+def test_metrics_preserve_positions_when_missing_or_nonfinite_pairs_occur():
+    # Pair 1 is valid; pair 2 has a missing prediction; pair 3 has an
+    # infinite actual. Independent dropna would incorrectly compare 20 to 10.
+    actual = [10.0, 20.0, float("inf"), 40.0]
+    predicted = [8.0, float("nan"), 30.0, 36.0]
+    assert evaluation.mae(actual, predicted) == pytest.approx(3.0)
+    assert evaluation.mape(actual, predicted) == pytest.approx(15.0)
+    assert evaluation.mase(actual, predicted, [1.0, 3.0, 5.0]) == \
+        pytest.approx(1.5)
+
+
+def test_chronological_split_excludes_infinite_observations():
+    values = ts_series([float(i) for i in range(30)])
+    values.iloc[8] = float("inf")
+    split = evaluation.chronological_split(values, min_train=12, min_test=5)
+    assert sum(map(len, (split.train, split.val, split.test))) == 29
+    assert all(math.isfinite(float(v)) for v in pd.concat(
+        [split.train, split.val, split.test]))
+
+
+def test_mase_training_scale_does_not_bridge_a_missing_observation():
+    # Only adjacent finite steps (2 and 2) define the scale. Dropping the gap
+    # first would invent a 97-unit one-step transition from 3 to 100.
+    train = [1.0, 3.0, float("nan"), 100.0, 102.0]
+    assert evaluation.mase([110.0], [104.0], train) == pytest.approx(3.0)
+
+
 def test_smape_is_bounded_and_symmetric():
     forward = evaluation.smape([100.0, 100.0], [90.0, 110.0])
     backward = evaluation.smape([90.0, 110.0], [100.0, 100.0])

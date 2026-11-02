@@ -171,14 +171,33 @@ def check_connection() -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
-def reset_lab_data() -> int:
-    """Delete all disposable lab data (every table). Returns table count.
+#: Tables that are configuration, identity or audit evidence rather than
+#: disposable telemetry. A "reset lab data" action must never erase user
+#: accounts, alert rules, change approvals/audit history, or immutable digital
+#: twin bindings - those are not measurements and cannot be regenerated.
+_RESET_PRESERVED_TABLES = frozenset({
+    "users",
+    "alert_rules",
+    "change_requests",
+    "change_audit_events",
+    "digital_twin_snapshot_bindings",
+})
 
-    This only ever touches NetPilot's own database (SQLite file or the
-    configured PostgreSQL schema) - never a production system.
+
+def reset_lab_data() -> int:
+    """Delete disposable lab/measurement rows, preserving identity and audit.
+
+    Returns the number of tables cleared. This only ever touches NetPilot's own
+    database (SQLite file or the configured PostgreSQL schema) - never a
+    production system - and it deliberately leaves users, alert rules, change
+    requests/audit events and digital-twin bindings intact.
     """
     engine = get_engine()
+    cleared = 0
     with engine.begin() as conn:
         for table in reversed(Base.metadata.sorted_tables):
+            if table.name in _RESET_PRESERVED_TABLES:
+                continue
             conn.execute(table.delete())
-    return len(Base.metadata.tables)
+            cleared += 1
+    return cleared

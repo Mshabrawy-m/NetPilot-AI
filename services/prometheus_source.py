@@ -32,7 +32,7 @@ import math
 import re
 from typing import Mapping
 
-from analytics.lab_dataset import SOURCE_LIVE, canonicalize
+from analytics.lab_dataset import SOURCE_LIVE, LabDataset, canonicalize
 from config import get_settings
 
 #: Response guards. A scrape above these is refused before it is parsed.
@@ -312,5 +312,11 @@ def _from_epoch(raw) -> dt.datetime:
         seconds = float(raw)
     except (TypeError, ValueError) as exc:
         raise PrometheusError(f"timestamp {raw!r} is not numeric") from exc
-    return dt.datetime.fromtimestamp(seconds, dt.timezone.utc).replace(
-        tzinfo=None, microsecond=0)
+    if not math.isfinite(seconds):
+        raise PrometheusError(f"timestamp {raw!r} is not finite")
+    try:
+        return dt.datetime.fromtimestamp(seconds, dt.timezone.utc).replace(
+            tzinfo=None, microsecond=0)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise PrometheusError(
+            f"timestamp {raw!r} is outside the supported datetime range") from exc

@@ -17,8 +17,10 @@ from tests.ai_lab_fixtures import unlabelled_dataset
 class _Planner:
     def __init__(self, payload):
         self.payload = payload
+        self.last_user = None
 
-    def complete_json(self, _system, _user, schema):
+    def complete_json(self, _system, user, schema):
+        self.last_user = user
         return schema.model_validate(self.payload)
 
 
@@ -26,11 +28,28 @@ def test_plan_rejects_unknown_or_unregistered_series(sim):
     with pytest.raises(ValidationError):
         agentic_analytics.AgentPlan.model_validate({
             "objective": "x", "extra": "no", "steps": []})
+    with pytest.raises(ValidationError):
+        agentic_analytics.AgentPlan.model_validate({
+            "objective": "x", "steps": [{"tool": "shell",
+                "purpose": "run a command"}]})
     with pytest.raises(ValueError, match="outside the dataset inventory"):
         agentic_analytics.plan_tools(_Planner({
             "objective": "inspect", "steps": [{"tool": "run_forecast",
                 "series_ids": ["s999"], "horizon": 5, "purpose": "forecast"}]
         }), "forecast", sim)
+
+
+def test_dataset_inspection_reuses_quality_counts_without_rebuilding_values(
+        sim, monkeypatch):
+    def unexpected_values_read(_self, _ref):
+        raise AssertionError("inspection rebuilt a frame to recount values")
+
+    monkeypatch.setattr(lab_dataset.LabDataset, "series_values",
+                        unexpected_values_read)
+    result = agentic_analytics._inspect(sim)
+    for item, observed in zip(sim.inventory, result["series"]):
+        assert observed["n_valid"] == item.n_values
+        assert observed["n_missing"] == item.n_rows - item.n_values
 
 
 @pytest.fixture
@@ -49,7 +68,8 @@ def test_agent_runs_real_statistics_and_forecast_and_persists_audit(session, sim
         ]})
     result = agentic_analytics.execute_plan(
         session, sim, plan,
-        request_text="Summarize latency; api_key=sk-abcdefghijklmnop")
+        request_text=("Summarize latency; api_key=sk-abcdefghijklmnop; "
+                      "token gsk_" + "A" * 48))
     assert result["status"] == "completed"
     assert [step["tool"] for step in result["steps"]] == [
         "inspect_dataset", "run_statistics", "run_forecast"]
@@ -62,6 +82,7 @@ def test_agent_runs_real_statistics_and_forecast_and_persists_audit(session, sim
     assert audit.source_type == lab_dataset.SOURCE_HISTORICAL
     assert audit.dataset_fingerprint == sim.fingerprint
     assert "sk-abcdefghijklmnop" not in audit.request_text
+    assert "gsk_" + "A" * 48 not in audit.request_text
     assert "[REDACTED]" in audit.request_text
     assert json.loads(audit.steps_json)[-1]["experiment_id"] is not None
     history = agentic_analytics.list_runs(session)
@@ -90,6 +111,47 @@ def test_repeated_calls_are_bounded_and_failed_tool_is_not_success(
     assert result["steps"][2]["error"] == "ValueError"
 
 
+def test_partial_failure_preserves_successful_tool_results(session, sim,
+                                                            monkeypatch):
+    actual_run = lab_experiment.run_experiment
+
+    def fail_forecast(db, dataset, task, **kwargs):
+        if task == lab_dataset.TASK_FORECAST:
+            raise RuntimeError("simulated forecast failure")
+        return actual_run(db, dataset, task, **kwargs)
+
+    monkeypatch.setattr(agentic_analytics.lab_experiment, "run_experiment",
+                        fail_forecast)
+    plan = agentic_analytics.AgentPlan.model_validate({
+        "objective": "Compute statistics and forecast",
+        "steps": [
+            {"tool": "run_statistics", "series_ids": ["s0"],
+             "purpose": "Compute statistics"},
+            {"tool": "run_forecast", "series_ids": ["s0"],
+             "horizon": 5, "purpose": "Forecast values"},
+        ],
+    })
+    result = agentic_analytics.execute_plan(session, sim, plan)
+    assert result["status"] == "partial"
+    assert result["steps"][1]["status"] == "ok"
+    assert result["steps"][1]["experiment_id"] is not None
+    assert result["steps"][2]["status"] == "failed"
+    assert "no result is claimed" in result["report"]
+
+
+@pytest.mark.parametrize("request_text", [
+    "Summarize this dataset", "لخص بيانات هذه المجموعة",
+])
+def test_fake_planner_accepts_english_and_arabic_requests(sim, request_text):
+    planner = _Planner({"objective": "Summarize dataset", "steps": [
+        {"tool": "run_statistics", "series_ids": ["s0"],
+         "purpose": "Compute descriptive statistics"},
+    ]})
+    plan = agentic_analytics.plan_tools(planner, request_text, sim)
+    assert plan.steps[0].tool == "run_statistics"
+    assert json.loads(planner.last_user)["request"] == request_text
+
+
 def test_agent_refuses_invalid_arguments_and_safety_flags_remain_off(
         session, sim):
     with pytest.raises(Exception):
@@ -100,6 +162,42 @@ def test_agent_refuses_invalid_arguments_and_safety_flags_remain_off(
     settings = get_settings()
     assert settings.change_loop_enabled is False
     assert settings.lab_execution_enabled is False
+
+
+def test_executor_revalidates_a_mutated_plan_before_any_tool_runs(session, sim,
+                                                                  monkeypatch):
+    plan = agentic_analytics.AgentPlan.model_validate({
+        "objective": "Summarize this dataset",
+        "steps": [{"tool": "run_statistics", "series_ids": ["s0"],
+                   "purpose": "Compute summary"}],
+    })
+    plan.steps[0].tool = "shell"
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("an unvalidated plan reached tool execution")
+
+    monkeypatch.setattr(agentic_analytics.lab_experiment, "run_experiment",
+                        forbidden)
+    with pytest.raises(ValidationError):
+        agentic_analytics.execute_plan(session, sim, plan)
+
+
+def test_planner_rejects_arguments_not_supported_by_selected_tool(sim):
+    planner = _Planner({
+        "objective": "Summarize this dataset",
+        "steps": [{"tool": "run_statistics", "series_ids": ["s0"],
+                   "horizon": 48, "purpose": "Compute summary"}],
+    })
+    with pytest.raises(ValueError, match="does not accept horizon"):
+        agentic_analytics.plan_tools(planner, "summarize", sim)
+
+
+def test_groq_tokens_are_redacted_from_persisted_agentic_text():
+    fake_token = "gsk_" + "A" * 48
+    safe = agentic_analytics._redact(
+        f"Please inspect this {fake_token} value")
+    assert fake_token not in safe
+    assert "[REDACTED]" in safe
 
 
 def test_simulated_labels_flow_through_the_real_agent_anomaly_tool(session):

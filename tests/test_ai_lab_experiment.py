@@ -127,6 +127,14 @@ def test_unknown_parameter_raises_instead_of_being_silently_dropped(session, sim
     assert lab_experiment.history(session) == []
 
 
+def test_refs_cannot_be_smuggled_through_the_params_mapping(session, sim):
+    refs = [ref(sim, "R1", "if.rx_bps")]
+    with pytest.raises(ValueError, match="not accepted by the anomaly task"):
+        run(session, sim, lab_dataset.TASK_ANOMALY, refs=refs,
+            params={"refs": refs})
+    assert lab_experiment.history(session) == []
+
+
 def test_accepted_params_reflect_the_real_task_signatures():
     assert {"detectors", "window", "sweep_curve"} <= set(
         lab_experiment.accepted_params(lab_dataset.TASK_ANOMALY))
@@ -376,6 +384,16 @@ def test_html_export_escapes_hostile_names_and_keeps_the_report_readable(
     assert "&lt;script&gt;" in html_text
     assert html_text.startswith("<!DOCTYPE html>")
     assert "<table>" in html_text and "</tbody></table>" in html_text
+
+
+def test_html_export_keeps_escaped_pipes_inside_their_cell(session, sim):
+    row = "| a\\|b | c |"
+    assert lab_experiment._split_markdown_row(row) == ["a|b", "c"]
+    hostile = lab_tasks.TaskResult(
+        task=lab_dataset.TASK_STATISTICS, status="ok", message="m",
+        table=[{"series": "R1|eth0|rtt", "mean": 1.0, "n": 3}])
+    html_text = lab_experiment.export_html(sim, hostile)
+    assert "<td>R1|eth0|rtt</td>" in html_text
 
 
 def test_csv_export_neutralises_spreadsheet_formula_injection():

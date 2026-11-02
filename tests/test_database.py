@@ -120,14 +120,32 @@ def test_connectivity_test_records(session):
     assert failed[0].avg_latency_ms is None
 
 
-def test_reset_removes_all_rows(session):
+def test_reset_removes_measurements_but_preserves_identity_and_audit(session):
     repository.upsert_device(session, name="R9")
     repository.add_metric_sample(session, "R9", "m", 1.0)
+    repository.create_user(session, username="keeper",
+                           password_hash="pbkdf2_sha256$50000$00$00")
+    rule = repository.create_alert_rule(
+        session, name="keep-rule", metric="m", threshold=1.0)
+    req = repository.create_change_request(
+        session, request_uuid="keep-request", device_name="R9")
+    repository.add_change_audit_event(session, req, action="proposed",
+                                      reason="audit must survive")
     session.commit()
     from database.connection import reset_lab_data
-    reset_lab_data()
+    cleared = reset_lab_data()
+    assert cleared > 0
+    session.expire_all()
     assert repository.get_devices(session) == []
     assert repository.get_metric_series(session, "R9", "m") == []
+    # identity, operator configuration and the audit trail are not measurements
+    assert repository.get_user_by_name(session, "keeper") is not None
+    assert repository.get_alert_rules(session)[0].id == rule.id
+    kept = repository.get_change_request(session, "keep-request")
+    assert kept is not None
+    assert [e.action for e in
+            repository.get_change_audit_events(session, kept.id)] == [
+                "proposed"]
 
 
 # --------------------------------------------------------------------------

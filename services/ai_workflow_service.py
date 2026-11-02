@@ -23,11 +23,16 @@ def _dump(obj) -> str | None:
     return json.dumps(obj, ensure_ascii=False, default=str, sort_keys=True)
 
 
+def _utcnow_naive() -> dt.datetime:
+    """Return UTC in the naive representation used by the database layer."""
+    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+
 def run_workflow(session, *, request_text: str, data_source: str,
                  assistant: GroqAssistant | None = None,
                  now: dt.datetime | None = None) -> dict:
     settings = get_settings()
-    now = now or dt.datetime.utcnow()
+    now = now or _utcnow_naive()
     # Bound request size inside the service (defence, not just a prompt).
     request_text = (request_text or "").strip()[: settings.ai_request_max_chars]
     data_source = data_source if data_source in ("live", "demo") else "demo"

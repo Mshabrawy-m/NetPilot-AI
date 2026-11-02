@@ -105,6 +105,31 @@ def test_rows_are_chronological_and_duplicate_timestamps_are_counted():
     assert [step.step for step in ds.lineage].count("dedupe") == 1
 
 
+def test_conflicting_duplicate_timestamp_keeps_last_input_row():
+    rows = long_rows(n=24)
+    duplicate = dict(rows[5], value=999.0)
+    rows.append(duplicate)
+    ds = dataset(frame_of(rows))
+    ref = ds.series_refs()[0]
+    kept = ds.group(ref).set_index("collected_at").loc[rows[5]["collected_at"],
+                                                       "value"]
+    assert kept == 999.0
+    assert ds.profile["n_rows"] == 24
+
+
+def test_non_finite_values_are_counted_as_missing_not_used_in_analysis():
+    rows = long_rows(n=48)
+    rows[4]["value"] = float("inf")
+    rows[5]["value"] = float("-inf")
+    ds = dataset(frame_of(rows))
+    ref = ds.series_refs()[0]
+    assert ds.profile["n_rows"] == 48
+    assert ds.profile["n_values"] == 46
+    assert ds.profile["n_missing_values"] == 2
+    assert all(pd.Series(ds.series_values(ref)).map(pd.notna))
+    assert any("non-finite" in warning for warning in ds.warnings)
+
+
 def test_unparseable_timestamps_are_rejected_not_repaired():
     rows = long_rows(n=12)
     rows[3]["collected_at"] = "yesterday-ish"
@@ -372,6 +397,27 @@ def test_fingerprint_is_stable_and_content_sensitive():
     c = dataset(frame_of(mutated), source_id="same")
     assert c.fingerprint != a.fingerprint
     assert len(a.fingerprint) == 32
+
+
+@pytest.mark.parametrize("mutation", ["permuted-values", "interior-time",
+                                       "unit", "label"])
+def test_fingerprint_changes_for_each_canonical_content_field(mutation):
+    rows = long_rows(n=48, label=lambda _pos: "normal")
+    original = dataset(frame_of(rows), source_id="same")
+    changed = [dict(row) for row in rows]
+    if mutation == "permuted-values":
+        changed[0]["value"], changed[2]["value"] = (
+            changed[2]["value"], changed[0]["value"])
+    elif mutation == "interior-time":
+        changed[10]["collected_at"] += dt.timedelta(seconds=1)
+    elif mutation == "unit":
+        for row in changed:
+            row["unit"] = "seconds"
+    else:
+        for row in changed:
+            row["label"] = "anomaly"
+    altered = dataset(frame_of(changed), source_id="same")
+    assert altered.fingerprint != original.fingerprint
 
 
 # ---------------------------------------------------------------- quality

@@ -28,3 +28,13 @@ def test_scan_detects_planted_secret(tmp_path, monkeypatch):
     monkeypatch.setattr(scan, "_ROOT", str(tmp_path))
     hits = scan._scan()
     assert hits and hits[0][0] == "leak.py"
+
+
+def test_scan_ignores_generated_pytest_scratch_directories(tmp_path,
+                                                            monkeypatch):
+    scratch = tmp_path / ".audit-pytest-scratch"
+    scratch.mkdir()
+    (scratch / "fixture.py").write_text(
+        'api_key = "' + "Z" * 40 + '"\n', encoding="utf-8")
+    monkeypatch.setattr(scan, "_ROOT", str(tmp_path))
+    assert scan._scan() == []

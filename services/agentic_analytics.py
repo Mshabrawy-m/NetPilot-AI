@@ -74,6 +74,7 @@ TOOL_REGISTRY = {
 
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(api[_ -]?key|token|password|secret)\s*[:=]\s*[^\s,;]+"),
+    re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
 )
 _SERIES_TOOLS = frozenset({"run_statistics", "detect_anomalies",
@@ -117,6 +118,8 @@ def plan_tools(assistant: GroqAssistant, request: str,
         if (step.tool != "inspect_experiment_history"
                 and step.history_limit != 5):
             raise ValueError(f"{step.tool} does not accept history_limit")
+        if step.tool != "run_forecast" and step.horizon != 10:
+            raise ValueError(f"{step.tool} does not accept horizon")
     return plan
 
 
@@ -127,7 +130,10 @@ def _inspect(dataset: lab_dataset.LabDataset) -> dict:
     for index, ref in enumerate(refs[:80]):
         q = dataset.quality(ref)
         qualities.append({"series_id": f"s{index}", "series": str(ref),
-                          "n_valid": len(dataset.series_values(ref)),
+                          # Quality already counts the non-null observations;
+                          # rebuilding the same filtered frame just to count
+                          # it caused a second full scan per inspected series.
+                          "n_valid": q.n_non_null,
                           "n_missing": q.n_null_values,
                           "interval_seconds": q.observed_interval_seconds,
                           "stale_seconds": q.stale_seconds,
@@ -158,6 +164,9 @@ def execute_plan(session: Session, dataset: lab_dataset.LabDataset,
     Each analysis is persisted by ``lab_experiment``; the plan/run envelope is
     also saved in the additive agentic run table for a durable audit trail.
     """
+    # Pydantic models are mutable by default. Revalidate at the executor
+    # boundary so a modified/in-process plan cannot bypass the planner schema.
+    plan = AgentPlan.model_validate(plan.model_dump())
     run_uuid = str(uuid.uuid4())
     steps = [{"tool": "inspect_dataset", "status": "ok",
               "output": _inspect(dataset), "at": utc_now().isoformat()}]

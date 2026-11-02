@@ -308,11 +308,22 @@ def run_anomaly_comparison(
             "none - this source has no usable anomaly/normal ground truth, so "
             "precision/recall/F1/PR-AUC are reported as null instead of "
             "invented")
+    if metrics["series_evaluated"]:
+        status = "ok"
+        message = (f"compared {len(chosen)} detector(s) across "
+                   f"{len(refs)} series "
+                   f"({'supervised' if labelled else 'unsupervised'} "
+                   "evaluation)")
+    else:
+        # Every selected series failed the per-series gate. The dataset-wide
+        # gate can still read "N/M series meet ...", so returning "ok" here
+        # would claim a comparison that never happened.
+        status = "insufficient_data"
+        message = ("none of the selected series met the anomaly-detection gate, "
+                   "so no detector was compared; nothing was computed")
     return TaskResult(
-        task=task, status="ok",
-        message=(f"compared {len(chosen)} detector(s) across "
-                 f"{len(refs)} series ({'supervised' if labelled else 'unsupervised'} "
-                 "evaluation)"),
+        task=task, status=status,
+        message=message,
         metrics=metrics, table=rows, points=points,
         artifacts={"per_detector": totals,
                    "sweep_method": ("step-wise average precision over "
@@ -654,7 +665,7 @@ def run_forecast_comparison(
                              "config": eval_res.config})
                 continue
             pairs = [(a, p) for a, p in zip(test_actuals, eval_res.test_pred)
-                     if not _isnan(p)]
+                     if math.isfinite(a) and not _isnan(p)]
             act = [a for a, _ in pairs]
             prd = [p for _, p in pairs]
             abs_errors = [abs(a - p) for a, p in pairs]
@@ -689,16 +700,51 @@ def run_forecast_comparison(
                 "skill": None,
                 "test_pred": eval_res.test_pred,
                 "test_timestamps": list(split.test.index),
+                "scored_timestamps": [ts for ts, (a, p) in zip(
+                    split.test.index, zip(test_actuals, eval_res.test_pred))
+                    if math.isfinite(a) and not _isnan(p)],
                 "future": future, "band": band_meta,
+                "_raw_future": raw_future,
             }
             rows.append({k: v for k, v in row.items()
                          if k not in ("test_pred", "test_timestamps",
-                                      "future")})
+                                      "future", "_raw_future")})
             ok_runs.append(row)
+
+        common_idx = evaluation.common_finite_indices(
+            test_actuals, [r["test_pred"] for r in ok_runs])
+        common_actual = [test_actuals[i] for i in common_idx]
+        common_timestamps = [split.test.index[i] for i in common_idx]
+        for run in ok_runs:
+            common_pred = [float(run["test_pred"][i]) for i in common_idx]
+            run.update({
+                "n_eval": len(common_idx),
+                "mae": evaluation.mae(common_actual, common_pred),
+                "rmse": evaluation.rmse(common_actual, common_pred),
+                "r2": evaluation.r2(common_actual, common_pred),
+                "mape": evaluation.mape(common_actual, common_pred),
+                "smape": evaluation.smape(common_actual, common_pred),
+                "mase": evaluation.mase(common_actual, common_pred,
+                                         split.train),
+                "scored_timestamps": common_timestamps,
+            })
+            errors = [abs(a - p) for a, p in zip(common_actual, common_pred)]
+            run["future"], run["band"] = forecasting.apply_holdout_bands(
+                run["_raw_future"], errors, coverage=coverage,
+                mode=forecast_service.BAND_MODE)
+            for row in rows:
+                if row.get("series") == str(ref) \
+                        and row.get("model") == run["model"]:
+                    for key in ("n_eval", "mae", "rmse", "r2", "mape",
+                                "smape", "mase"):
+                        row[key] = (_round(run[key]) if key != "n_eval"
+                                    else run[key])
+                    row["band"] = run["band"]
+                    break
 
         naive = next((r for r in ok_runs if r["model"] == "naive"), None)
         holdout_stamps[str(ref)] = {
-            tuple(ts.isoformat() for ts in r["test_timestamps"])
+            tuple(ts.isoformat() for ts in r["scored_timestamps"])
             for r in ok_runs}
         if len(holdout_stamps[str(ref)]) > 1:
             notes.append(f"{ref}: the compared models were scored on different "
@@ -710,15 +756,15 @@ def run_forecast_comparison(
             elif naive is None:
                 r["skill"] = None
             else:
-                aligned = [(a, p, n) for a, p, n in zip(
-                    test_actuals, r["test_pred"], naive["test_pred"])
-                    if not _isnan(p) and not _isnan(n)]
+                aligned = [(a, r["test_pred"][i], naive["test_pred"][i])
+                           for i, a in zip(common_idx, common_actual)]
                 r["skill"] = _round(evaluation.skill_vs_naive(
                     [x[0] for x in aligned], [x[1] for x in aligned],
                     [x[2] for x in aligned]))
-            rows[[i for i, x in enumerate(rows)
-                  if x.get("series") == str(ref)
-                  and x.get("model") == r["model"]][0]]["skill"] = r["skill"]
+            row_idx = next(i for i, x in enumerate(rows)
+                           if x.get("series") == str(ref)
+                           and x.get("model") == r["model"])
+            rows[row_idx]["skill"] = r["skill"]
         if naive is None:
             notes.append(f"{ref}: naive baseline was not in the model list, so "
                          "skill-vs-naive cannot be computed and is reported as "
@@ -780,10 +826,23 @@ def run_forecast_comparison(
 
     ok_rows = [r for r in rows if r.get("status") == "ok" and r.get("mae")
                is not None]
+    if ok_rows:
+        status = "ok"
+        message = (f"forecast comparison over {len(refs)} series with "
+                   f"{len(chosen)} model(s), horizon {horizon}")
+    elif any(r.get("status") == "error" for r in rows):
+        status = "error"
+        message = ("every model that ran failed before producing a scoreable "
+                   "holdout forecast; see the table reasons")
+    else:
+        # All selected series failed the gate or every model refused on them:
+        # reporting "ok" would imply a comparison that produced no score.
+        status = "insufficient_data"
+        message = ("no model produced a scoreable holdout forecast for the "
+                   "selected series; nothing was forced")
     return TaskResult(
-        task=task, status="ok",
-        message=(f"forecast comparison over {len(refs)} series with "
-                 f"{len(chosen)} model(s), horizon {horizon}"),
+        task=task, status=status,
+        message=message,
         metrics={
             "models": list(chosen), "horizon": horizon,
             "band_nominal_coverage": coverage,
@@ -1193,7 +1252,12 @@ def _best_recall_at_precision(rows: list[dict], floor: float = 0.5) -> dict:
 
 
 def _isnan(x) -> bool:
-    return x is None or (isinstance(x, float) and math.isnan(x))
+    if x is None:
+        return True
+    try:
+        return not math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return True
 
 
 def _round(value, nd: int = 4) -> float | None:

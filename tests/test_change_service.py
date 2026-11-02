@@ -13,8 +13,6 @@ expiry are persisted and audited; invalid/repeated transitions are refused.
 import datetime as dt
 import types
 
-import pytest
-
 from database import repository
 from database.models import db_utcnow
 from services import change_service

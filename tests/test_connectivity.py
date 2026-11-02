@@ -10,7 +10,7 @@ import pytest
 
 from network import connectivity
 from network.device_inventory import (
-    InventoryNode, LabInventory, DestinationNotAllowed,
+    InventoryNode, LabInventory,
 )
 
 LAB = LabInventory(nodes=[

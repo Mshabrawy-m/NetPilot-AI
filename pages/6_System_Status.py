@@ -18,7 +18,6 @@ from config import get_settings
 from database import repository
 from database.connection import check_connection
 from network import containerlab_manager
-from services import collection_service
 
 settings = get_settings()
 
@@ -90,9 +89,11 @@ else:
 
 with st.expander("Reset disposable lab data"):
     db_kind = "demo DB" if settings.demo_mode else "live DB"
-    st.caption("Deletes all rows from NetPilot's own database "
-               f"({db_kind} only). "
-               "Never touches the lab itself.")
+    st.caption("Deletes measurement and operational rows from NetPilot's own "
+               f"database ({db_kind} only). "
+               "Never touches the lab itself. User accounts, alert rules, "
+               "change requests/audit history and digital-twin bindings are "
+               "preserved.")
     confirm = st.checkbox("I understand: wipe all stored measurements")
     if st.button("Reset database rows", disabled=not confirm):
         from database.connection import reset_lab_data

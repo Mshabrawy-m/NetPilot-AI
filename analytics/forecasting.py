@@ -19,15 +19,14 @@ Small, explainable model set - all original implementations:
   fitted on one season would be inventing a rhythm.
 * ``ridge_lag``       - scikit-learn Ridge on trailing lag features: one
   direct model per horizon step, with the feature scaler fitted on TRAIN
-  rows only. Holdout evaluation is one-step-ahead (features use true
-  in-time history); future steps after the first are recursive (each
-  prediction is fed back as history), so multi-step accuracy is not
-  guaranteed. This is a small explainable baseline, not a production
-  forecaster.
+  rows only. Holdout evaluation uses the same training-origin window for
+  each direct horizon, so no held-out observation is fed into later steps.
+  This is a small explainable baseline, not a production forecaster.
 
 Protocol honoured by the service layer (see services/forecast_service.py):
-chronological train|val|test splits, tuning on train+val only, models
-compared on identical test timestamps, forecast origin = last observation,
+chronological train|val|test splits, tuning on train+val only, candidate
+metrics on the intersection of their finite holdout predictions (reported
+timestamps match exactly), forecast origin = last observation,
 future forecasts refit on all available (in-time) data.
 
 Uncertainty bands are a documented approximation, NOT calibrated prediction
@@ -39,10 +38,10 @@ claimed.
 
 ``apply_holdout_bands`` is the one deliberate upgrade to that story, and it is
 the *service* that calls it (never a model, so the baselines above keep their
-documented sqrt(h) behaviour): once a model has made real one-step errors on
-held-out data, those errors give an empirical half-width that replaces the
-normal-approximation width, together with the coverage actually measured on
-the holdout. With no holdout to measure, the approximation is kept and labelled
+documented sqrt(h) behaviour): errors from the shared scoreable holdout window
+give an empirical half-width that replaces the normal-approximation width,
+together with coverage measured over those holdout steps. With no holdout to
+measure, the approximation is kept and labelled
 ``normal_sqrt_h_unmeasured`` rather than quietly narrowed. ``realized_band_coverage``
 closes the loop later, against observations that arrived after the prediction.
 """
@@ -394,11 +393,9 @@ def ridge_lag_forecast(train: pd.Series, horizon: int,
 
     Leakage rules: the lag window always ends at the forecast origin
     (training target index) and the feature StandardScaler is fitted on
-    TRAIN rows only. For test evaluation, features for test step j use the
-    true observed values preceding it (values are in-time at prediction).
-    Only the 1-step model is used for that one-step-ahead evaluation; the
-    future multi-step path feeds earlier predictions back as history and is
-    therefore recursive. The reported sigma pools residuals from every
+    TRAIN rows only. Each direct horizon model predicts from that same
+    training-origin window, both for holdout evaluation and future paths;
+    no holdout actual is fed back into a later prediction. The reported sigma pools residuals from every
     direct-horizon model, so it is an indicative scale, not a calibrated
     multi-step interval.
     """
@@ -443,34 +440,31 @@ def ridge_lag_forecast(train: pd.Series, horizon: int,
     res.train_mape_guard = sigma
 
     if test is not None:
-        hist = list(y)
+        origin_features = np.asarray(y[-p:]).reshape(1, -1)
         res.test_pred = []
         for j in range(len(test)):
-            h = 1  # direct one-step model, features = true in-time history
-            scaler, model = models[0] if models else (None, None)
+            scaler, model = (models[j] if j < len(models)
+                             else (None, None))
             if scaler is None:
                 res.test_pred.append(float("nan"))
             else:
-                feats = np.array([hist[-p:]]).reshape(1, -1)
-                pred = float(model.predict(scaler.transform(feats))[0])
+                pred = float(model.predict(
+                    scaler.transform(origin_features))[0])
                 res.test_pred.append(pred)
-            hist.append(float(test.iloc[j]))
     if future_timestamps:
-        hist = list(y)
+        origin_features = np.asarray(y[-p:]).reshape(1, -1)
         res.future = []
         for h, ts in enumerate(future_timestamps, start=1):
             scaler, model = models[min(h, len(models)) - 1] if models else (None, None)
             if scaler is None:
-                v = float(hist[-1])
+                v = float("nan")
             else:
-                feats = np.array([hist[-p:]]).reshape(1, -1)
-                v = float(model.predict(scaler.transform(feats))[0])
+                v = float(model.predict(scaler.transform(origin_features))[0])
             res.future.append({
                 "target_timestamp": ts, "step": h, "predicted_value": v,
                 "lower_bound": v - Z95 * sigma * math.sqrt(h),
                 "upper_bound": v + Z95 * sigma * math.sqrt(h),
             })
-            hist.append(v)  # recursive: uses own prediction as new history
     return res
 
 

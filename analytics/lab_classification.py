@@ -110,7 +110,8 @@ def evaluate_classification(
     counts = labels.astype(str).value_counts()
 
     train_idx, test_idx = _make_split(labels, test_frac=test_frac,
-                                      split_mode=split_mode)
+                                      split_mode=split_mode,
+                                      seed=random_seed)
     if len(train_idx) < settings.min_points_detection:
         return ClassificationRefusal(
             "insufficient_train_rows",
@@ -304,12 +305,14 @@ def _validate(features: pd.DataFrame, timestamps: pd.Series,
 
 
 def _make_split(labels: pd.Series, *, test_frac: float,
-                split_mode: str) -> tuple[list[int], list[int]]:
+                split_mode: str, seed: int) -> tuple[list[int], list[int]]:
     """Row indices for train/test.
 
     The chronological branch relies on the caller having passed rows already
     sorted by time (``LabDataset.feature_frame`` returns exactly that), so the
     last ``test_frac`` of the rows are the future. No shuffling happens there.
+    The stratified branch is seeded by the run's reported ``random_seed`` so a
+    stored protocol can be reproduced.
     """
     n = len(labels)
     if split_mode == SPLIT_CHRONOLOGICAL:
@@ -320,7 +323,7 @@ def _make_split(labels: pd.Series, *, test_frac: float,
     from sklearn.model_selection import train_test_split
     train_idx, test_idx = train_test_split(
         list(range(n)), test_size=test_frac, stratify=labels.astype(str),
-        random_state=42, shuffle=True)
+        random_state=seed, shuffle=True)
     return sorted(train_idx), sorted(test_idx)
 
 

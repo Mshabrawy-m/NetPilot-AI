@@ -295,6 +295,9 @@ elif result:
         f"{coverage:.0%} quantile of the errors the model made on its own "
         "holdout (no holdout errors → the documented normal approximation is "
         "kept and labelled as such), never a claimed guarantee.")
+    for r in ok:
+        if r.get("future_note"):
+            st.warning(f"`{r['model']}`: {r['future_note']}", icon="⚠️")
 
     # ------------------------------------------------ holdout detail
     if ok:

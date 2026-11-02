@@ -22,6 +22,10 @@ import sys
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache",
               "tests", "data"}
+# Pytest basetemp roots are runtime scratch, not source. Tests may deliberately
+# plant fake credentials there while exercising the scanner; scanning a
+# previous run's scratch tree makes the live-tree hygiene check nondeterministic.
+_SKIP_DIR_PREFIXES = (".audit-", ".pytest-", "pytest-")
 # A real Groq key: 'gsk_' then a long run of alphanumerics (no underscores).
 _GROQ = re.compile(r"gsk_[A-Za-z0-9]{20,}")
 # name = "…32+ chars…" or '…32+ chars…' for secret-ish names.
@@ -35,7 +39,8 @@ _LOCAL_ENV = {".env", ".env.local"}
 def _scan():
     hits = []
     for root, dirs, files in os.walk(_ROOT):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS
+                   and not d.startswith(_SKIP_DIR_PREFIXES)]
         for name in files:
             rel = os.path.relpath(os.path.join(root, name), _ROOT)
             rel_posix = rel.replace("\\", "/")
@@ -43,7 +48,8 @@ def _scan():
                 continue
             path = os.path.join(root, name)
             try:
-                text = io.open(path, encoding="utf-8", errors="ignore").read()
+                with io.open(path, encoding="utf-8", errors="ignore") as handle:
+                    text = handle.read()
             except Exception:
                 continue
             for i, line in enumerate(text.splitlines(), 1):

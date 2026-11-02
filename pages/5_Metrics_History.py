@@ -4,7 +4,6 @@ from __future__ import annotations
 import statistics
 from datetime import timedelta
 
-import pandas as pd
 import plotly.express as px
 import streamlit as st
 
@@ -56,7 +55,8 @@ hours = range_options[range_label]
 # Optional interface filter when the metric is per-interface.
 iface_names = read(lambda s: sorted({
         i.interface_name for i in repository.get_metric_series(
-            s, device_name, metric, data_source=src)
+            s, device_name, metric, data_source=src, unit=unit,
+            unit_is_null=unit is None)
     if i.interface_name
 }))
 iface = st.selectbox("Interface", [None] + iface_names,
@@ -66,7 +66,7 @@ iface = st.selectbox("Interface", [None] + iface_names,
 since = db_utcnow() - timedelta(hours=hours)
 samples = read(lambda s: repository.get_metric_series(
     s, device_name, metric, since=since, interface_name=iface,
-    data_source=src))
+    data_source=src, unit=unit, unit_is_null=unit is None))
 frame = samples_to_frame(samples)
 
 st.subheader(f"{device_name} · {metric}"

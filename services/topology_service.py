@@ -63,20 +63,57 @@ def get_topology(session) -> dict:
     """Nodes/edges for the Topology page, generated from stored lab data."""
     devices = repository.get_devices(session)
     links = repository.get_links(session)
-    nodes = [
-        {"id": d.name, "label": d.name, "type": d.type, "status": d.status,
-         "ip": d.lab_ip or d.mgmt_ip, "color": STATUS_COLORS.get(d.status, "#9e9e9e")}
-        for d in devices
-    ]
-    edges = [
-        {"source": l.device_a, "target": l.device_b,
-         "label": f"{l.if_a} ↔ {l.if_b}", "status": l.status,
-         "subnet": l.subnet,
-         "color": STATUS_COLORS.get(l.status, "#9e9e9e")}
-        for l in links
-    ]
+    by_name = {}
+    for d in devices:
+        if not d.name or d.name in by_name:
+            continue
+        by_name[d.name] = {
+            "id": d.name, "label": d.name, "type": d.type,
+            "status": d.status if d.status in DEVICE_STATUSES else "unknown",
+            "ip": d.lab_ip or d.mgmt_ip,
+            "color": STATUS_COLORS.get(d.status, STATUS_COLORS["unknown"]),
+        }
+    edges = []
+    warnings = []
+    seen_links = set()
+    for link in links:
+        a, b = (str(link.device_a or "").strip(),
+                str(link.device_b or "").strip())
+        if not a or not b or a == b:
+            warnings.append(f"invalid link row {link.id} skipped")
+            continue
+        if a not in by_name or b not in by_name:
+            missing = sorted({name for name in (a, b) if name not in by_name})
+            warnings.append("link endpoint missing from devices: "
+                            + ", ".join(missing))
+            for name in missing:
+                by_name[name] = {
+                    "id": name, "label": f"{name} (missing device row)",
+                    "type": "unknown", "status": "unknown", "ip": None,
+                    "color": STATUS_COLORS["unknown"],
+                    "inventory_missing": True,
+                }
+        ia, ib = (str(link.if_a or "").strip(),
+                  str(link.if_b or "").strip())
+        ends = sorted(((a, ia), (b, ib)))
+        key = tuple(ends)
+        if key in seen_links:
+            warnings.append(f"duplicate link row {link.id} skipped")
+            continue
+        seen_links.add(key)
+        status = link.status if link.status in LINK_STATUSES else "unknown"
+        if status != link.status:
+            warnings.append(f"link row {link.id} has invalid status")
+        edges.append({
+            "source": a, "target": b,
+            "label": f"{ia or '?'} ↔ {ib or '?'}", "status": status,
+            "subnet": link.subnet,
+            "color": STATUS_COLORS.get(status, STATUS_COLORS["unknown"]),
+        })
+    nodes = list(by_name.values())
     return {"nodes": nodes, "edges": edges,
-            "status": compute_network_status(list(devices))}
+            "status": compute_network_status(list(devices)),
+            "warnings": sorted(set(warnings))}
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,44 @@ def test_readmodel_risk_detects_bridge(session):
     assert ["R1", "R2"] in [sorted(pair) for pair in risk["bridge_links"]]
 
 
+def test_api_filter_parameters_document_supported_values():
+    """Read-only filters reject typos instead of returning misleading empties."""
+    pytest.importorskip("fastapi")
+    from api.app import app
+
+    paths = app.openapi()["paths"]
+    device_params = {
+        item["name"]: item["schema"]
+        for item in paths["/api/devices/{name}"]["get"]["parameters"]
+    }
+    alert_params = {
+        item["name"]: item["schema"]
+        for item in paths["/api/alerts"]["get"]["parameters"]
+    }
+    assert device_params["data_source"]["pattern"] == "^(live|demo)$"
+    assert alert_params["status"]["anyOf"][0]["pattern"] == (
+        "^(open|acknowledged|resolved)$")
+    assert alert_params["data_source"]["anyOf"][0]["pattern"] == (
+        "^(live|demo)$")
+
+
+def test_ask_request_rejects_invalid_boundary_inputs():
+    pytest.importorskip("fastapi")
+    from pydantic import ValidationError
+    from api.app import AskRequest
+
+    invalid_requests = [
+        {},
+        {"question": ""},
+        {"question": "x" * 2001},
+        {"question": 42},
+        {"question": "status", "data_source": "other"},
+    ]
+    for payload in invalid_requests:
+        with pytest.raises(ValidationError):
+            AskRequest.model_validate(payload)
+
+
 # ------------------------------------------------------ HTTP / WebSocket
 @pytest.fixture()
 def client(session, db_url):
@@ -119,3 +157,17 @@ def test_websocket_topology_snapshot(client, session):
         ws.send_text("tick")
         payload = ws.receive_json()
     assert payload["connectivity"]["nodes"] == 2
+
+
+def test_websocket_requires_the_api_token_when_configured(client, session,
+                                                          monkeypatch):
+    from fastapi import WebSocketDisconnect
+    _seed(session)
+    monkeypatch.setenv("NETPILOT_API_TOKEN", "s3cret")
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws/topology?token=wrong") as ws:
+            ws.send_text("tick")
+            ws.receive_json()
+    with client.websocket_connect("/ws/topology?token=s3cret") as ws:
+        ws.send_text("tick")
+        assert ws.receive_json()["connectivity"]["nodes"] == 2

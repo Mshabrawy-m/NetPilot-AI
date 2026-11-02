@@ -181,15 +181,23 @@ def answer(session, question: str, *, data_source: str = "live") -> dict:
         ranked = _rank_by_metric(session, names, token, data_source)
         if ranked:
             higher_worse = token in _HIGHER_IS_WORSE
-            want_highest = any(w in text for w in
-                               ("worst", "highest", "max", "largest", "most",
-                                "top"))
-            reverse = want_highest if higher_worse else not want_highest
-            ranked.sort(key=lambda r: r["value"], reverse=reverse)
+            _HIGH_WORDS = ("highest", "max", "largest", "most", "top")
+            _LOW_WORDS = ("lowest", "min", "smallest", "least")
+            if "best" in text:
+                # "best" depends on the metric's direction: best throughput is
+                # the highest value, best latency is the lowest.
+                want_high_value = not higher_worse
+            elif "worst" in text:
+                want_high_value = higher_worse
+            elif any(w in text for w in _HIGH_WORDS):
+                want_high_value = True
+            else:
+                want_high_value = not any(w in text for w in _LOW_WORDS)
+            ranked.sort(key=lambda r: r["value"], reverse=want_high_value)
             result["rows"] = ranked
             result["understood"] = True
             top = ranked[0]
-            label = "worst" if (want_highest == higher_worse) else "best"
+            label = "worst" if (want_high_value == higher_worse) else "best"
             result["answer"] = (f"{label} {token}: {top['device']} = "
                                 f"{top['value']:.3g} {top['unit'] or ''}".strip())
         else:

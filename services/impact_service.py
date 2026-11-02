@@ -194,6 +194,12 @@ def _normalise_topology(devices: Sequence, links: Sequence):
         if a == b:
             malformed.append(f"link row {idx} is a self-loop on '{a}'; skipped")
             continue
+        missing_endpoints = sorted({name for name in (a, b)
+                                    if name not in device_rows})
+        if missing_endpoints:
+            malformed.append(
+                f"link row {idx} references missing device row(s): "
+                + ", ".join(missing_endpoints))
         raw_status = _text(_get(raw, "status", "unknown")).lower() or "unknown"
         status = _link_status(raw_status)
         if status != raw_status:

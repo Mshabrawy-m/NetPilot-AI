@@ -14,10 +14,11 @@ from __future__ import annotations
 import datetime as dt
 import statistics
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from analytics import lab_dataset, lab_simulator
+from analytics import lab_classification, lab_dataset, lab_simulator
 from services import lab_tasks
 
 BASE = dt.datetime(2026, 10, 1)
@@ -305,6 +306,45 @@ def test_unlabelled_source_reports_evidence_but_never_accuracy(sim):
     assert "truth" not in {p["kind"] for p in res.points}
 
 
+def _mixed_length_dataset():
+    """One ready series plus one too-short series in the same dataset."""
+    rows = []
+    for metric, n in (("long", 60), ("short", 8)):
+        for i in range(n):
+            rows.append({
+                "collected_at": BASE + dt.timedelta(seconds=60 * i),
+                "device": "R1", "interface": "eth0", "metric": metric,
+                "value": 10.0 + (i % 5), "unit": "count", "label": None,
+            })
+    return lab_dataset.canonicalize(rows,
+                                    source_type=lab_dataset.SOURCE_HISTORICAL,
+                                    source_id="mixed-length")
+
+
+def test_anomaly_task_does_not_claim_ok_when_no_series_can_be_evaluated():
+    dataset = _mixed_length_dataset()
+    dataset_ok, _why = lab_dataset.task_gate(dataset,
+                                             lab_dataset.TASK_ANOMALY)
+    assert dataset_ok, "fixture must pass the dataset-wide gate"
+    short = next(r for r in dataset.series_refs() if r.metric == "short")
+    res = lab_tasks.run_anomaly_comparison(dataset, [short])
+    assert res.status == "insufficient_data"
+    assert res.metrics["series_evaluated"] == 0
+    assert res.table and all(row["status"] == "insufficient_data"
+                             for row in res.table)
+    assert "nothing was computed" in res.message
+
+
+def test_forecast_task_does_not_claim_ok_when_no_model_can_be_scored():
+    dataset = _mixed_length_dataset()
+    short = next(r for r in dataset.series_refs() if r.metric == "short")
+    res = lab_tasks.run_forecast_comparison(dataset, [short], horizon=5)
+    assert res.status == "insufficient_data"
+    assert res.metrics["scored_models"] == 0
+    assert res.table and all(row["status"] == "insufficient_data"
+                             for row in res.table)
+
+
 def test_detector_agreement_is_a_diagnostic_not_a_competitor(sim):
     refs = [ref_of(sim, "R1", "if.rx_bps"), ref_of(sim, "R1", LABEL_METRIC)]
     res = lab_tasks.run_anomaly_comparison(sim, refs)
@@ -357,6 +397,20 @@ def test_threshold_sweep_curve_accompanies_the_pr_auc(sim):
 # ==========================================================================
 # 8.10 fault classification: only ever run on real labels
 # ==========================================================================
+def test_stratified_split_uses_the_reported_random_seed():
+    from sklearn.model_selection import train_test_split
+    labels = pd.Series([f"c{i % 3}" for i in range(90)])
+    got = lab_classification._make_split(
+        labels, test_frac=0.25, split_mode="stratified", seed=8)
+    expected = train_test_split(
+        list(range(len(labels))), test_size=0.25,
+        stratify=labels.astype(str), random_state=8, shuffle=True)
+    assert got == (sorted(expected[0]), sorted(expected[1]))
+    different_seed = lab_classification._make_split(
+        labels, test_frac=0.25, split_mode="stratified", seed=9)
+    assert got != different_seed
+
+
 def test_classification_uses_the_injected_labels_and_reports_both_splits(sim):
     res = lab_tasks.run_fault_classification(
         sim, device="R1", interface="eth0", feature_metrics=CLS_FEATURES,
@@ -566,6 +620,45 @@ def test_statistics_describe_the_series_exactly_as_stored():
     assert row["trend_direction"] == "rising"
     assert row["acf"][0] == pytest.approx(row["acf_lag1"])
     assert {p["kind"] for p in res.points} == {"distribution"}
+
+
+def test_statistics_match_independent_numpy_calculations():
+    values = np.array([0.25, 1.5, 2.0, 2.0, 3.75, 9.0, 11.25,
+                       12.5, 40.0, 100.0] * 4, dtype=float)
+    ds = build(values.tolist(), metric="independent-check")
+    res = lab_tasks.run_statistics(ds, ds.series_refs(),
+                                   correlations=False,
+                                   group_by_labels=False)
+    row = next(r for r in res.table if r.get("status") == "ok")
+    assert row["n"] == len(values)
+    assert row["mean"] == pytest.approx(float(np.mean(values)), abs=1e-4)
+    assert row["median"] == pytest.approx(float(np.median(values)), abs=1e-4)
+    assert row["std"] == pytest.approx(float(np.std(values, ddof=1)), abs=1e-4)
+    assert row["min"] == pytest.approx(float(np.min(values)), abs=1e-4)
+    assert row["max"] == pytest.approx(float(np.max(values)), abs=1e-4)
+    assert row["p95"] == pytest.approx(float(np.percentile(values, 95)),
+                                       abs=1e-4)
+
+
+def test_pairwise_correlation_matches_independent_numpy_calculation():
+    x = np.arange(48, dtype=float)
+    y = (2.5 * x) + np.sin(x / 3.0)
+    rows = []
+    for metric, values in (("x", x), ("y", y)):
+        rows.extend({"collected_at": BASE + dt.timedelta(minutes=i),
+                     "device": "R1", "interface": "eth0",
+                     "metric": metric, "value": float(value),
+                     "unit": "count", "label": None}
+                    for i, value in enumerate(values))
+    ds = lab_dataset.canonicalize(rows,
+                                  source_type=lab_dataset.SOURCE_HISTORICAL,
+                                  source_id="correlation-independent")
+    result = lab_tasks.run_statistics(ds, ds.series_refs(),
+                                      group_by_labels=False)
+    pair = next(row for row in result.table if row.get("pearson_r") is not None)
+    expected = float(np.corrcoef(x, y)[0, 1])
+    assert pair["pearson_r"] == pytest.approx(expected, abs=5e-4)
+    assert pair["n_aligned"] == len(x)
 
 
 def test_statistics_correlate_and_test_groups_but_disclaim_causation(sim):

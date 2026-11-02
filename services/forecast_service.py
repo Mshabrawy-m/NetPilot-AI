@@ -5,9 +5,9 @@ Protocol implemented here (spec §8):
 1. Load one series, apply the data-quality FORECAST readiness gate -
    insufficient data returns a status, never a forecast.
 2. Chronological train|val|test split (never shuffled).
-3. Each model is fitted on TRAIN only (tuning may use train+val), then
-   predicts every TEST timestamp - all models are compared on the same
-   identical target timestamps and the same horizon.
+3. Each model is fitted on TRAIN only (tuning may use train+val). Scores use
+   the intersection of finite predictions across models, so every reported
+   comparison is made on identical target timestamps.
 4. Hold-out error is reported on several scales - MAE/RMSE (and R^2 when
    meaningful) plus the scale-free MAPE/sMAPE/MASE and the skill against the
    mandatory naive baseline - computed against the held-out test actuals. A
@@ -58,7 +58,7 @@ DEFAULT_MODELS = ("naive", "seasonal_naive", "holt_damped", "holt_winters")
 ENSEMBLE_NAME = "ensemble_inverse_mae"
 
 #: How the service re-cuts published bands. ``empirical_sqrt_h`` uses the
-#: half-width measured on the model's one-step holdout errors and grows it with
+#: half-width measured on the model's shared holdout errors and grows it with
 #: sqrt(h), because multi-step error does usually grow; a flat empirical band
 #: would be over-confident late in the horizon.
 BAND_MODE = "empirical_sqrt_h"
@@ -144,7 +144,7 @@ def run_forecast_comparison(
                          "config": eval_res.config})
             continue
         pairs = [(a, p) for a, p in zip(test_actuals, eval_res.test_pred)
-                 if not _isnan(p)]
+                 if math.isfinite(a) and not _isnan(p)]
         act = [a for a, _ in pairs]
         prd = [p for _, p in pairs]
         abs_errors = [abs(a - p) for a, p in pairs]
@@ -160,13 +160,15 @@ def run_forecast_comparison(
         full = pd.Series(series.to_numpy(), index=series.index)
         fut_kwargs = dict(kwargs)
         fut_kwargs.pop("val", None)  # refit on full history incl. val/test
+        future_error = None
         try:
             steps = [origin + pd.Timedelta(seconds=interval * (h + 1))
                      for h in range(horizon)] if interval else []
             future_res = fn(full, horizon,
                             future_timestamps=steps or None, **fut_kwargs)
-        except Exception:
+        except Exception as exc:  # a failed refit is reported, never hidden
             future_res = None
+            future_error = f"{type(exc).__name__}: {exc}"
         raw_future = list(future_res.future) if future_res else []
         # Published bands come from the errors this model really made on its
         # holdout, not from an untested normal approximation. ``raw_future`` is
@@ -187,6 +189,9 @@ def run_forecast_comparison(
             # UI and for the identical-timestamp comparison guarantee
             "test_pred": eval_res.test_pred,
             "test_timestamps": list(split.test.index),
+            "scored_timestamps": [ts for ts, (a, p) in zip(
+                split.test.index, zip(test_actuals, eval_res.test_pred))
+                if math.isfinite(a) and not _isnan(p)],
             "n_train": len(split.train), "n_val": len(split.val),
             "n_test": len(split.test),
             "train_start": series.index.min(), "train_end": split.train_end,
@@ -196,6 +201,7 @@ def run_forecast_comparison(
             "interval_seconds": interval,
             "future": future,
             "band": band_meta,
+            "_raw_future": raw_future,
             "band_nominal_coverage": coverage,
             "n_holdout_errors": len(abs_errors),
         }
@@ -203,10 +209,44 @@ def run_forecast_comparison(
             run_row["future_note"] = (
                 "sampling interval unknown - future steps cannot be "
                 "timestamped, so none are published")
+        elif future_error is not None:
+            run_row["future_error"] = future_error
+            run_row["future_note"] = (
+                "the full-history refit failed, so no future forecast is "
+                "published for this model; the holdout evaluation above is "
+                "still the real measured result")
+        elif not raw_future:
+            run_row["future_note"] = (
+                "the full-history refit produced no future points, so none "
+                "are published")
         runs.append(run_row)
         ok_runs.append(run_row)
 
-    # ---- cross-model results, all on the identical holdout timestamps ----
+    # All model rankings and skills use the intersection of finite predictions.
+    # A direct-horizon model or seasonal baseline may have a shorter valid
+    # window; candidates are therefore compared on exactly the same timestamps.
+    common_idx = evaluation.common_finite_indices(
+        test_actuals, [r["test_pred"] for r in ok_runs])
+    common_actual = [test_actuals[i] for i in common_idx]
+    common_timestamps = [split.test.index[i] for i in common_idx]
+    for r in ok_runs:
+        common_pred = [float(r["test_pred"][i]) for i in common_idx]
+        r.update({
+            "n_eval": len(common_idx),
+            "mae": evaluation.mae(common_actual, common_pred),
+            "rmse": evaluation.rmse(common_actual, common_pred),
+            "r2": evaluation.r2(common_actual, common_pred),
+            "mape": evaluation.mape(common_actual, common_pred),
+            "smape": evaluation.smape(common_actual, common_pred),
+            "mase": evaluation.mase(common_actual, common_pred, split.train),
+            "scored_timestamps": common_timestamps,
+            "n_holdout_errors": len(common_idx),
+        })
+        errors = [abs(a - p) for a, p in zip(common_actual, common_pred)]
+        r["future"], r["band"] = apply_holdout_bands(
+            r["_raw_future"], errors, coverage=coverage, mode=band_mode)
+
+    # ---- cross-model results on one shared holdout ---------------------
     naive_row = next((r for r in ok_runs if r["model"] == "naive"), None)
     for r in ok_runs:
         if r is naive_row:
@@ -214,10 +254,8 @@ def run_forecast_comparison(
         elif naive_row is None:
             r["skill"] = None     # no reference to measure improvement against
         else:
-            aligned = [(a, p, n) for a, p, n in
-                       zip(test_actuals, r["test_pred"],
-                           naive_row["test_pred"])
-                       if not _isnan(p) and not _isnan(n)]
+            aligned = [(a, r["test_pred"][i], naive_row["test_pred"][i])
+                       for i, a in zip(common_idx, common_actual)]
             r["skill"] = evaluation.skill_vs_naive(
                 [x[0] for x in aligned], [x[1] for x in aligned],
                 [x[2] for x in aligned])
@@ -284,17 +322,28 @@ def run_forecast_comparison(
                     status="insufficient_data",
                     message=r["reason"])
         session.commit()
+    for r in runs:
+        r.pop("_raw_future", None)
     return {"status": "ok", "comparison_group": comparison_group,
             "runs": runs, "split": split, "quality": quality,
             "unit": unit,
             "best_model": best_model, "best_criterion": "holdout MAE",
             "ensemble": ensemble_result,
+            "identical_holdout": bool(ok_runs) and len({
+                tuple(pd.Timestamp(ts).isoformat()
+                      for ts in r["scored_timestamps"])
+                for r in ok_runs}) <= 1,
             "band_nominal_coverage": coverage, "band_mode": band_mode,
             "models_requested": list(models)}
 
 
 def _isnan(x) -> bool:
-    return x is None or (isinstance(x, float) and math.isnan(x))
+    if x is None:
+        return True
+    try:
+        return not math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return True
 
 
 def _to_dt(x) -> dt.datetime:
@@ -446,10 +495,17 @@ def build_ensemble(ok_runs: list[dict], test_actuals: list[float], *,
                 "reason": ("members were not evaluated on identical holdout "
                            "timestamps - blending their errors would be "
                            "meaningless")}
+    common_scored = set(members[0].get("scored_timestamps", ts_ref))
+    for member in members[1:]:
+        common_scored.intersection_update(
+            member.get("scored_timestamps", ts_ref))
     weights = _inverse_error_weights([m["mae"] for m in members])
 
     blend_pred: list[float] = []
     for j in range(len(ts_ref)):
+        if ts_ref[j] not in common_scored:
+            blend_pred.append(float("nan"))
+            continue
         num = den = 0.0
         for m, w in zip(members, weights):
             p = m["test_pred"][j] if j < len(m["test_pred"]) else None

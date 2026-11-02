@@ -17,6 +17,10 @@ def _seed_chain(session):
         repository.add_metric_sample(
             session, name, "ping.avg_rtt_ms", rtt, unit="ms",
             data_source="live", collected_at=now)
+    for name, bps in (("R1", 100.0), ("R2", 500.0), ("R3", 50.0)):
+        repository.add_metric_sample(
+            session, name, "if.rx_bps", bps, unit="bps",
+            data_source="live", collected_at=now)
     session.commit()
 
 
@@ -57,6 +61,30 @@ def test_worst_latency_ranks_by_metric(session):
                          data_source="live")
     assert res["intent"] == "metric_extreme"
     assert res["answer"].startswith("worst latency: R2")
+
+
+def test_highest_throughput_is_not_mislabelled_as_worst(session):
+    _seed_chain(session)
+    res = nlquery.answer(session, "which device has the highest throughput",
+                         data_source="live")
+    assert res["answer"].startswith("best throughput: R2")
+    assert res["rows"][0]["device"] == "R2"
+    assert res["rows"][-1]["device"] == "R3"
+
+
+def test_worst_throughput_is_the_lowest_value(session):
+    _seed_chain(session)
+    res = nlquery.answer(session, "which device has the worst throughput",
+                         data_source="live")
+    assert res["answer"].startswith("worst throughput: R3")
+    assert res["rows"][0]["device"] == "R3"
+
+
+def test_best_throughput_follows_the_metric_direction(session):
+    _seed_chain(session)
+    res = nlquery.answer(session, "which device has the best throughput",
+                         data_source="live")
+    assert res["answer"].startswith("best throughput: R2")
 
 
 def test_unknown_question_is_not_fabricated(session):

@@ -146,6 +146,8 @@ def test_missing_and_malformed_topology_is_handled_safely():
     report = _analyze(devices, links)
     assert report["analysis_status"] == impact_service.ANALYSIS_PARTIAL
     assert report["malformed_rows"]
+    assert any("missing device row" in item
+               for item in report["malformed_rows"])
     assert any(finding["kind"] == "malformed_topology"
                for finding in report["unknown_findings"])
     # The analysis still returns a usable dependency for the valid rows.

@@ -19,7 +19,7 @@ demo_banner_if_active()
 from config import get_settings
 from database import repository
 from network import connectivity
-from network.device_inventory import DestinationNotAllowed, load_inventory
+from network.device_inventory import load_inventory
 
 settings = get_settings()
 inventory = load_inventory()

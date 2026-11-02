@@ -79,6 +79,41 @@ def _severity(ratio: float, threshold: float) -> str:
     return "critical" if ratio >= 2.0 * threshold else "warning"
 
 
+def _numeric_values(series: pd.Series) -> pd.Series:
+    """Convert malformed and non-finite observations into explicit gaps."""
+    values = pd.to_numeric(series, errors="coerce")
+    return values.where(np.isfinite(values), np.nan)
+
+
+def _window_min_periods(window: int, min_periods: int | None) -> int:
+    if isinstance(window, bool) or int(window) != window or window < 2:
+        raise ValueError("window must be an integer >= 2")
+    if min_periods is None:
+        return min(int(window), max(5, int(window) // 2))
+    if (isinstance(min_periods, bool) or int(min_periods) != min_periods
+            or not 2 <= min_periods <= window):
+        raise ValueError("min_periods must be an integer from 2 to window")
+    return int(min_periods)
+
+
+def _past_fallback_scale(values: pd.Series, index: int,
+                         min_periods: int) -> float | None:
+    """Robust scale from strictly prior samples only (never the future).
+
+    Used only when the trailing window has zero scale. Returning ``None`` when
+    the prior history is too short or constant is an honest abstention - a
+    whole-series median would let later data influence an earlier verdict.
+    """
+    prior = values.iloc[:index].dropna()
+    if len(prior) < min_periods:
+        return None
+    centre = prior.median()
+    mad = (prior - centre).abs().median()
+    if pd.isna(mad) or mad <= 1e-12:
+        return None
+    return MAD_SCALE * float(mad)
+
+
 def detect_rolling_mad(
     series: pd.Series,
     timestamps: pd.Series,
@@ -98,14 +133,15 @@ def detect_rolling_mad(
     judged value never contaminates its own median/MAD, which would mask
     large single spikes, and no future data is ever used.
     """
-    minp = min_periods or max(5, window // 2)
-    values = pd.to_numeric(series, errors="coerce")
+    minp = _window_min_periods(window, min_periods)
+    values = _numeric_values(series)
     median = values.shift(1).rolling(window, min_periods=minp).median()
-    mad = (values - median).abs().rolling(window, min_periods=minp).median()
+    # Shift the absolute deviations too: otherwise the judged sample's own
+    # deviation enters the MAD that judges it. Scale is built from the
+    # deviations of strictly prior samples only.
+    mad = (values - median).abs().shift(1).rolling(
+        window, min_periods=minp).median()
     scale = MAD_SCALE * mad
-    # Degenerate windows (constant history -> scale 0): use the global robust
-    # scale so a genuinely different value is judged, and document it.
-    global_scale = MAD_SCALE * (values - values.median()).abs().median()
     points: list[AnomalyPoint] = []
     for i in range(len(values)):
         x = values.iloc[i]
@@ -114,9 +150,10 @@ def detect_rolling_mad(
         s = scale.iloc[i]
         used_fallback = False
         if s is None or pd.isna(s) or s <= 1e-12:
-            if global_scale is None or pd.isna(global_scale) or global_scale <= 1e-12:
+            fallback = _past_fallback_scale(values, i, minp)
+            if fallback is None:
                 continue                # no variability info at all: abstain
-            s, used_fallback = float(global_scale), True
+            s, used_fallback = fallback, True
         dist = abs(float(x) - float(median.iloc[i]))
         if dist <= threshold * s:
             continue
@@ -134,7 +171,7 @@ def detect_rolling_mad(
                              "min_periods": minp},
             explanation=(
                 f"observed {x:.4g} is {ratio:.1f}x the robust scale "
-                f"({'global fallback scale' if used_fallback else 'rolling MAD'}"
+                f"({'strictly-past fallback scale' if used_fallback else 'rolling MAD'}"
                 f" {s:.4g}) {direction} the rolling median "
                 f"{float(median.iloc[i]):.4g} of the {min(i, window)} prior "
                 f"samples (strictly past window, no future data used)"),
@@ -163,8 +200,8 @@ def detect_rolling_zscore(
     Strictly-past window (shifted) for the same self-masking/leakage
     reasons as ``detect_rolling_mad``.
     """
-    minp = min_periods or max(5, window // 2)
-    values = pd.to_numeric(series, errors="coerce")
+    minp = _window_min_periods(window, min_periods)
+    values = _numeric_values(series)
     mean = values.shift(1).rolling(window, min_periods=minp).mean()
     std = values.shift(1).rolling(window, min_periods=minp).std(ddof=1)
     points: list[AnomalyPoint] = []
@@ -223,14 +260,13 @@ def detect_ewma(
     smoothing factor; the implied half-life is reported with every explanation
     so the sensitivity is auditable rather than a magic number.
     """
-    minp = min_periods or max(5, window // 2)
+    minp = _window_min_periods(window, min_periods)
     lam = min(0.95, max(0.02, float(lambda_)))
-    values = pd.to_numeric(series, errors="coerce")
+    values = _numeric_values(series)
     ewma = values.shift(1).ewm(alpha=lam, adjust=False).mean()
     resid = values - ewma
     scale = MAD_SCALE * resid.shift(1).abs().rolling(
         window, min_periods=minp).median()
-    global_scale = MAD_SCALE * (resid - resid.median()).abs().median()
     half_life = math.log(0.5) / math.log(1.0 - lam)
     points: list[AnomalyPoint] = []
     for i in range(len(values)):
@@ -241,16 +277,16 @@ def detect_ewma(
         s = scale.iloc[i]
         used_fallback = False
         if s is None or pd.isna(s) or s <= 1e-12:
-            if global_scale is None or pd.isna(global_scale) \
-                    or global_scale <= 1e-12:
+            fallback = _past_fallback_scale(resid, i, minp)
+            if fallback is None:
                 continue                # no variability info at all: abstain
-            s, used_fallback = float(global_scale), True
+            s, used_fallback = fallback, True
         dist = abs(float(x) - float(ref))
         if dist <= threshold * float(s):
             continue
         ratio = dist / float(s)
         direction = "above" if x > ref else "below"
-        scale_note = " + global fallback scale" if used_fallback else ""
+        scale_note = " + strictly-past fallback scale" if used_fallback else ""
         points.append(AnomalyPoint(
             device_name=device_name, metric=metric,
             interface_name=interface_name, timestamp=timestamps.iloc[i],
@@ -303,10 +339,10 @@ def detect_cusum(
     that this run still needed to trip, which is why the boundary tightens as
     the run grows.
     """
-    minp = min_periods or max(5, window // 2)
+    minp = _window_min_periods(window, min_periods)
     k = max(0.05, float(drift))
     h = max(1.0, float(limit))
-    values = pd.to_numeric(series, errors="coerce")
+    values = _numeric_values(series)
     mean = values.shift(1).rolling(window, min_periods=minp).mean()
     std = values.shift(1).rolling(window, min_periods=minp).std(ddof=1)
     s_hi = s_lo = 0.0
@@ -412,7 +448,7 @@ def detect_seasonal_residual(
     m = int(round(float(season_hours) * 3600.0 / float(interval_seconds)))
     if m < 2:
         return []
-    values = pd.to_numeric(series, errors="coerce")
+    values = _numeric_values(series)
     ts = pd.to_datetime(timestamps, errors="coerce")
     if len(ts) != len(values):
         return []            # misaligned inputs: cannot place samples in time
@@ -435,10 +471,6 @@ def detect_seasonal_residual(
     valid_ts = ts.dropna()
     if valid_ts.empty:
         return []            # no usable clock: no defensible cycle position
-    clean = values.dropna()
-    global_scale = (MAD_SCALE
-                    * float((clean - clean.median()).abs().median())
-                    if len(clean) >= 2 else float("nan"))
     # Fixed origin = the EARLIEST usable timestamp (after the reorder above,
     # also the first row). Elapsed time from here converts each timestamp into
     # a position on the assumed regular grid, independent of how many rows
@@ -485,16 +517,17 @@ def detect_seasonal_residual(
         scale = MAD_SCALE * float(np.median(np.abs(arr - baseline)))
         used_fallback = False
         if scale <= 1e-12:
-            if not math.isfinite(global_scale) or global_scale <= 1e-12:
+            fallback = _past_fallback_scale(values, i, min_hist)
+            if fallback is None:
                 hist.append(float(x))
-                continue                 # no variability anywhere: abstain
-            scale, used_fallback = global_scale, True
+                continue                 # no prior variability: abstain
+            scale, used_fallback = fallback, True
         dist = abs(float(x) - baseline)
         hist.append(float(x))            # judged first, then becomes history
         if dist <= threshold * scale:
             continue
         ratio = dist / scale
-        scale_note = " + global fallback scale" if used_fallback else ""
+        scale_note = " + strictly-past fallback scale" if used_fallback else ""
         points.append(AnomalyPoint(
             device_name=device_name, metric=metric,
             interface_name=interface_name, timestamp=ts.iloc[i],
@@ -553,7 +586,7 @@ def detect_isolation_forest(
     except Exception as exc:  # pragma: no cover - env dependent
         raise RuntimeError(
             f"Isolation Forest unavailable in this environment: {exc}") from exc
-    values = pd.to_numeric(series, errors="coerce")
+    values = _numeric_values(series)
     min_fit = max(20, window // 2)
     points: list[AnomalyPoint] = []
     history: list[float] = []

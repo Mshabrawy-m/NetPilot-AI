@@ -669,7 +669,8 @@ def _source_local() -> None:
                         [item["name"] for item in files if "error" not in item])
     path = str(lab_sources.Path(status["directory"]) / name)
     try:
-        text = open(path, encoding="utf-8-sig").read()
+        with open(path, encoding="utf-8-sig") as handle:
+            text = handle.read()
     except OSError as exc:
         st.error(f"Could not read the file: {exc}", icon="🚫")
         text = ""

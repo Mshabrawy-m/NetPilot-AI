@@ -14,6 +14,11 @@ from services import ai_workflow_service as ai_svc
 from tests.ai_fakes import intent_json, make_assistant
 
 
+def test_workflow_default_clock_is_utc_and_database_compatible():
+    now = ai_svc._utcnow_naive()
+    assert now.tzinfo is None
+
+
 INVESTIGATION = json.dumps({"facts": ["R2 up [ev-1]"], "observations": [],
                             "stale_or_missing": [], "evidence_refs": ["ev-1"]})
 DIAGNOSIS = json.dumps({"causes": [

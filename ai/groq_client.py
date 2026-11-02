@@ -110,7 +110,9 @@ class GroqAssistant:
             self._client = Groq(
                 api_key=self.api_key,
                 timeout=self.timeout,
-                max_retries=self.max_retries,
+                # The adapter owns retries in complete_json. Disabling the
+                # SDK retry layer prevents multiplicative attempts/timeouts.
+                max_retries=0,
             )
         except Exception as exc:  # pragma: no cover - import/env dependent
             raise GroqBadResponse(f"Groq SDK unavailable: {type(exc).__name__}")
@@ -136,7 +138,7 @@ class GroqAssistant:
             raise _classify(exc) from exc
         try:
             return completion.choices[0].message.content or ""
-        except (AttributeError, IndexError) as exc:
+        except (AttributeError, IndexError, TypeError) as exc:
             raise GroqBadResponse("Empty or malformed completion") from exc
 
     # -- high-level: JSON + schema validation ----------------------------
@@ -183,6 +185,8 @@ class GroqAssistant:
 
     @staticmethod
     def _parse_json(content: str) -> dict:
+        if not isinstance(content, str):
+            raise GroqBadResponse("Model completion content must be text")
         text = (content or "").strip()
         # Tolerate accidental ```json fences; never fabricate on failure.
         if text.startswith("```"):

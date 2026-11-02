@@ -73,10 +73,13 @@ def test_detection_score_point_matching_synthetic():
     assert score.true_positives == 1
     assert score.false_positives == 2
     assert score.false_negatives == 1
+    # Of 97 labelled normal points, the 2 false positives are flagged;
+    # the missed anomaly is NOT a normal point, so tn = 95 and FAR = 2/97.
+    assert score.true_negatives == 95
     assert score.precision == pytest.approx(1 / 3)
     assert score.recall == pytest.approx(1 / 2)
     assert score.f1 == pytest.approx(2 * (1 / 3) * (1 / 2) / (1 / 3 + 1 / 2))
-    assert score.false_alarm_rate == pytest.approx(2 / 98)
+    assert score.false_alarm_rate == pytest.approx(2 / 97)
 
 
 def test_detection_score_empty_universe():

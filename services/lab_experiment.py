@@ -104,7 +104,7 @@ def run_experiment(
     allowed = {name for name, p in signature.parameters.items()
                if p.kind in (inspect.Parameter.KEYWORD_ONLY,
                              inspect.Parameter.POSITIONAL_OR_KEYWORD)
-               and name != "dataset"}
+               and name not in ("dataset", "refs")}
     unknown = sorted(set(supplied) - allowed)
     if unknown:
         raise ValueError(
@@ -633,6 +633,36 @@ def _bullet_list(items) -> str:
     return ", ".join(f"`{item}`" for item in items)
 
 
+def _split_markdown_row(row: str) -> list[str]:
+    """Split one Markdown table row on *unescaped* pipes.
+
+    ``_inline(..., pipe=True)`` escapes a literal ``|`` inside a cell as
+    ``\\|``. Splitting naively on ``|`` would turn one escaped cell into two
+    and shift every following column.
+    """
+    text = row.strip()
+    if text.startswith("|"):
+        text = text[1:]
+    if text.endswith("|") and not text.endswith("\\|"):
+        text = text[:-1]
+    cells: list[str] = []
+    buf: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text) and text[i + 1] == "|":
+            buf.append("|")
+            i += 2
+            continue
+        if text[i] == "|":
+            cells.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(text[i])
+        i += 1
+    cells.append("".join(buf).strip())
+    return cells
+
+
 def export_html(dataset: lab_dataset.LabDataset,
                 result: lab_tasks.TaskResult, *,
                 meta: dict | None = None) -> str:
@@ -644,7 +674,7 @@ def export_html(dataset: lab_dataset.LabDataset,
     for line in source.splitlines():
         stripped = line.strip()
         if stripped.startswith("|"):
-            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            cells = _split_markdown_row(stripped)
             if all(set(c) <= {"-", ""} for c in cells):
                 continue
             if not in_table:

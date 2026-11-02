@@ -100,7 +100,6 @@ def run_selftest_ping(count: int | None = None,
     parsing, storage) works. This touches no network at all and is never
     presented as a lab measurement - results are stored with
     data_source='demo'. Used when no lab is reachable."""
-    settings = get_settings()
     result = run_ping(_LoopbackSelftestInventory(), "127.0.0.1",
                       count=count, timeout_seconds=timeout_seconds)
     result.destination = "127.0.0.1 (host loopback self-test)"
@@ -212,8 +211,8 @@ def _parse_ping_output(output: str) -> tuple[float | None, int | None, int | Non
     m = re.search(r"Sent\s*=\s*(\d+),\s*Received\s*=\s*(\d+),\s*Lost\s*=\s*(\d+)\s*\((\d+)%",
                   output, re.I)
     if m:
-        sent, recv, lost, loss = (int(m.group(1)), int(m.group(2)),
-                                  int(m.group(3)), float(m.group(4)))
+        sent, recv, _lost, loss = (int(m.group(1)), int(m.group(2)),
+                                   int(m.group(3)), float(m.group(4)))
     else:
         m = re.search(r"(\d+)\s+packets transmitted.*?(\d+)\s+(?:packets )?received.*?"
                       r"(\d+(?:\.\d+)?)%\s+packet loss", output, re.I | re.S)

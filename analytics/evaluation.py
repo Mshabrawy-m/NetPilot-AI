@@ -22,6 +22,13 @@ class LeakageError(AssertionError):
     """Raised when a protocol check detects out-of-order information use."""
 
 
+def _finite_number(value) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 @dataclasses.dataclass
 class ChronoSplit:
     train: pd.Series
@@ -57,7 +64,8 @@ def chronological_split(
     yield empty segments and ``has_test`` False, which services translate
     into an "insufficient data" status.
     """
-    s = pd.to_numeric(series, errors="coerce").dropna()
+    s = pd.to_numeric(series, errors="coerce")
+    s = s[s.map(_finite_number)]
     n = len(s)
     n_test = int(round(n * test_frac))
     n_val = int(round(n * val_frac))
@@ -154,10 +162,14 @@ def mase(actual, predicted, train) -> float | None:
     a, p = _pairs(actual, predicted)
     if a is None:
         return None
-    t = pd.to_numeric(pd.Series(train), errors="coerce").dropna()
-    if len(t) < 2:
+    # Difference before filtering: deleting a missing/non-finite point first
+    # would turn its neighbours into a false one-step transition.
+    t = pd.to_numeric(pd.Series(train), errors="coerce")
+    differences = t.diff().abs()
+    differences = differences[differences.map(_finite_number)]
+    if differences.empty:
         return None
-    scale = float(t.diff().abs().dropna().mean())
+    scale = float(differences.mean())
     if scale <= 1e-12:
         return None            # flat training history: no honest scale exists
     numerator = sum(abs(x - y) for x, y in zip(a, p)) / len(a)
@@ -201,11 +213,30 @@ def r2(actual, predicted) -> float | None:
 
 
 def _pairs(actual, predicted):
-    a = pd.to_numeric(pd.Series(actual), errors="coerce").dropna().tolist()
-    p = pd.to_numeric(pd.Series(predicted), errors="coerce").dropna().tolist()
-    if len(a) != len(p) or not a:
+    # Keep the original positional pairing. Dropping missing values from each
+    # side independently can pair a prediction with the wrong observation.
+    a = pd.to_numeric(pd.Series(actual), errors="coerce")
+    p = pd.to_numeric(pd.Series(predicted), errors="coerce")
+    if len(a) != len(p):
         return None, None
-    return a, p
+    pairs = [(float(x), float(y)) for x, y in zip(a, p)
+             if _finite_number(x) and _finite_number(y)]
+    if not pairs:
+        return None, None
+    return [x for x, _ in pairs], [y for _, y in pairs]
+
+
+def common_finite_indices(actual, predictions) -> list[int]:
+    """Indices scoreable by every candidate, preserving a shared test period."""
+    values = pd.to_numeric(pd.Series(actual), errors="coerce").tolist()
+    vectors = [pd.to_numeric(pd.Series(pred), errors="coerce").tolist()
+               for pred in predictions]
+    if not vectors:
+        return []
+    return [i for i, observed in enumerate(values)
+            if _finite_number(observed)
+            and all(i < len(pred) and _finite_number(pred[i])
+                    for pred in vectors)]
 
 
 @dataclasses.dataclass
@@ -239,7 +270,10 @@ def score_detection(flagged_ts: set, true_anomaly_ts: set,
     tp = len(flagged_ts & true_anomaly_ts)
     fp = len(flagged_ts - true_anomaly_ts)
     fn = len(true_anomaly_ts - flagged_ts)
-    tn = max(0, total_normal - fn)
+    # A false positive is a *normal* observation that was flagged, so it is
+    # already part of ``total_normal``. Subtracting the missed anomalies (fn)
+    # would count them as normal and inflate the true-negative count.
+    tn = max(0, total_normal - fp)
     precision = tp / (tp + fp) if (tp + fp) else None
     recall = tp / (tp + fn) if (tp + fn) else None
     if precision is None or recall is None or (precision + recall) == 0:

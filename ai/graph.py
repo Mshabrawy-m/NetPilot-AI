@@ -16,7 +16,7 @@ import datetime as dt
 
 from langgraph.graph import END, START, StateGraph
 
-from ai import prompts, schemas
+from ai import prompts
 from ai.agents import (config_agent, diagnosis_agent, intent_agent,
                        investigation_agent, planner_agent)
 from ai.groq_client import (GroqAssistant, GroqError, MissingGroqKey,

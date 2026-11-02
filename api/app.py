@@ -9,12 +9,14 @@ device/telemetry/alert/topology reads, an NL-query ``/ask`` endpoint, a
 request/response socket.
 
 Security is opt-in and honest: set ``NETPILOT_API_TOKEN`` and every ``/api/*``
-route then requires ``Authorization: Bearer <token>``. With no token the routes
-stay open but remain read-only.
+route then requires ``Authorization: Bearer <token>``; the WebSocket handshake
+requires the same token as ``?token=...``. With no token the routes stay open
+but remain read-only.
 """
 from __future__ import annotations
 
 import asyncio
+import hmac
 
 from fastapi import (Depends, FastAPI, Header, HTTPException, Query,
                      WebSocket, WebSocketDisconnect)
@@ -40,7 +42,8 @@ def require_token(authorization: str | None = Header(default=None)) -> bool:
     token = get_settings().api_token
     if not token:
         return True  # auth not configured - read-only open access
-    if authorization != f"Bearer {token}":
+    # Constant-time comparison: a plain ``!=`` leaks the matching prefix length.
+    if not hmac.compare_digest(authorization or "", f"Bearer {token}"):
         raise HTTPException(status_code=401, detail="invalid API token")
     return True
 
@@ -106,14 +109,17 @@ def list_devices(db: Session = Depends(get_db)) -> dict:
 
 
 @app.get("/api/devices/{name}", dependencies=[Depends(require_token)])
-def device_detail(name: str, data_source: str = Query("live"),
+def device_detail(name: str,
+                  data_source: str = Query("live", pattern="^(live|demo)$"),
                   db: Session = Depends(get_db)) -> dict:
     return readmodels.device_detail(db, name, data_source)
 
 
 @app.get("/api/alerts", dependencies=[Depends(require_token)])
-def alerts(status: str | None = Query("open"),
-           data_source: str | None = Query(None),
+def alerts(status: str | None = Query(
+               "open", pattern="^(open|acknowledged|resolved)$"),
+           data_source: str | None = Query(
+               None, pattern="^(live|demo)$"),
            db: Session = Depends(get_db)) -> dict:
     return readmodels.alerts(db, status, data_source)
 
@@ -147,10 +153,20 @@ def ask_post(body: AskRequest, db: Session = Depends(get_db)) -> dict:
 
 # ----------------------------------------------------------------- websocket
 @app.websocket("/ws/topology")
-async def ws_topology(websocket: WebSocket) -> None:
+async def ws_topology(websocket: WebSocket,
+                      token: str | None = Query(default=None)) -> None:
     """Request/response socket: each client message returns a fresh topology
     snapshot. Deterministic and easy to test; no background timer pushing
-    unsolicited data."""
+    unsolicited data.
+
+    When ``NETPILOT_API_TOKEN`` is configured, the same token must be supplied
+    as ``?token=...`` before the connection is accepted (browsers cannot set an
+    ``Authorization`` header on a WebSocket handshake).
+    """
+    expected = get_settings().api_token
+    if expected and not hmac.compare_digest(token or "", expected):
+        await websocket.close(code=1008)  # policy violation
+        return
     await websocket.accept()
     telemetry.inc("ws_connections_total")
     try:

@@ -10,7 +10,6 @@ import datetime as dt
 import math
 
 import pandas as pd
-import pytest
 
 from analytics.anomaly_detection import (
     DEFAULT_DETECTORS,
@@ -75,8 +74,8 @@ def test_detectors_abstain_on_insufficient_or_flat_series():
     assert detect_rolling_mad(short["value"], short["collected_at"],
                               device_name="R1", metric="m", window=8) == []
     flat = make_frame([7.0] * 30 + [math.nan] + [7.0] * 5)
-    # constant history -> zero scale: MAD detector falls back to global
-    # scale which is also 0 -> must abstain, not flag everything
+    # constant history -> zero scale: the strictly-past fallback is also 0 ->
+    # must abstain, not flag everything
     assert detect_rolling_mad(flat["value"], flat["collected_at"],
                               device_name="R1", metric="m", window=8) == []
     # z-score: constant window std -> abstain as well
@@ -121,6 +120,20 @@ def test_trailing_window_no_future_leakage():
     a = next(p for p in p_full if p.timestamp == ts)
     b = next(p for p in p_cut if p.timestamp == ts)
     assert a.baseline == b.baseline and a.observed == b.observed
+    # the scale/threshold must not be borrowed from later samples either
+    assert a.threshold_upper == b.threshold_upper
+    assert a.threshold_lower == b.threshold_lower
+
+
+def test_fallback_scale_never_uses_the_judged_point_or_its_future():
+    # Ten identical samples then a big jump: the trailing/fallback history has
+    # no prior variability, so the verdict is an abstention. A whole-series
+    # median would let the jump create the very scale that flags it.
+    frame = make_frame([5.0] * 10 + [500.0])
+    points = detect_rolling_mad(
+        frame["value"], frame["collected_at"],
+        device_name="R1", metric="m", window=5, threshold=2.0)
+    assert points == []
 
 
 def test_isolation_forest_is_seeded_and_reproducible():

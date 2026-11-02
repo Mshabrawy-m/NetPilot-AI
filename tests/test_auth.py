@@ -116,6 +116,21 @@ def test_authenticate_inactive_user_is_rejected(session):
     assert auth.authenticate(session, "carol", "password123") is not None
 
 
+def test_unknown_user_burns_the_same_default_hash_work(session):
+    """The dummy verification must use the real default work factor.
+
+    A one-iteration dummy makes the unknown-user path much faster and turns the
+    mitigation into a username-enumeration timing oracle.
+    """
+    algo, iterations, salt_hex, hash_hex = auth._DUMMY_HASH.split("$")
+    assert algo == auth._ALGO
+    assert int(iterations) == auth.DEFAULT_ITERATIONS
+    assert len(bytes.fromhex(salt_hex)) == auth._SALT_BYTES
+    assert len(bytes.fromhex(hash_hex)) == 32
+    assert auth.verify_password("anything", auth._DUMMY_HASH) is False
+    assert auth.authenticate(session, "nobody", "anything") is None
+
+
 def test_stored_hash_is_not_the_plaintext(session):
     pw = "topsecret9"
     repository.create_user(session, username="dave",

@@ -39,7 +39,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import func, select  # noqa: E402
 
 from config import get_settings  # noqa: E402
-from database import repository  # noqa: E402
 from database.connection import init_db, session_scope  # noqa: E402
 from database.models import (AIEvidence, AIRun, AIStatusTransition,  # noqa: E402
                              MetricSample)

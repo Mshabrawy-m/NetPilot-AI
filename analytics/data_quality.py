@@ -51,6 +51,7 @@ class SeriesQuality:
     stale_seconds: float | None = None    # age of newest observation
     is_stale: bool = False
     mixed_sources: bool = False           # demo + live rows in one series
+    mixed_units: bool = False             # incompatible known units in series
 
     ready_for: dict[str, bool] = dataclasses.field(default_factory=dict)
     reasons: list[str] = dataclasses.field(default_factory=list)
@@ -75,14 +76,17 @@ def summarize_quality(
     settings = get_settings()
     sources = sorted(frame["data_source"].dropna().unique()) \
         if not frame.empty else []
+    units = sorted(frame["unit"].dropna().astype(str).unique()) \
+        if not frame.empty else []
+    mixed_units = len(units) > 1
     q = SeriesQuality(
         device_name=device_name,
         metric=metric,
         interface_name=interface_name,
         data_source="+".join(sources) if sources else "none",
-        unit=(frame["unit"].dropna().iloc[-1]
-              if not frame.empty and frame["unit"].notna().any() else None),
+        unit=(units[0] if len(units) == 1 else None),
         mixed_sources=len(sources) > 1,
+        mixed_units=mixed_units,
     )
     if frame.empty:
         q.reasons.append(f"{ANALYSIS}: no samples stored for this selection.")
@@ -157,9 +161,22 @@ def summarize_quality(
         q.reasons.append(
             "warning: series mixes data sources "
             f"({q.data_source}); analyses must filter one source.")
+    if q.mixed_units:
+        unit_list = ", ".join(units)
+        q.reasons.extend(
+            f"{purpose}: inconsistent units ({unit_list}); select one unit "
+            "before analysis."
+            for purpose in (ANALYSIS, DETECTION, FORECAST))
+    elif units and frame["unit"].isna().any():
+        q.reasons.append(
+            "warning: some observations have unknown units; this unit is "
+            "not verified for every sample.")
 
     # FORECAST additionally needs a defensible regular interval.
     ready = {c[0]: c[1] for c in checks}
+    if q.mixed_units:
+        for purpose in (ANALYSIS, DETECTION, FORECAST):
+            ready[purpose] = False
     if ready.get(FORECAST) and not q.observed_interval_seconds:
         ready[FORECAST] = False
         q.reasons.append(f"{FORECAST}: fewer than 2 distinct timestamps.")

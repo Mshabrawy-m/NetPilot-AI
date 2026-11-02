@@ -28,7 +28,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
-from config import get_settings, utc_now
+from config import get_settings
 from database import repository
 from database.connection import session_scope
 from database.models import db_utcnow
@@ -171,7 +171,6 @@ def collect_once(
     inlab_ping = inlab_ping or _inlab_ping
     summary = CollectionSummary(data_source=data_source)
 
-    started = db_utcnow()
     with session_scope() as session:
         run = repository.start_collection_run(session, data_source)
 
@@ -201,7 +200,7 @@ def collect_once(
     summary.devices_total = len(inventory.nodes)
     probes_ok = 0
     probes_failed = 0
-    node_statuses: dict[str, str] = {}
+    interface_states_by_node: dict[tuple[str, str], float | None] = {}
 
     # 2) Per-device measurements.
     for node in inventory.nodes:
@@ -233,9 +232,9 @@ def collect_once(
                             "value": None, "unit": "ms"})
             probes_failed += 1
 
-        status = "up" if (ping_result and ping_result.success) else (
-            "down" if ping_result else "unknown")
-        node_statuses[node.name] = status
+        status = ("up" if ping_result and ping_result.success else
+                  "unknown" if ping_result is None or ping_result.unsupported
+                  else "down")
 
         # Interface counters (only meaningful when docker runs the node).
         can_read_counters = (
@@ -259,6 +258,7 @@ def collect_once(
             for iface in node.interfaces:
                 stats = counter_reader(node.container, iface.name)  # type: ignore[arg-type]
                 if stats is None:
+                    iface_states[iface.name] = None
                     samples.append({"device_name": node.name,
                                     "interface_name": iface.name,
                                     "metric": "if.operstate", "value": None,
@@ -274,6 +274,9 @@ def collect_once(
                                         "value": stats[key],
                                         "unit": METRIC_UNITS.get(metric)})
                 iface_states[iface.name] = stats.get("operstate")
+            interface_states_by_node.update(
+                {(node.name, name): value
+                 for name, value in iface_states.items()})
             routes = route_reader(node.container)  # type: ignore[arg-type]
             if routes:
                 for metric, value in routes.items():
@@ -287,33 +290,32 @@ def collect_once(
                                              collected_at=db_utcnow(), **sample)
             summary.samples_stored += len(samples)
             device = repository.get_device_by_name(session, node.name)
+            for iface in node.interfaces:
+                state = iface_states.get(iface.name)
+                repository.upsert_interface(
+                    session, device, iface.name,
+                    status="up" if state == 1.0 else (
+                        "down" if state == 0.0 else "unknown"))
             if status == "down":
                 repository.open_incident(session, node.name, "device_unreachable",
                                          (ping_result.error if ping_result else None))
-                for iface in node.interfaces:
-                    repository.upsert_interface(session, device, iface.name,
-                                                status="down")
             elif status == "up":
                 repository.resolve_open_incidents(session, node.name,
                                                   "device_unreachable")
-                for iface in node.interfaces:
-                    state = iface_states.get(iface.name)
-                    repository.upsert_interface(
-                        session, device, iface.name,
-                        status="up" if state == 1.0 else (
-                            "down" if state == 0.0 else "unknown"))
 
-    # 3) Link status: up when both endpoint devices are up.
+    # 3) A topology link is up/down only when its endpoint interface
+    # operstates were actually read. Device ping proves reachability to a
+    # management address, not the health of a particular interface cable.
     with session_scope() as session:
         for link in inventory.links:
-            status_a = node_statuses.get(link.node_a, "unknown")
-            status_b = node_statuses.get(link.node_b, "unknown")
-            if status_a == "up" and status_b == "up":
-                link_status = "up"
-            elif status_a == "unknown" or status_b == "unknown":
-                link_status = "unknown"
-            else:
+            state_a = interface_states_by_node.get((link.node_a, link.if_a))
+            state_b = interface_states_by_node.get((link.node_b, link.if_b))
+            if state_a == 0.0 or state_b == 0.0:
                 link_status = "down"
+            elif state_a == 1.0 and state_b == 1.0:
+                link_status = "up"
+            else:
+                link_status = "unknown"
             repository.upsert_link(
                 session, link.node_a, link.if_a, link.node_b, link.if_b,
                 subnet=link.subnet, status=link_status,

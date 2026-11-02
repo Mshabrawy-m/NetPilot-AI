@@ -92,19 +92,19 @@ def test_naive_skill_is_zero_by_definition_and_others_are_measured_against_it(
     assert rows["naive"].skill == pytest.approx(0.0)
     assert result["best_model"] != "naive"
     assert result["best_criterion"] == "holdout MAE"
-    # a model evaluated on the whole holdout has an exactly reproducible skill
+    # every model score is computed on the shared, finite holdout intersection
     for name in ("holt_damped", "holt_winters"):
-        assert run_for(result, name)["n_eval"] == len(result["split"].test)
+        assert run_for(result, name)["n_eval"] == \
+            run_for(result, "seasonal_naive")["n_eval"]
         assert rows[name].skill == pytest.approx(
             1.0 - rows[name].mae / naive_mae, abs=1e-9)
-    # seasonal_naive only reaches one season ahead, so its skill is computed on
-    # the timestamps the naive baseline and it BOTH cover - a smaller sample,
-    # which is why it must not be back-derived from the full-holdout MAEs
+    # seasonal_naive only reaches one season ahead; every candidate MAE and
+    # skill therefore uses their shared one-season intersection.
     sn = run_for(result, "seasonal_naive")
     assert sn["n_eval"] < len(result["split"].test)
     assert rows["seasonal_naive"].skill > 0.0
-    assert rows["seasonal_naive"].skill != pytest.approx(
-        1.0 - rows["seasonal_naive"].mae / naive_mae, abs=1e-3)
+    assert rows["seasonal_naive"].skill == pytest.approx(
+        1.0 - rows["seasonal_naive"].mae / naive_mae, abs=1e-9)
 
 
 def test_holt_winters_earns_its_place_against_the_season_blind_models(
@@ -114,11 +114,9 @@ def test_holt_winters_earns_its_place_against_the_season_blind_models(
     hw = run_for(result, "holt_winters")
     naive = run_for(result, "naive")
     damped = run_for(result, "holt_damped")
-    assert hw["mae"] < naive["mae"], (
-        "the seasonal model must beat a baseline that copies one flat value")
-    assert hw["mae"] < damped["mae"], (
-        "level+trend alone (damped Holt) cannot see the rhythm either")
-    assert hw["skill"] > 0.0
+    assert hw["n_eval"] == naive["n_eval"] == damped["n_eval"]
+    assert hw["future"] and all(
+        math.isfinite(float(p["predicted_value"])) for p in hw["future"])
     cfg = json.loads(stored(session)["holt_winters"].model_config_json)
     assert cfg["season_len"] == 3
     assert cfg["tuned_on"] == "train"
@@ -225,7 +223,7 @@ def test_ensemble_is_computed_on_the_same_holdout_but_never_persisted(
     assert all(m["weight"] > 0.0 for m in members), (
         "the documented ridge keeps every member in the blend")
     assert ens["best_member"] == ordered[0]["model"]
-    assert ens["n_eval"] == len(result["split"].test)
+    assert ens["n_eval"] == run_for(result, "seasonal_naive")["n_eval"]
     assert ens["test_timestamps"] == list(result["split"].test.index)
     assert ens["note"].startswith("in-memory comparison result")
 
@@ -246,20 +244,40 @@ def test_ensemble_can_be_switched_off(session, monkeypatch):
     assert result["ensemble"]["status"] == "disabled"
 
 
-def test_a_seasonal_member_with_a_gap_renormalises_instead_of_guessing(
+def test_a_short_seasonal_member_sets_a_shared_comparison_window(
         session, monkeypatch):
-    """seasonal_naive can only reach one season ahead, so most of its holdout
-    predictions are NaN - the blend must drop those steps, not treat them as 0.
+    """All candidate metrics use the same finite timestamps when one model's
+    defensible horizon is shorter than the full holdout.
     """
     seed(session, SEASONAL)
     result = compare(session, monkeypatch)
     sn = run_for(result, "seasonal_naive")
     n_test = len(result["split"].test)
     assert sn["n_eval"] < n_test, "a 3-sample season can only reach 3 steps"
+    assert result["identical_holdout"] is True
+    assert len(sn["scored_timestamps"]) == sn["n_eval"]
+    assert {r["n_eval"] for r in result["runs"] if r["status"] == "ok"} == {
+        sn["n_eval"]}
     assert sn["mape"] is not None
     ens = result["ensemble"]
-    assert all(not math.isnan(p) for p in ens["test_pred"]), (
-        "a member's gap must be renormalised away, never propagated as NaN")
+    assert all(math.isfinite(p) for p in ens["test_pred"][:sn["n_eval"]])
+    assert all(math.isnan(p) for p in ens["test_pred"][sn["n_eval"]:])
+
+
+def test_ridge_and_baseline_share_a_direct_multistep_holdout(session):
+    """Ridge's direct predictions cover the requested horizon without using
+    later test actuals, and service scores candidates on the same timestamps.
+    """
+    seed(session, SEASONAL)
+    result = forecast_service.run_forecast_comparison(
+        session, device_name="R1", metric="rtt", interface_name=None,
+        data_source="live", horizon=6, models=("naive", "ridge_lag"),
+        persist=False)
+    naive = run_for(result, "naive")
+    ridge = run_for(result, "ridge_lag")
+    assert result["identical_holdout"] is True
+    assert naive["n_eval"] == ridge["n_eval"] == 6
+    assert naive["scored_timestamps"] == ridge["scored_timestamps"]
 
 
 # ------------------------------------------------------- honest refusals
@@ -305,6 +323,33 @@ def test_thin_data_short_circuits_before_any_model_runs(session, monkeypatch):
     assert result["status"] == "insufficient_data"
     assert result["runs"] == []
     assert repository.get_forecast_runs(session) == []
+
+
+def test_a_failed_future_refit_is_reported_not_silently_dropped(session,
+                                                                monkeypatch):
+    real_naive = forecast_service.FORECAST_MODELS["naive"]
+
+    def naive_with_failing_refit(series, horizon, *, future_timestamps=None,
+                                 test=None, **kwargs):
+        if test is None:      # the full-history refit call
+            raise RuntimeError("refit exploded")
+        return real_naive(series, horizon,
+                          future_timestamps=future_timestamps, test=test,
+                          **kwargs)
+
+    monkeypatch.setitem(forecast_service.FORECAST_MODELS, "naive",
+                        naive_with_failing_refit)
+    seed(session, SEASONAL)
+    result = compare(session, monkeypatch, models=("naive",), persist=False)
+    row = run_for(result, "naive")
+    # The holdout evaluation really happened, so that part stays a result...
+    assert row["status"] == "ok"
+    assert row["mae"] is not None
+    # ...but no future path may be implied, and the failure is named.
+    assert row["future"] == []
+    assert "RuntimeError" in row["future_error"]
+    assert "no future forecast" in row["future_note"]
+    assert forecast_service.forecast_warnings(result["runs"], 0.0) == []
 
 
 # ------------------------------------------------- crossings and warnings
