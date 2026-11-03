@@ -208,6 +208,40 @@ class Settings:
         self.data_source = "demo" if self.demo_mode else "live"
 
 
+def is_external_database(url: str) -> bool:
+    """True when the configured database is a shared server, not a local file.
+
+    SQLite is a per-machine file already isolated by the separate demo store
+    (``data/netpilot_demo.db``), so demo fixtures can never reach another host's
+    data through it. Any other backend (PostgreSQL, MySQL, ...) is a networked,
+    shared engine: a demo bootstrap pointed at it would purge and overwrite
+    real live telemetry. That is exactly the distinction the isolation guard
+    needs, and it deliberately allows SQLite test/deploy URLs so the offline
+    suite and local runs keep working.
+    """
+    return bool(url) and not url.startswith("sqlite")
+
+
+def demo_isolation_violation(settings: "Settings") -> str | None:
+    """Return a safe, credential-free reason demo seeding must not proceed.
+
+    ``None`` means demo mode is allowed against the configured database. A
+    non-empty message is raised *before* any schema creation or metric purge so
+    a misconfigured demo run can never erase live ``metric_samples`` on a shared
+    database. The message names only the offending scheme, never the DSN.
+    """
+    if settings.demo_mode and is_external_database(settings.database_url):
+        scheme = settings.database_url.split("://", 1)[0] or "external"
+        return (
+            "DEMO/LIVE ISOLATION: NETPILOT_DEMO_MODE=true while DATABASE_URL "
+            f"points at a shared {scheme!r} database. Demo seeding purges "
+            "metric_samples and would destroy real live telemetry. Point "
+            "DATABASE_URL at a local SQLite file (or unset it) for demos, or "
+            "set NETPILOT_DEMO_MODE=false for live collection."
+        )
+    return None
+
+
 def get_settings() -> Settings:
     """Build settings from the environment.
 

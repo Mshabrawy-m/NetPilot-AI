@@ -17,7 +17,7 @@ import math
 import random
 from datetime import timedelta
 
-from config import get_settings, utc_now
+from config import get_settings, utc_now, demo_isolation_violation
 from database import repository
 from database.connection import session_scope, init_db
 from network.device_inventory import load_inventory
@@ -39,6 +39,13 @@ def seed_demo_data(hours: int = 6, interval_minutes: int = 5,
     if not settings.demo_mode:
         raise RuntimeError(
             "seed_demo_data() must only run when NETPILOT_DEMO_MODE=true")
+    # Isolation guard (Stage A2): a demo seed purges metric_samples first, so
+    # it must never run against a shared external database. Fail here - before
+    # init_db()/purge - so an existing live dataset cannot be erased by a
+    # misconfigured demo bootstrap.
+    violation = demo_isolation_violation(settings)
+    if violation:
+        raise RuntimeError(violation)
     init_db()
     if reset_first:
         with session_scope() as session:
