@@ -109,8 +109,15 @@ _SQL_OWNERSHIP = (
     "SELECT relname, relkind, pg_get_userbyid(relowner) AS owner "
     "FROM pg_class WHERE relnamespace='public'::regnamespace "
     "AND relkind IN ('r','S') ORDER BY relkind, relname")
+# PostgreSQL 16 renamed the ``pg_default_acl`` role column from the pre-16 alias
+# ``roleid`` to ``defaclrole`` (see commit "Fix remarks..." and the PG16 catalog
+# definition). ``roleid`` no longer exists, so a stale reference fails live with
+# ``column "roleid" does not exist`` while an offline-only test suite still
+# passes - the exact drift this constant guard is designed to catch. The
+# companion test in tests/test_validate_pg_roles_prod.py pins the allowed
+# column set to PG16's real schema.
 _SQL_DEFAULT_ACL = (
-    "SELECT pg_get_userbyid(roleid) AS grantor, defaclobjtype, "
+    "SELECT pg_get_userbyid(defaclrole) AS grantor, defaclobjtype, "
     "defaclacl::text AS acl FROM pg_default_acl "
     "WHERE defaclnamespace='public'::regnamespace")
 _SQL_FOREIGN_KEYS = (
@@ -435,17 +442,26 @@ def _validate_ownership(out: list[ProbeResult]) -> None:
 def _interpret_default_acl(rows) -> tuple[bool, str]:
     """Pure check of ``pg_default_acl`` rows against the M3 policy.
 
-    Expected: exactly one default-ACL entry, created by ``netpilot_admin`` for
-    relations (``objtype == 'r'``), granting ``netpilot_app`` SELECT ('r') and
-    nothing else - no default INSERT/UPDATE/DELETE, no default sequence
-    privileges, no other grantee. Factored out so an offline fixture can assert
-    it without a connection.
+    Scope : only ``netpilot_admin``'s own default-ACL entries are in scope. On
+    Neon-managed branches ``pg_default_acl`` also carries pre-existing rows
+    whose grantor is ``cloud_admin`` (granting wide privileges to
+    ``neon_superuser`` for the platform's own maintenance paths). Those rows
+    are not created, controllable, or removable by NetPilot, so evaluating
+    them as part of *our* policy would produce a false-positive failure on a
+    correctly provisioned branch. Filtering by grantor here does NOT weaken
+    the check: the same narrow SSOT assertion still runs against exactly one
+    ``netpilot_admin`` row for relations (``objtype == 'r'``) granting
+    ``netpilot_app`` SELECT and nothing else - no default INSERT/UPDATE/DELETE,
+    no default sequence privileges, no other grantee. Factored out so an
+    offline fixture can assert it without a connection.
     """
-    if len(rows) != 1:
-        return False, f"unexpected default ACL rows: {len(rows)}"
-    grantor, objtype, acl_text = rows[0]
-    if grantor != roles.ROLE_ADMIN or objtype != "r":  # 'r' = relations/tables
-        return False, f"grantor/objtype mismatch: {grantor}/{objtype}"
+    admin_rows = [row for row in rows if row[0] == roles.ROLE_ADMIN]
+    if len(admin_rows) != 1:
+        return False, (f"unexpected netpilot_admin default ACL rows: "
+                       f"{len(admin_rows)}")
+    _grantor, objtype, acl_text = admin_rows[0]
+    if objtype != "r":  # 'r' = relations/tables
+        return False, f"objtype mismatch: {objtype}"
     body = (acl_text or "").strip("{}")
     entries = [e for e in body.split(",") if e.strip()]
     non_admin = [e for e in entries

@@ -23,8 +23,10 @@
 -- suspenders for older/self-hosted servers).
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 
--- Full schema rights for the owner role.
-GRANT ALL ON SCHEMA public TO netpilot_admin;
+-- Full schema rights for the owner role, including GRANT OPTION so admin can
+-- delegate USAGE to runtime roles (script 21). Without GRANT OPTION, admin
+-- cannot propagate the privilege and the runtime roles remain invisible.
+GRANT ALL ON SCHEMA public TO netpilot_admin WITH GRANT OPTION;
 
 -- Transfer ownership of every existing table and sequence to netpilot_admin.
 -- New objects created by admin later are owned by admin automatically; see

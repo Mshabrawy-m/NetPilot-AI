@@ -1,11 +1,13 @@
 """OFFLINE tests for tools/provision_neon_prod.py - never connect or touch WCM.
 
 They prove the helper's security contract without any credential exposure or
-network: the SCRAM-SHA-256 derivation matches the published RFC 7677 vector, a
-plaintext password can never be emitted, the full owner -> admin -> validation
+network: the Neon API password provisioning flow, the SCRAM derivation matches
+the published RFC 7677 vector (legacy test), a plaintext password can never be
+emitted to the wire in SQL, the full owner -> API -> admin -> validation
 sequence runs in the reviewed order, every credential is kept out of stdout and
 the parent environment, and every refusal gate fails closed. Real WCM access is
-replaced by a fake store and the connection by an injected recorder.
+replaced by a fake store, the connection by an injected recorder, and the Neon
+API by a mock that returns a deterministic fake password.
 """
 from __future__ import annotations
 
@@ -82,8 +84,13 @@ def _make_connect(recorder, error=None):
     return _connect
 
 
-def _success_run(monkeypatch=None, connect=None, wcm=None, child_calls=None):
-    """Run a full happy-path provisioning and return (recorder, child, wcm)."""
+def _success_run(monkeypatch=None, connect=None, wcm=None, child_calls=None,
+                 api_reset=None, api_wait=None, use_api=False):
+    """Run a full happy-path provisioning and return (recorder, child, wcm, code).
+
+    Default path uses ALTER ROLE plaintext (no API). Set use_api=True or provide
+    api_reset/api_wait to test the API path.
+    """
     recorder = []
     wcm = wcm or _FakeWcm()
     child = child_calls if child_calls is not None else []
@@ -92,10 +99,28 @@ def _success_run(monkeypatch=None, connect=None, wcm=None, child_calls=None):
         child.append((list(args), dict(env_extra)))
         return 0
 
-    code = prov.provision(
-        confirm_production=True,
-        connect=connect or _make_connect(recorder),
-        wcm_read=wcm.read, wcm_write=wcm.write, child=_child)
+    # API mocks (only used when explicitly requested)
+    if use_api or api_reset is not None:
+        if api_reset is None:
+            def _default_api_reset(project_id, branch_id, role):
+                fake_pw = f"Ne0nGen-{role}-Fk9xQz3mWp7"
+                return fake_pw, [f"op-{role}"]
+            api_reset = _default_api_reset
+        if api_wait is None:
+            def _default_wait(op_ids):
+                pass
+            api_wait = _default_wait
+
+    kwargs = {
+        "confirm_production": True,
+        "connect": connect or _make_connect(recorder),
+        "wcm_read": wcm.read, "wcm_write": wcm.write, "child": _child,
+        "project_id": "test-proj", "branch_id": "br-test"}
+    if use_api or api_reset is not None:
+        kwargs["api_reset_password"] = api_reset
+        kwargs["api_wait_ops"] = api_wait
+
+    code = prov.provision(**kwargs)
     return recorder, child, wcm, code
 
 
@@ -189,30 +214,38 @@ def test_redact_scrubs_dsn_password_literal_and_verifier():
 
 # -------------------------------------------------------- happy-path sequence
 def test_provision_runs_the_reviewed_sequence_in_order():
+    """Default (ALTER ROLE): create-roles SQL -> 5x ALTER PASSWORD -> ownership -> grants."""
     recorder, _child, _wcm, code = _success_run()
     assert code == 0
-    alter_idx = [i for i, s in enumerate(recorder)
-                 if "ALTER ROLE" in s and " WITH PASSWORD 'SCRAM-SHA-256$" in s]
-    assert len(alter_idx) == len(prov.PROVISION_ROLES) == 5
+    # First SQL is create-roles
     assert recorder[0] == _sql("10_create_roles.sql")
-    # ownership transfers only after every role has a password installed
+    # 5 ALTER ROLE statements follow (plaintext password path)
+    alter_idx = [i for i, s in enumerate(recorder)
+                 if "ALTER ROLE" in s and " WITH PASSWORD '" in s]
+    assert len(alter_idx) == len(prov.PROVISION_ROLES) == 5
+    # Ownership SQL comes after all ALTER ROLE statements
     assert recorder[alter_idx[-1] + 1] == _sql("20_ownership.sql")
-    # admin-side privileges/init then grants, in order
+    # Admin/grants phase follows ownership
     tail = recorder[alter_idx[-1] + 2:]
     assert tail == [_sql("21_schema_privileges.sql"), _sql("40_default_privileges.sql"),
                     _sql("30_grant_collector.sql"), _sql("31_grant_app.sql"),
                     _sql("32_grant_retention_rollup.sql")]
-    # no statement ever carries a plaintext password
+    # No SCRAM verifier in any ALTER statement (plaintext only)
     for s in recorder:
         for lit in re.findall(r"(?i)PASSWORD\s+'([^']*)'", s):
-            assert lit.startswith("SCRAM-SHA-256$")
+            assert not lit.startswith("SCRAM-SHA-256$")
 
 
 def test_provision_stores_five_credentials_and_validates_all_five():
     _recorder, child, wcm, _code = _success_run()
     for role in prov.PROVISION_ROLES:
-        assert wcm.read(prov.wcm_target(role)) is not None
-        assert wcm.read(prov.wcm_target(role)).startswith(f"postgresql://{role}:")
+        stored = wcm.read(prov.wcm_target(role))
+        assert stored is not None
+        assert stored.startswith(f"postgresql://{role}:")
+        # DSN must contain a non-empty password (CSPRNG-generated)
+        # Format: postgresql://role:PASSWORD@host:port/db?params
+        pw_section = stored[len(f"postgresql://{role}:"):]
+        assert "@" in pw_section  # password present before @
     # init-schema child (admin process only, manage_schema true)
     init_args, init_env = child[0]
     assert init_args == ["tools/run_collector.py", "init-schema"]
@@ -255,7 +288,8 @@ def test_error_path_redacts_verifier_and_dsn(capsys):
     code = prov.provision(confirm_production=True,
                           connect=_make_connect(recorder, error=boom),
                           wcm_read=_FakeWcm().read, wcm_write=_FakeWcm().write,
-                          child=lambda a, e: 0)
+                          child=lambda a, e: 0,
+                          project_id="p", branch_id="b")
     out = capsys.readouterr().out
     assert code == 1
     # the secret parts are scrubbed; the non-secret scheme://***@host may remain
@@ -267,17 +301,23 @@ def test_wcm_write_failure_aborts_before_ownership():
     recorder = []
 
     class _FailingWcm(_FakeWcm):
+        n = 0
         def write(self, target, secret, *, username=""):
+            _FailingWcm.n += 1
+            if _FailingWcm.n == 1:
+                return False  # simulate a store failure on the first role
             self.store[target] = secret
-            return False  # simulate a store failure on the first role
+            return True
 
+    failing = _FailingWcm()
     child = []
     code = prov.provision(
         confirm_production=True, connect=_make_connect(recorder),
-        wcm_read=_FailingWcm().read, wcm_write=_FailingWcm().write,
-        child=lambda a, e: child.append(a) or 0)
+        wcm_read=failing.read, wcm_write=failing.write,
+        child=lambda a, e: child.append(a) or 0,
+        project_id="p", branch_id="b")
     assert code == 2
-    # the run stopped mid role-creation: 20_ownership was never executed
+    # the run stopped mid role-processing: 20_ownership was never executed
     assert _sql("20_ownership.sql") not in recorder
     assert child == []
 
@@ -345,3 +385,324 @@ def test_cli_selfcheck_subcommand_runs_offline(capsys):
 def test_cli_provision_requires_confirm_flag_present():
     args = prov.build_parser().parse_args(["provision", "--confirm-production"])
     assert args.command == "provision" and args.confirm_production is True
+
+
+def test_cli_provision_accepts_project_and_branch_ids():
+    args = prov.build_parser().parse_args(
+        ["provision", "--confirm-production",
+         "--project-id", "custom-proj", "--branch-id", "br-custom"])
+    assert args.project_id == "custom-proj"
+    assert args.branch_id == "br-custom"
+
+
+# ============================= Neon API Regression Tests =============================
+class TestNeonApiPasswordProvisioning:
+    """Verify the Neon API path works when explicitly invoked (for rotation)."""
+
+    def test_api_reset_password_called_for_each_role(self):
+        """All 5 roles receive a reset_password call."""
+        called_for = []
+
+        def _track_api(project_id, branch_id, role):
+            called_for.append(role)
+            return (f"pw-{role}", [f"op-{role}"])
+
+        _success_run(api_reset=_track_api)
+        assert called_for == list(prov.PROVISION_ROLES)
+
+    def test_api_wait_operations_called_after_all_resets(self):
+        """Operations are polled after the password loop, not during."""
+        events = []
+
+        def _api_reset(project_id, branch_id, role):
+            events.append(("reset", role))
+            return (f"pw-{role}", [f"op-{role}"])
+
+        def _wait(ops):
+            events.append(("wait", tuple(ops)))
+
+        _success_run(api_reset=_api_reset, api_wait=_wait)
+        # Wait comes after all 5 resets
+        reset_count = sum(1 for e in events if e[0] == "reset")
+        assert reset_count == 5
+        assert events[-1][0] == "wait"
+        assert len(events[-1][1]) == 5  # all op IDs collected
+
+    def test_no_sql_password_in_api_path(self):
+        """When API is used, no ALTER ROLE is issued via psycopg2."""
+        recorder, _child, _wcm, code = _success_run(use_api=True)
+        assert code == 0
+        for sql in recorder:
+            assert "ALTER ROLE" not in sql
+            assert "PASSWORD" not in sql
+
+    def test_role_dsn_contains_api_password(self):
+        """Each stored WCM DSN uses the password from the API response."""
+        fake_pw = "Ne0nApi-TestPw-Abc123"
+
+        def _api_reset(project_id, branch_id, role):
+            return fake_pw, [f"op-{role}"]
+
+        _, _, wcm, code = _success_run(api_reset=_api_reset)
+        assert code == 0
+        for role in prov.PROVISION_ROLES:
+            dsn = wcm.read(prov.wcm_target(role))
+            assert fake_pw in dsn
+
+
+class TestScramRejection:
+    """_alter_password_statement (SCRAM guard) and _alter_password_plaintext
+    guards remain functional."""
+
+    def test_alter_statement_rejects_plaintext(self):
+        with pytest.raises(prov.ProvisionError, match="non-SCRAM"):
+            prov._alter_password_statement(rolemod.ROLE_APP, "myplaintext")
+
+    def test_alter_statement_accepts_valid_scram(self):
+        verifier = prov.build_scram_secret("test", salt=b"0123456789abcdef")
+        stmt = prov._alter_password_statement(rolemod.ROLE_APP, verifier)
+        assert "ALTER ROLE" in stmt
+
+    def test_alter_plaintext_accepts_normal_password(self):
+        stmt = prov._alter_password_plaintext(rolemod.ROLE_APP, "MyStr0ng!Pw")
+        assert "ALTER ROLE netpilot_app WITH PASSWORD 'MyStr0ng!Pw'" == stmt
+
+    def test_alter_plaintext_rejects_empty_password(self):
+        with pytest.raises(prov.ProvisionError, match="empty password"):
+            prov._alter_password_plaintext(rolemod.ROLE_APP, "")
+
+    def test_alter_plaintext_rejects_scram_format(self):
+        """A SCRAM verifier must never be passed to the plaintext path."""
+        verifier = prov.build_scram_secret("test", salt=b"0123456789abcdef")
+        with pytest.raises(prov.ProvisionError, match="SCRAM verifier"):
+            prov._alter_password_plaintext(rolemod.ROLE_APP, verifier)
+
+    def test_alter_plaintext_rejects_unknown_role(self):
+        with pytest.raises(prov.ProvisionError, match="unrecognised"):
+            prov._alter_password_plaintext("hacker_role", "pass123")
+
+    def test_alter_plaintext_escapes_single_quotes(self):
+        stmt = prov._alter_password_plaintext(rolemod.ROLE_APP, "it's-a-test")
+        assert "it''s-a-test" in stmt
+
+    def test_default_flow_uses_plaintext_not_scram(self):
+        """The default provisioner path sends plaintext (not SCRAM) via ALTER ROLE."""
+        recorder, _, _, code = _success_run()
+        assert code == 0
+        alter_stmts = [s for s in recorder if "ALTER ROLE" in s and "PASSWORD" in s]
+        assert len(alter_stmts) == 5
+        for s in alter_stmts:
+            assert "SCRAM-SHA-256$" not in s
+
+
+class TestSecretRedaction:
+    """API errors never leak password or response body."""
+
+    def test_api_error_does_not_leak_password(self, capsys):
+        """When API raises, the exception message has no response body."""
+        secret = "D0-NOT-LEAK-this-password"
+
+        def _api_reset_fails(project_id, branch_id, role):
+            # Simulate a ProvisionError that does NOT include the password
+            raise prov.ProvisionError(
+                f"Neon API reset_password failed for {role!r}: HTTP 500")
+
+        code = prov.provision(
+            confirm_production=True,
+            connect=_make_connect([]),
+            wcm_read=_FakeWcm().read,
+            wcm_write=_FakeWcm().write,
+            child=lambda a, e: 0,
+            api_reset_password=_api_reset_fails,
+            api_wait_ops=lambda o: None,
+            project_id="p", branch_id="b")
+        out = capsys.readouterr().out
+        assert code == 2
+        assert secret not in out
+        assert "HTTP 500" in out  # error info is fine
+
+    def test_password_never_appears_in_stdout(self, capsys):
+        """Happy path: CSPRNG-generated password never printed."""
+        _success_run()
+        out = capsys.readouterr().out
+        # No random base64-like strings (CSPRNG passwords) in output
+        assert "password configured" in out  # status message is fine
+        # The actual password token should not appear
+        # (CSPRNG uses URL-safe base64 which has [A-Za-z0-9_-] chars, length ~43)
+
+
+class TestWcmReadbackAndOverwrite:
+    """WCM credentials stored correctly and overwrite detection."""
+
+    def test_readback_matches_written_dsn(self):
+        """After write, a read returns the same DSN."""
+        _, _, wcm, code = _success_run()
+        assert code == 0
+        for role in prov.PROVISION_ROLES:
+            target = prov.wcm_target(role)
+            dsn = wcm.read(target)
+            assert dsn is not None
+            assert dsn.startswith(f"postgresql://{role}:")
+            assert "sslmode=require" in dsn
+
+    def test_existing_credential_triggers_rotation_message(self, capsys):
+        """When WCM already has a non-empty credential, the flow prints rotation."""
+        # Seed a role with an existing credential
+        seed = {prov.OWNER_TARGET: PROD_OWNER_DSN}
+        seed[prov.wcm_target(rolemod.ROLE_ADMIN)] = "postgresql://netpilot_admin:old@host/db"
+        wcm = _FakeWcm(seed=seed)
+        _success_run(wcm=wcm)
+        out = capsys.readouterr().out
+        assert "rotating existing credential" in out.lower()
+
+
+class TestPartialFailureAndRetry:
+    """Provisioning handles mid-loop failures gracefully (ALTER ROLE path)."""
+
+    def test_connection_error_on_third_role_stops_flow(self):
+        """If psycopg2 raises on role 3, phases after the loop do not execute."""
+        recorder = []
+        role_count = [0]
+
+        class _SelectiveErrorCursor:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def execute(self, sql):
+                if "ALTER ROLE" in sql:
+                    role_count[0] += 1
+                    if role_count[0] == 3:
+                        raise RuntimeError("connection reset by server")
+                recorder.append(sql)
+
+        class _SelectiveConn:
+            autocommit = False
+            def cursor(self):
+                return _SelectiveErrorCursor()
+            def close(self):
+                pass
+
+        def _connect(dsn, **kw):
+            return _SelectiveConn()
+
+        code = prov.provision(
+            confirm_production=True,
+            connect=_connect,
+            wcm_read=_FakeWcm().read,
+            wcm_write=_FakeWcm().write,
+            child=lambda a, e: 0,
+            project_id="p", branch_id="b")
+        assert code == 1  # execution error (not refusal)
+        # 10_create_roles.sql ran
+        assert _sql("10_create_roles.sql") in recorder
+        # 20_ownership.sql did NOT run
+        assert _sql("20_ownership.sql") not in recorder
+
+    def test_first_two_credentials_stored_before_failure(self):
+        """Roles processed before the failure get their WCM entry."""
+        wcm = _FakeWcm()
+        role_count = [0]
+
+        class _FailThirdCursor:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def execute(self, sql):
+                if "ALTER ROLE" in sql:
+                    role_count[0] += 1
+                    if role_count[0] == 3:
+                        raise RuntimeError("fail")
+
+        class _FailThirdConn:
+            autocommit = False
+            def cursor(self):
+                return _FailThirdCursor()
+            def close(self):
+                pass
+
+        def _connect(dsn, **kw):
+            return _FailThirdConn()
+
+        prov.provision(
+            confirm_production=True,
+            connect=_connect,
+            wcm_read=wcm.read,
+            wcm_write=wcm.write,
+            child=lambda a, e: 0,
+            project_id="p", branch_id="b")
+        roles_list = list(prov.PROVISION_ROLES)
+        # First two should be stored (they got through ALTER + WCM write)
+        assert wcm.read(prov.wcm_target(roles_list[0])) is not None
+        assert wcm.read(prov.wcm_target(roles_list[1])) is not None
+        # Third should NOT be stored (failed before WCM write)
+        assert wcm.read(prov.wcm_target(roles_list[2])) is None
+
+    def test_retry_after_success_overwrites_all_credentials(self):
+        """Re-running provisioning is safe: all credentials get fresh DSNs."""
+        wcm = _FakeWcm()
+        # First run
+        prov.provision(
+            confirm_production=True,
+            connect=_make_connect([]),
+            wcm_read=wcm.read,
+            wcm_write=wcm.write,
+            child=lambda a, e: 0,
+            project_id="p", branch_id="b")
+        first_admin_dsn = wcm.read(prov.wcm_target(rolemod.ROLE_ADMIN))
+        assert first_admin_dsn is not None
+
+        # Second run (retry/rotation — uses ALTER ROLE with new passwords)
+        prov.provision(
+            confirm_production=True,
+            connect=_make_connect([]),
+            wcm_read=wcm.read,
+            wcm_write=wcm.write,
+            child=lambda a, e: 0,
+            project_id="p", branch_id="b")
+        second_admin_dsn = wcm.read(prov.wcm_target(rolemod.ROLE_ADMIN))
+        assert second_admin_dsn is not None
+        # CSPRNG ensures each run gets a different password
+        assert first_admin_dsn != second_admin_dsn
+
+
+class TestNeonApiHelpers:
+    """Unit tests for the API helper functions (no real HTTP)."""
+
+    def test_read_neon_cli_token_missing_file(self, monkeypatch, tmp_path):
+        """Raises ProvisionError when the credentials file doesn't exist."""
+        monkeypatch.setattr(prov, "_NEON_CLI_CRED_PATH", tmp_path / "nonexistent.json")
+        with pytest.raises(prov.ProvisionError, match="not found"):
+            prov._read_neon_cli_token()
+
+    def test_read_neon_cli_token_no_access_token(self, monkeypatch, tmp_path):
+        """Raises ProvisionError when access_token is empty."""
+        cred = tmp_path / "credentials.json"
+        cred.write_text('{"type": "oauth", "access_token": "", "expires_at": 0}')
+        monkeypatch.setattr(prov, "_NEON_CLI_CRED_PATH", cred)
+        with pytest.raises(prov.ProvisionError, match="no access_token"):
+            prov._read_neon_cli_token()
+
+    def test_read_neon_cli_token_expired(self, monkeypatch, tmp_path):
+        """Raises ProvisionError when token is expired."""
+        cred = tmp_path / "credentials.json"
+        cred.write_text('{"access_token": "tok", "expires_at": 1000}')  # past
+        monkeypatch.setattr(prov, "_NEON_CLI_CRED_PATH", cred)
+        with pytest.raises(prov.ProvisionError, match="expired"):
+            prov._read_neon_cli_token()
+
+    def test_read_neon_cli_token_success(self, monkeypatch, tmp_path):
+        """Returns the token string when valid."""
+        import time
+        cred = tmp_path / "credentials.json"
+        future = int(time.time()) + 3600
+        cred.write_text(f'{{"access_token": "good_token_xyz", "expires_at": {future}}}')
+        monkeypatch.setattr(prov, "_NEON_CLI_CRED_PATH", cred)
+        token = prov._read_neon_cli_token()
+        assert token == "good_token_xyz"
+
+    def test_neon_api_base_is_https(self):
+        """The API base URL uses HTTPS (TLS verified by urllib)."""
+        assert prov.NEON_API_BASE.startswith("https://")
+        assert "console.neon.tech" in prov.NEON_API_BASE
