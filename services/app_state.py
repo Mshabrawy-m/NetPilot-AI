@@ -11,9 +11,9 @@ import threading
 import pandas as pd
 import streamlit as st
 
-from config import get_settings
-from database.connection import get_session, init_db
-from database import repository
+from config import demo_isolation_violation, get_settings
+from database import connection, repository, roles
+from database.connection import get_session, init_db, require_schema
 from services import auth, collection_service, demo_data
 from ui import theme
 
@@ -45,9 +45,48 @@ def render_flash() -> None:
         getattr(st, item["level"])(item["message"])
 
 
+def ensure_ready_for_mode() -> None:
+    """Run before any database access: isolation guard, role, then schema control.
+
+    Order is the whole point (Stage A3 P1/P2, extended by Stage A6b-1 M4):
+
+    1. ``demo_isolation_violation`` is checked first, so a demo configuration
+       aimed at a shared external database raises *before* ``init_db``/engine
+       connection or a read-only reflect - no connection is ever opened.
+    2. The process then declares itself the ``netpilot_app`` reader role so its
+       connections resolve to the application's own URL (never the collector's
+       or the administrator's). In demo mode this is a no-op: the isolated
+       SQLite store is used unchanged.
+    3. ``schema_management_allowed`` decides whether this process may run DDL at
+       all. It is False when ``NETPILOT_MANAGE_SCHEMA`` is false, and also False
+       for a runtime role once role separation is adopted, so the hosted
+       read-only reader only ever verifies the schema (SELECT), never creating
+       or migrating it.
+    """
+    settings = get_settings()
+    violation = demo_isolation_violation(settings)
+    if violation:
+        raise RuntimeError(violation)
+    connection.set_database_role(roles.ROLE_APP)
+    if connection.schema_management_allowed():
+        init_db()
+    else:
+        require_schema()
+
+
+def admin_actions_available() -> bool:
+    """Whether admin-only destructive DB actions may run in this process.
+
+    ``netpilot_app`` (and any runtime role under separation) holds no DELETE or
+    schema privilege, so the reset/purge actions are hidden from it. Demo mode
+    keeps them because its SQLite store is a disposable sandbox.
+    """
+    return connection.admin_actions_available()
+
+
 def bootstrap() -> None:
     """Run at the top of every page: schema, scheduler, demo seeding."""
-    init_db()
+    ensure_ready_for_mode()
     settings = get_settings()
     if settings.demo_mode:
         _ensure_demo_seeded()

@@ -27,6 +27,7 @@ import datetime as dt
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -825,3 +826,96 @@ class AgenticAnalysisRun(Base):
     plan_json: Mapped[str] = mapped_column(Text)
     steps_json: Mapped[str] = mapped_column(Text)
     report_text: Mapped[str] = mapped_column(Text)
+
+
+# ==========================================================================
+# Stage A6-2 - daily rollups.
+#
+# ``metric_daily_rollups`` folds a completed UTC day of raw live samples into
+# one row per (day, device, interface, metric, source). The version helper below
+# exists because the NULL-safe uniqueness decision must be *justified against the
+# configured server*, not assumed: ``UNIQUE ... NULLS NOT DISTINCT`` is only
+# available on PostgreSQL 15+, while the packaged reference deployment runs
+# ``postgres:16-alpine`` and hosted readers may point at any supported server.
+# ==========================================================================
+#: Lowest PostgreSQL major that understands ``UNIQUE ... NULLS NOT DISTINCT``.
+PG_NULLS_NOT_DISTINCT_MIN_MAJOR = 15
+
+
+def pg_supports_nulls_not_distinct(major_version) -> bool:
+    """True when a PostgreSQL major version accepts ``NULLS NOT DISTINCT``.
+
+    ``major_version`` is the integer major read from the configured server (e.g.
+    ``connection.engine.dialect.server_version_info[0]``). ``None`` (an
+    uninspectable or non-PostgreSQL backend) returns False - the caller must then
+    rely on the engine-independent surrogate key rather than assume a newer
+    server than it can prove. Ordinary UNIQUE constraint text is intentionally
+    never emitted with this flag: the schema uses ``interface_key`` precisely so
+    the constraint does not depend on the answer.
+    """
+    try:
+        return int(major_version) >= PG_NULLS_NOT_DISTINCT_MIN_MAJOR
+    except (TypeError, ValueError):
+        return False
+
+
+class MetricDailyRollup(Base):
+    """Daily aggregate of raw **live** telemetry (Stage A6-2).
+
+    One row per (UTC day, device, interface, metric, data_source). It exists so
+    long-horizon forecasting/analysis keeps working after raw ``metric_samples``
+    retention (A6-1) shrinks the detailed history. Built by
+    ``repository.upsert_daily_rollups`` from ``data_source='live'`` rows only -
+    Demo samples never reach this table, so the demo/live boundary holds here too.
+
+    NULL-safe uniqueness (Stage A6-2 requirement 4): an ordinary ``UNIQUE``
+    treats NULLs as *distinct*, so a plain
+    ``UNIQUE(bucket_date, device_name, interface_name, metric, data_source)``
+    would allow unlimited duplicate rows whenever ``interface_name`` is NULL. The
+    only engine-native fix, ``UNIQUE ... NULLS NOT DISTINCT``, arrived in
+    PostgreSQL 15 (see :func:`pg_supports_nulls_not_distinct`), so it is
+    version-dependent and does not exist on SQLite at all. ``interface_key`` is
+    therefore a NOT NULL surrogate that folds a NULL interface to the empty
+    string, and uniqueness is enforced on ``interface_key`` (never
+    ``interface_name``): identical on the packaged ``postgres:16-alpine``, on any
+    older supported server, and on the offline SQLite test engine. The original
+    nullable ``interface_name`` is preserved for display.
+    """
+
+    __tablename__ = "metric_daily_rollups"
+    __table_args__ = (
+        UniqueConstraint(
+            "bucket_date", "device_name", "interface_key", "metric", "data_source",
+            name="uq_rollup_daily_key",
+        ),
+        Index("ix_rollup_device_metric_date", "device_name", "metric", "bucket_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    #: UTC calendar day of the aggregation window [day_start, day_end).
+    bucket_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    device_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: Display value; NULL means device-level (no interface).
+    interface_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: NOT NULL surrogate for uniqueness: ``interface_name`` with NULL folded to
+    #: ''. Never surfaced as the interface label; only used by ``uq_rollup_daily_key``.
+    interface_key: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="")
+    metric: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: Always 'live' by construction; kept in the key so demo can never collide.
+    data_source: Mapped[str] = mapped_column(String(16), nullable=False, default="live")
+    #: Number of raw live samples folded into this bucket (NULL values included
+    #: as measurement points; count is never inflated by the aggregation itself).
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: avg/min/max are computed over NON-NULL values only (SQL aggregates ignore
+    #: NULL). All three are NULL when the day held only unavailable readings -
+    #: never a fabricated 0.
+    avg_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    first_seen: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    last_seen: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=db_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=db_utcnow, onupdate=db_utcnow)

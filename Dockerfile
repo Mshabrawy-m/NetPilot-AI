@@ -23,11 +23,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Dependencies first so the layer cache survives source edits.
-# psycopg2-binary is pinned here (not in requirements.txt) because the local
-# development machine stays on SQLite; only the image carries the driver.
+# The PostgreSQL driver is declared ONCE in requirements.txt (psycopg2-binary)
+# and installed from there - no second, potentially conflicting pin here.
 COPY requirements.txt ./
-RUN pip install -r requirements.txt \
- && pip install "psycopg2-binary>=2.9,<3"
+RUN pip install -r requirements.txt
 
 COPY . .
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh

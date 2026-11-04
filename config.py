@@ -202,6 +202,63 @@ class Settings:
     ai_lab_prometheus_timeout_seconds: int = 10
     #: Cap on experiment rows listed from the history table in the UI.
     ai_lab_history_limit: int = 50
+    # ---- Stage A3: schema-management control (see Stage A3 P2) ------------
+    #: When True (the default, preserving local development and Demo Mode) the
+    #: app may run ``init_db()``: ``create_all`` + additive column migrations.
+    #: When False the app performs NO DDL at all - it only verifies the schema
+    #: already exists. This is what lets a hosted Streamlit reader run against an
+    #: already-initialized PostgreSQL using a SELECT-only role, without ever
+    #: being granted (or silently attempting) CREATE/ALTER.
+    manage_schema: bool = True
+    # ---- Stage A6: telemetry retention (see tools/run_retention.py) --------
+    #: Age in days beyond which raw ``data_source='live'`` metric_samples become
+    #: eligible for deletion. 0 or negative disables the retention command (it
+    #: refuses to run). NOTE: retention stays operationally OFF until the A6-2
+    #: daily-rollup job is approved - this value only bounds *what* a manually
+    #: invoked run would delete; it never schedules the deletion.
+    retention_raw_days: int = 30
+    #: Rows removed per independent transaction. The runner loops in bounded
+    #: batches so a long run never holds a write lock across the whole table.
+    retention_batch_size: int = 5000
+    # ---- Stage A6-2: daily rollups (see tools/run_rollup.py) ---------------
+    #: Number of *completed* UTC days to (re)aggregate on each rollup run.
+    #: 1 = rebuild yesterday only. A larger window re-derives older days too, so
+    #: late-arriving telemetry is picked up. The current, still-incomplete UTC
+    #: day is never aggregated. Non-negative; 0 makes the run a no-op.
+    rollup_lookback_days: int = 1
+    # ---- Stage A6b-1 M1: PostgreSQL TLS / connection settings --------------
+    #: libpq ``sslmode`` enforced on PostgreSQL connections. Validated in
+    #: ``database.connection`` (never silently ignored). SQLite is unaffected.
+    #: Default ``require`` (encryption without full CA verification). It never
+    #: downgrades an operator-supplied stronger ``sslmode`` already present in
+    #: ``DATABASE_URL``.
+    pg_sslmode: str = "require"
+    #: Raw ``NETPILOT_PG_CONNECT_TIMEOUT`` value (TCP connection-establishment
+    #: seconds). Kept as a string so the engine builder can parse and reject an
+    #: invalid value with a clear, credential-safe error instead of defaulting.
+    pg_connect_timeout: str = "10"
+    #: Optional CA bundle path used with ``verify-ca`` / ``verify-full``. Only
+    #: the path is handed to the driver; its contents are never read into the
+    #: repository. Empty = not configured (those modes are then rejected).
+    pg_sslrootcert: str = ""
+    # ---- Stage A6b-1 M2: PostgreSQL serverless pool tuning -----------------
+    #: All PostgreSQL-only, read as raw strings and validated/parsed by
+    #: ``database.connection`` so a malformed value fails with a clear,
+    #: credential-safe error rather than a silent default. SQLite ignores them.
+    #: Engine pool: hard ceiling on persistent connections.
+    pg_pool_size: str = "3"
+    #: Extra connections allowed to spike above ``pg_pool_size`` under load.
+    #: ``0`` is valid (no overflow); negative is rejected.
+    pg_max_overflow: str = "3"
+    #: Recycle a connection older than this many seconds - keep it BELOW the
+    #: managed/serverless idle timeout so dead sockets do not accumulate.
+    pg_pool_recycle: str = "60"
+    #: Seconds to wait for a free pooled connection before giving up.
+    pg_pool_timeout: str = "30"
+    #: PostgreSQL ``statement_timeout`` (milliseconds) applied per connection
+    #: through psycopg2 ``options``. ``0`` disables it (legitimate - long
+    #: forecasting/rollup writes must not be cut off); negative/invalid rejected.
+    pg_statement_timeout_ms: str = "15000"
     data_source: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -260,6 +317,25 @@ def get_settings() -> Settings:
     return Settings(
         demo_mode=demo_mode,
         database_url=database_url,
+        manage_schema=_env_bool("NETPILOT_MANAGE_SCHEMA", True),
+        retention_raw_days=_env_int("NETPILOT_RETENTION_RAW_DAYS", 30),
+        retention_batch_size=_env_int("NETPILOT_RETENTION_BATCH_SIZE", 5000),
+        rollup_lookback_days=max(0, _env_int("NETPILOT_ROLLUP_LOOKBACK_DAYS", 1)),
+        # ---- Stage A6b-1 M1: PostgreSQL TLS / connection settings -----------
+        # Read as raw strings; database.connection validates sslmode/timeout and
+        # fails with an operator-facing, credential-free message on bad input.
+        pg_sslmode=os.getenv("NETPILOT_PG_SSLMODE", "require").strip().lower(),
+        pg_connect_timeout=os.getenv("NETPILOT_PG_CONNECT_TIMEOUT", "10").strip(),
+        pg_sslrootcert=os.getenv("NETPILOT_PG_SSLROOTCERT", "").strip(),
+        # ---- Stage A6b-1 M2: serverless pool tuning + statement timeout ------
+        # Raw strings again; database.connection validates each and fails closed
+        # on a non-integer / out-of-range value without echoing the DSN.
+        pg_pool_size=os.getenv("NETPILOT_PG_POOL_SIZE", "3").strip(),
+        pg_max_overflow=os.getenv("NETPILOT_PG_MAX_OVERFLOW", "3").strip(),
+        pg_pool_recycle=os.getenv("NETPILOT_PG_POOL_RECYCLE", "60").strip(),
+        pg_pool_timeout=os.getenv("NETPILOT_PG_POOL_TIMEOUT", "30").strip(),
+        pg_statement_timeout_ms=os.getenv(
+            "NETPILOT_PG_STATEMENT_TIMEOUT_MS", "15000").strip(),
         collect_interval_seconds=max(10, _env_int("NETPILOT_COLLECT_INTERVAL", 60)),
         ping_timeout_seconds=max(1, _env_int("NETPILOT_PING_TIMEOUT", 5)),
         ping_count=max(1, _env_int("NETPILOT_PING_COUNT", 3)),

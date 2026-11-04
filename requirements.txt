@@ -45,6 +45,11 @@ groq
 langgraph
 pydantic
 
-# Optional: only needed when using PostgreSQL instead of SQLite.
-# Set DATABASE_URL accordingly (see README).
-# psycopg2-binary
+# PostgreSQL driver - REQUIRED for Live Mode (DATABASE_URL=postgresql+...).
+# It used to be commented out here and pinned only in the Dockerfile, which
+# left Streamlit Community Cloud (which installs requirements.txt, not the
+# Dockerfile) with no psycopg2 at all - any hosted Live connection died with
+# ModuleNotFoundError before TLS was ever negotiated. psycopg2-binary is the
+# wheel-with-libpq build: no compiler needed on hosted runners. The Dockerfile
+# now gets the same pinned range from this file (single source of truth).
+psycopg2-binary>=2.9,<3

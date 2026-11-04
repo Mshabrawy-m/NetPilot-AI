@@ -4,8 +4,13 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from services.app_state import bootstrap, demo_banner_if_active, read, sidebar_status
-
+from services.app_state import (
+    admin_actions_available,
+    bootstrap,
+    demo_banner_if_active,
+    read,
+    sidebar_status,
+)
 from ui import theme
 
 bootstrap()
@@ -88,14 +93,25 @@ else:
     st.caption("No open incidents.")
 
 with st.expander("Reset disposable lab data"):
-    db_kind = "demo DB" if settings.demo_mode else "live DB"
-    st.caption("Deletes measurement and operational rows from NetPilot's own "
-               f"database ({db_kind} only). "
-               "Never touches the lab itself. User accounts, alert rules, "
-               "change requests/audit history and digital-twin bindings are "
-               "preserved.")
-    confirm = st.checkbox("I understand: wipe all stored measurements")
-    if st.button("Reset database rows", disabled=not confirm):
-        from database.connection import reset_lab_data
-        tables = reset_lab_data()
-        st.success(f"Cleared data from {tables} tables.")
+    if not admin_actions_available():
+        # The netpilot_app reader role has no DELETE and no schema privilege
+        # (Stage A6b-1 M3/M4), so this admin-only action is disabled rather
+        # than offered and left to fail at the database. Resets are performed
+        # as the schema administrator instead.
+        st.info(
+            "Reset/database administration is disabled for the application "
+            "role (netpilot_app), which holds no DELETE or schema privilege. "
+            "Run this as the schema administrator (netpilot_admin) when role "
+            "separation is enabled.", icon="🔒")
+    else:
+        db_kind = "demo DB" if settings.demo_mode else "live DB"
+        st.caption("Deletes measurement and operational rows from NetPilot's own "
+                   f"database ({db_kind} only). "
+                   "Never touches the lab itself. User accounts, alert rules, "
+                   "change requests/audit history and digital-twin bindings are "
+                   "preserved.")
+        confirm = st.checkbox("I understand: wipe all stored measurements")
+        if st.button("Reset database rows", disabled=not confirm):
+            from database.connection import reset_lab_data
+            tables = reset_lab_data()
+            st.success(f"Cleared data from {tables} tables.")

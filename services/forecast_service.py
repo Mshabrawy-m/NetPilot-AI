@@ -39,7 +39,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from analytics import data_quality, evaluation
+from analytics import data_quality, evaluation, time_series
 from services.anomaly_service import load_ready_series
 from analytics.forecasting import (FORECAST_MODELS, MODEL_KWARGS,
                                    apply_holdout_bands,
@@ -64,6 +64,121 @@ ENSEMBLE_NAME = "ensemble_inverse_mae"
 BAND_MODE = "empirical_sqrt_h"
 
 
+def _series_key(device_name, interface_name, metric, data_source):
+    return (device_name, interface_name, metric, data_source)
+
+
+def list_forecast_series(
+    session: Session, *, data_source: str | None = None,
+    device_name: str | None = None, min_samples: int | None = None,
+) -> list[dict]:
+    """Unified forecasting-candidate inventory: raw samples + daily rollups.
+
+    Stage A6-4 discovery. Merges :func:`repository.get_series_inventory` (raw
+    ``metric_samples``) with :func:`repository.get_rollup_series_inventory`
+    (daily ``metric_daily_rollups``) on the (device, interface, metric,
+    data_source) identity so a series that exists in BOTH is listed exactly
+    once, and a series that survives only as rollups is still discovered once
+    raw history is thinned by retention.
+
+    Each row carries ``coverage`` (``'raw'`` / ``'rollup'`` / ``'both'``), the
+    separate ``n_raw_samples`` and ``n_rollup_days`` counts, and forecast
+    hints: ``forecastable_raw`` (enough non-null raw for the native cadence)
+    and ``forecastable_daily`` (enough combined daily buckets for the A6-4
+    daily cadence). These are cheap count-based hints; the authoritative check
+    is :func:`check_series_forecastability`, which runs the real data-quality
+    gate. Demo/Live isolation is preserved because both source queries take
+    the same ``data_source`` filter and rollups are live-only.
+    """
+    settings = get_settings()
+    floor = (settings.min_points_forecast if min_samples is None
+             else max(1, int(min_samples)))
+    raw_rows = repository.get_series_inventory(
+        session, data_source=data_source, device_name=device_name)
+    rollup_rows = repository.get_rollup_series_inventory(
+        session, data_source=data_source, device_name=device_name)
+
+    merged: dict[tuple, dict] = {}
+    for r in raw_rows:
+        key = _series_key(r["device_name"], r["interface_name"],
+                          r["metric"], r["data_source"])
+        merged[key] = {
+            "device_name": r["device_name"], "metric": r["metric"],
+            "interface_name": r["interface_name"], "unit": r["unit"],
+            "data_source": r["data_source"],
+            "n_raw_samples": int(r["n_samples"]), "n_rollup_days": 0,
+            "coverage": "raw",
+        }
+    for r in rollup_rows:
+        key = _series_key(r["device_name"], r["interface_name"],
+                          r["metric"], r["data_source"])
+        existing = merged.get(key)
+        if existing is not None:
+            existing["n_rollup_days"] = int(r["n_days"])
+            existing["coverage"] = "both"
+            if existing["unit"] is None:
+                existing["unit"] = r["unit"]
+        else:
+            merged[key] = {
+                "device_name": r["device_name"], "metric": r["metric"],
+                "interface_name": r["interface_name"], "unit": r["unit"],
+                "data_source": r["data_source"],
+                "n_raw_samples": 0, "n_rollup_days": int(r["n_days"]),
+                "coverage": "rollup",
+            }
+
+    out: list[dict] = []
+    for row in merged.values():
+        total = row["n_raw_samples"] + row["n_rollup_days"]
+        row["total_points"] = total
+        row["forecastable_raw"] = row["n_raw_samples"] >= floor
+        row["forecastable_daily"] = total >= floor
+        row["forecastable"] = row["forecastable_raw"] or row["forecastable_daily"]
+        out.append(row)
+    out.sort(key=lambda row: (-row["total_points"], row["device_name"],
+                              row["metric"], row["interface_name"] or ""))
+    return out
+
+
+def check_series_forecastability(
+    session: Session, *, device_name: str, metric: str,
+    interface_name: str | None, data_source: str,
+    since: dt.datetime | None = None, cadence: str = "raw",
+    device_level_only: bool = False,
+) -> dict:
+    """Authoritative 'can this exact selection be forecast right now?' check.
+
+    Loads the series through the same pipeline the forecast uses
+    (:func:`load_ready_series` with the requested ``cadence``) and reports the
+    real data-quality gate result, so the UI enables forecasting actions only
+    on a genuinely forecastable window rather than a count estimate. It returns
+    the readiness flag, human-readable reasons, the usable-observation count,
+    the observed interval, and the raw/rollup provenance split. No forecast is
+    computed and nothing is persisted - this is a read-only probe.
+    """
+    frame, quality = load_ready_series(
+        session, device_name, metric, interface_name, data_source,
+        purpose=data_quality.FORECAST, since=since,
+        device_level_only=device_level_only, include_rollups=True,
+        cadence=cadence)
+    provenance = time_series.frame_provenance(frame)
+    ready = bool(quality.ready(data_quality.FORECAST))
+    reasons = list(quality.reasons_for(data_quality.FORECAST) or quality.reasons)
+    if (not ready and cadence != "daily"
+            and provenance.get("mixes_granularity")):
+        reasons.append(
+            "forecast: window spans two sampling granularities; switch to the "
+            "daily cadence or pick a single-granularity window.")
+    return {
+        "ready": ready,
+        "cadence": cadence,
+        "reasons": reasons,
+        "n_observations": int(frame["value"].notna().sum()),
+        "observed_interval_seconds": quality.observed_interval_seconds,
+        "provenance": provenance,
+    }
+
+
 def run_forecast_comparison(
     session: Session, *,
     device_name: str, metric: str,
@@ -73,6 +188,8 @@ def run_forecast_comparison(
     persist: bool = True,
     device_level_only: bool = False,
     since: dt.datetime | None = None,
+    include_rollups: bool = True,
+    cadence: str = "raw",
     band_mode: str = BAND_MODE,
     band_coverage: float | None = None,
     ensemble: bool = True,
@@ -82,11 +199,33 @@ def run_forecast_comparison(
     frame, quality = load_ready_series(
         session, device_name, metric, interface_name, data_source,
         purpose=data_quality.FORECAST, device_level_only=device_level_only,
-        since=since)
+        since=since, include_rollups=include_rollups, cadence=cadence)
+    # Stage A6-3/A6-4 provenance: how much of this history is raw vs daily
+    # rollups. The daily cadence always reads rollups, so it reports provenance
+    # even when include_rollups was left at its default.
+    reads_rollups = include_rollups or cadence == "daily"
+    provenance = (time_series.frame_provenance(frame) if reads_rollups
+                  else {time_series.ORIGIN_RAW: int(frame["value"].notna().sum()),
+                        time_series.ORIGIN_ROLLUP: 0,
+                        "mixes_granularity": False})
     if not quality.ready(data_quality.FORECAST):
+        reasons = (quality.reasons_for(data_quality.FORECAST)
+                   or quality.reasons)
+        # The mixed-granularity warning is specific to the native-sampling
+        # cadence. The daily cadence has already reconciled raw and rollup onto
+        # one UTC-day grid, so a blend of provenances there is expected and not
+        # a refusal cause - the safety gate stays exactly as written for raw.
+        if cadence != "daily" and provenance.get("mixes_granularity"):
+            reasons = list(reasons) + [
+                ("forecast: history spans two sampling granularities (recent "
+                 "raw samples plus older daily rollups), which is not a "
+                 "regular grid. Choose a window covered entirely by raw "
+                 "samples or entirely by daily rollups, or switch to the "
+                 "daily cadence - the pipeline never silently blends "
+                 "aggregation levels.")]
         return {"status": "insufficient_data",
-                "reasons": quality.reasons_for(data_quality.FORECAST)
-                or quality.reasons, "runs": []}
+                "reasons": reasons, "runs": [], "cadence": cadence,
+                "history_provenance": provenance}
 
     # Time-indexed series for chronological integrity (index = timestamps).
     valid = frame.dropna(subset=["value"]).copy()
@@ -102,7 +241,7 @@ def run_forecast_comparison(
                 "reasons": [f"forecast: holdout test segment needs >= 5 "
                             f"samples, split produced {len(split.test)}. "
                             f"Series has {len(series)} usable samples."],
-                "runs": []}
+                "runs": [], "cadence": cadence, "history_provenance": provenance}
 
     interval = quality.observed_interval_seconds
     origin = series.index.max()
@@ -325,8 +464,10 @@ def run_forecast_comparison(
     for r in runs:
         r.pop("_raw_future", None)
     return {"status": "ok", "comparison_group": comparison_group,
+            "cadence": cadence,
             "runs": runs, "split": split, "quality": quality,
             "unit": unit,
+            "history_provenance": provenance,
             "best_model": best_model, "best_criterion": "holdout MAE",
             "ensemble": ensemble_result,
             "identical_holdout": bool(ok_runs) and len({

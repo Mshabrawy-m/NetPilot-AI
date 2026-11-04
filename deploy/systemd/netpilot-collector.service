@@ -1,0 +1,84 @@
+# NetPilot AI - live telemetry collector (one-shot cycle).
+#
+# Replaces the internal scheduler for external Linux hosts. `collect` runs
+# network.metrics_collector.collect_once() exactly once and exits, so no
+# long-lived connection pool is opened and the write path stays Streamlit-free.
+# It is triggered by netpilot-collector.timer, NOT by an internal daemon.
+#
+# The runner (tools/run_collector.py) already refuses to start unless
+#   NETPILOT_DEMO_MODE=false, the collector role DSN is PostgreSQL, and
+#   NETPILOT_CHANGE_LOOP_ENABLED=false AND NETPILOT_LAB_EXECUTION_ENABLED=false.
+# Those invariants live in the EnvironmentFile below - do NOT weaken them here.
+#
+# Install (Linux host prep: docs/Neon_Production_Provisioning_Checklist.md,
+# section "Linux host preparation (collector plane)"):
+#   sudo cp deploy/systemd/netpilot-collector.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now netpilot-collector.timer
+# One-shot manual run for verification:
+#   sudo systemctl start netpilot-collector.service ; journalctl -u netpilot-collector.service
+
+[Unit]
+Description=NetPilot AI live telemetry collector (single cycle)
+Documentation=file:/opt/netpilot/tools/run_collector.py
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Dedicated unprivileged service user (created in the checklist host-prep section).
+# SECURITY - the docker group is effectively ROOT on this host: any member of
+# `docker` can control the daemon and launch a privileged container that mounts
+# the host filesystem, so the sandbox directives below are defence-in-depth, NOT
+# a substitute for host isolation. The collector needs it only to `docker exec`
+# ping/cat/vtysh into the lab nodes. Therefore: run this on a DEDICATED lab /
+# collector host and do NOT co-host untrusted workloads or expose the daemon.
+User=netpilot
+Group=netpilot
+SupplementaryGroups=docker
+
+WorkingDirectory=/opt/netpilot
+
+# Runtime secrets live OUTSIDE the repository, mode 0600, owned root:netpilot.
+# No leading '-' : a missing config must fail loudly, not silently run inert.
+# This file MUST set NETPILOT_DB_URL_COLLECTOR, NETPILOT_PG_SSLMODE=require,
+# NETPILOT_DEMO_MODE=false and both safety flags =false. Never commit it and
+# never put the schema-administrator DSN (NETPILOT_DB_URL_ADMIN) in here - the
+# timer must not be able to run DDL.
+EnvironmentFile=/etc/netpilot/collector.env
+
+# Keep the read-only tree clean (no .pyc written under ProtectSystem=strict).
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Writable HOME/cache inside the sandbox: RuntimeDirectory (below) creates
+# /run/netpilot owned by the service user, so direct HOME and the XDG cache
+# there. ProtectHome=true hides the (non-existent) account home, and any library
+# that writes a cache would otherwise fail against the read-only/strict FS.
+Environment=HOME=/run/netpilot
+Environment=XDG_CACHE_HOME=/run/netpilot/.cache
+# The single-instance lock lives in the transient runtime dir (below), so it
+# is wiped with the unit and cannot collide with other services' /tmp.
+Environment=NETPILOT_COLLECTOR_LOCK=/run/netpilot/collector.lock
+
+ExecStart=/opt/netpilot/.venv/bin/python tools/run_collector.py collect
+
+# Transient dir for the lock, created 0700 and owned by the service user.
+RuntimeDirectory=netpilot
+
+# --- Hardening ------------------------------------------------------------
+# The collector writes only to the external database; it needs no filesystem
+# writes and no home directory. The repo tree is mounted read-only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/netpilot
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+# Fail the cycle (rather than hang a timer) if a probe wedges. Keep generous
+# but bounded; one cycle is a handful of docker-exec ping/cat/vtysh probes.
+TimeoutStartSec=300

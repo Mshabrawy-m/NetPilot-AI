@@ -37,7 +37,9 @@ from analytics import data_quality, evaluation
 from analytics.anomaly_detection import (
     DEFAULT_DETECTORS, DETECTORS, INTERVAL_REQUIRED, AnomalyPoint,
     detect_frame)
-from analytics.time_series import dedupe_frame, load_metric_frame
+from analytics.time_series import (dedupe_frame, load_metric_frame,
+                                   load_metric_frame_daily,
+                                   load_metric_frame_with_rollups)
 from config import get_settings
 from database import repository
 from database.models import AnomalyEvent, db_utcnow
@@ -67,9 +69,29 @@ def load_ready_series(
     purpose: str = data_quality.DETECTION,
     since: dt.datetime | None = None,
     device_level_only: bool = False,
+    include_rollups: bool = False,
+    cadence: str = "raw",
 ) -> tuple:
-    """Load + quality-gate one series. Returns (frame, SeriesQuality)."""
-    frame = load_metric_frame(
+    """Load + quality-gate one series. Returns (frame, SeriesQuality).
+
+    ``include_rollups`` (Stage A6-3) is used only by the forecasting pipeline:
+    it prepends strictly-older daily-rollup history for the same ``data_source``
+    (see :func:`load_metric_frame_with_rollups`). Detection and calibration
+    leave it ``False`` and therefore keep reading raw samples exactly as before.
+
+    ``cadence`` (Stage A6-4) selects the observation resolution. ``"raw"``
+    (default) keeps the native sampling grid. ``"daily"`` rebuilds the whole
+    window on one uniform UTC-day grid that safely combines raw samples and
+    daily rollups (see :func:`load_metric_frame_daily`); it implies rollups are
+    included, so it is forecasting-only and detection never passes it.
+    """
+    if cadence == "daily":
+        loader = load_metric_frame_daily
+    elif include_rollups:
+        loader = load_metric_frame_with_rollups
+    else:
+        loader = load_metric_frame
+    frame = loader(
         session, device_name, metric, interface_name=interface_name,
         data_source=data_source, since=since,
         max_points=DETECTION_LOOKBACK_LIMIT,

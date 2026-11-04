@@ -1,0 +1,44 @@
+# NetPilot AI - collector timer. Repeats netpilot-collector.service on the
+# cadence derived from the application's own configuration - do not hand-pick
+# an arbitrary number.
+#
+#   NETPILOT_COLLECT_INTERVAL      default 60  (config.py collect_interval_seconds)
+#   NETPILOT_MAX_RATE_GAP_SECONDS  default 300 (config.py; derived rates over this
+#                                              gap are marked *unreliable*)
+#
+# Rule the interval must satisfy:  NETPILOT_COLLECT_INTERVAL  <
+# NETPILOT_MAX_RATE_GAP_SECONDS, with headroom for missed cycles. At 60s a
+# single cycle may fail and the next still lands at 120s (< 300s), so the
+# rx/tx byte and error/dropped *rates* stay 'ok' through up to four consecutive
+# misses (the fifth would hit the 300s unreliable boundary). If you change this
+# timer, set NETPILOT_COLLECT_INTERVAL in /etc/netpilot/collector.env to match.
+#
+# Install / activate:
+#   sudo cp deploy/systemd/netpilot-collector.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now netpilot-collector.timer
+# Inspect next/last fire:  systemctl list-timers netpilot-collector.timer
+
+[Unit]
+Description=Run the NetPilot live telemetry collector every 60 seconds
+
+[Timer]
+# Let the lab and network settle after boot before the first cycle.
+OnBootSec=30
+# Steady-state cadence. Must equal NETPILOT_COLLECT_INTERVAL and stay < 300s.
+OnUnitActiveSec=60
+# Tight scheduling; the probes themselves dominate the cost, not timer jitter.
+AccuracySec=1s
+# This is a RELATIVE (monotonic) timer: first fire OnBootSec after the systemd
+# manager starts, then every OnUnitActiveSec measured from the previous
+# activation. Missed cycles during host downtime are NOT replayed - the
+# Persistent= replay option applies only to OnCalendar= timers and is
+# deliberately absent here. After a reboot the collector simply resumes on
+# schedule. Any downtime-induced gap between two samples is handled by the
+# application's max-rate-gap rule (derived rates are then labelled unreliable,
+# never fabricated), so cadence integrity is asserted from stored timestamps,
+# not from the timer. Do NOT add Persistent= to this unit - it is inert here.
+Unit=netpilot-collector.service
+
+[Install]
+WantedBy=timers.target

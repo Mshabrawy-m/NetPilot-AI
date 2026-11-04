@@ -62,6 +62,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy.exc import OperationalError
 
 from config import get_settings, is_external_database
+from database import connection, roles
 from database.connection import init_db
 from network.metrics_collector import collect_once
 
@@ -142,20 +143,29 @@ class InstanceLock:
 def check_configuration(settings) -> list[str]:
     """Return human-readable reasons ``collect`` must refuse to run.
 
-    Empty list means the live configuration is valid. Only the URL scheme (never
-    the DSN or credentials) is ever echoed back.
+    Empty list means the live configuration is valid. Stage A6b-1 M4 validates
+    the collector's **own** role connection (``NETPILOT_DB_URL_COLLECTOR`` when
+    role separation is adopted, otherwise ``DATABASE_URL``) rather than any
+    shared/administrator URL, and fails closed if that role URL is missing.
+    Only the URL scheme (never the DSN or credentials) is ever echoed back.
     """
     errors: list[str] = []
     if settings.demo_mode:
         errors.append(
             "collect requires NETPILOT_DEMO_MODE=false (live mode); the "
             "collector must never write to or read a demo store.")
-    if not settings.database_url.startswith("postgresql"):
-        scheme = settings.database_url.split("://", 1)[0] or "unset"
+    try:
+        url = roles.resolve_role_url(roles.ROLE_COLLECTOR, settings=settings)
+    except roles.RoleConfigError as exc:
+        errors.append(str(exc))
+        url = None
+    if url is not None and not url.startswith("postgresql"):
+        scheme = url.split("://", 1)[0] or "unset"
         errors.append(
-            "collect requires a PostgreSQL DATABASE_URL (the shared external "
-            f"database); current scheme is {scheme!r}.")
-    if is_external_database(settings.database_url) and settings.demo_mode:
+            "collect requires a PostgreSQL connection for the "
+            "netpilot_collector role (the shared external database); current "
+            f"scheme is {scheme!r}.")
+    if url is not None and is_external_database(url) and settings.demo_mode:
         errors.append(
             "DEMO/LIVE ISOLATION: demo mode must not target an external "
             "database.")
@@ -231,17 +241,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init-schema":
         # Schema administration. Kept separate so the routine collector role
-        # needs no DDL grant. Isolation still applies: never init a shared DB
-        # as a demo run.
+        # needs no DDL grant. Runs as the explicit administrator role
+        # (Stage A6b-1 M4): it uses NETPILOT_DB_URL_ADMIN when role separation
+        # is adopted, and never the collector's own connection. Isolation still
+        # applies: never init a shared DB as a demo run.
         if settings.demo_mode and is_external_database(settings.database_url):
             logger.error("refusing to initialize an external database in "
                          "demo mode (DEMO/LIVE isolation)")
             return EXIT_CONFIG
+        previous_role = connection.current_role()
+        connection.set_database_role(roles.ROLE_ADMIN)
         try:
             init_db()
+        except roles.RoleConfigError as exc:
+            logger.error("configuration rejected: %s", exc)
+            return EXIT_CONFIG
         except OperationalError as exc:
             logger.error("schema initialization failed (%s)", type(exc).__name__)
             return EXIT_DB
+        finally:
+            connection.set_database_role(previous_role)
         logger.info("database schema initialized")
         return EXIT_OK
 
@@ -251,7 +270,14 @@ def main(argv: list[str] | None = None) -> int:
         for message in errors:
             logger.error("configuration rejected: %s", message)
         return EXIT_CONFIG
-    return perform_collect(default_lock_path())
+    # Bind the connection layer to the collector's own role for this cycle so
+    # collect_once can only ever use the collector URL (no admin fallback).
+    previous_role = connection.current_role()
+    connection.set_database_role(roles.ROLE_COLLECTOR)
+    try:
+        return perform_collect(default_lock_path())
+    finally:
+        connection.set_database_role(previous_role)
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry point

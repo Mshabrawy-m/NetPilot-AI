@@ -37,7 +37,8 @@ demo_banner_if_active()
 
 from analytics.forecasting import FORECAST_MODELS
 from analytics import backtest
-from analytics.time_series import dedupe_frame, load_metric_frame
+from analytics.time_series import (dedupe_frame, load_metric_frame_daily,
+                                   load_metric_frame_with_rollups)
 from config import get_settings
 from database import repository
 from database.models import db_utcnow
@@ -77,39 +78,68 @@ def _fmt_eta(seconds) -> str:
 
 
 # ------------------------------------------------------------------- filters
-avail = read(lambda s: repository.get_available_metrics(s))
-if not avail:
+# Stage A6-4: discover candidates from ONE inventory that merges raw samples
+# AND daily rollups, so a series whose raw history has been thinned by
+# retention (and now lives only as rollups) is still selectable. Demo/Live
+# isolation holds because the inventory applies the same data_source filter to
+# both sources and rollups are live-only.
+inventory = read(lambda s: forecast_service.list_forecast_series(s))
+if not inventory:
     st.info("No measured values stored yet - nothing to forecast.")
     st.stop()
-sources = sorted({src for (_d, _m, _u, src) in avail})
+sources = sorted({row["data_source"] for row in inventory
+                  if row["data_source"]})
 data_source = st.selectbox("Data source", sources,
                            format_func=lambda v: f"{v} " + (
                                "(synthetic demo data)" if v == "demo"
                                else "(virtual lab measurements)"))
-devices = sorted({d for (d, _m, _u, s) in avail if s == data_source})
+devices = sorted({row["device_name"] for row in inventory
+                  if row["data_source"] == data_source})
 device_name = st.selectbox("Device", devices)
-metrics = sorted({m for (d, m, _u, s) in avail
-                  if s == data_source and d == device_name and m})
+metrics = sorted({row["metric"] for row in inventory
+                  if row["data_source"] == data_source
+                  and row["device_name"] == device_name and row["metric"]})
 if not metrics:
     st.warning(f"No stored metric values for **{device_name}** "
                f"({data_source}).", icon="📭")
     st.stop()
 metric = st.selectbox("Target metric", metrics)
 
-rows = read(lambda s: repository.get_metric_series(
-    s, device_name, metric, data_source=data_source))
-ifaces = sorted({r.interface_name for r in rows if r.interface_name})
-has_dev = any(r.interface_name is None for r in rows)
+# Series scope comes from the merged inventory, so an interface that survives
+# only in rollups is offered just like a raw-only one.
+sel_rows = [row for row in inventory if row["data_source"] == data_source
+            and row["device_name"] == device_name and row["metric"] == metric]
+ifaces = sorted({row["interface_name"] for row in sel_rows
+                 if row["interface_name"]})
+has_dev = any(row["interface_name"] is None for row in sel_rows)
 scope_options = ([None] if has_dev else []) + ifaces
 if not scope_options:
     st.info("This metric has no stored rows under this source.")
     st.stop()
 interface = st.selectbox("Series scope", scope_options,
                          format_func=lambda v: v or "(device-level)")
+_scope_row = next((row for row in sel_rows
+                   if row["interface_name"] == interface), None)
+if _scope_row is not None:
+    st.caption(
+        f"History coverage: **{_scope_row['coverage']}** - "
+        f"{_scope_row['n_raw_samples']} raw sample(s), "
+        f"{_scope_row['n_rollup_days']} daily rollup bucket(s).")
 
 settings = get_settings()
 mcol1, mcol2 = st.columns([1, 1])
 with mcol1:
+    cadence_label = st.radio(
+        "History cadence",
+        ("Native sampling (raw interval)",
+         "Daily (rollup-aware, uniform UTC-day)"),
+        help="Daily cadence reconciles raw samples and daily rollups onto one "
+             "UTC-day grid, so long mixed-granularity history can be forecast "
+             "without ever silently blending sampling levels: a day with a "
+             "rollup uses its stored daily mean, a day with only raw samples "
+             "uses their mean, an empty day is omitted. Native cadence keeps "
+             "the raw sampling interval and still refuses a mixed window.")
+    cadence = "raw" if cadence_label.startswith("Native") else "daily"
     horizon = st.slider("Forecast horizon (steps)", 3, 48,
                         int(settings.forecast_horizon_default))
     model_names = st.multiselect("Models to compare",
@@ -140,18 +170,34 @@ with mcol2:
 range_options = {"6 hours": 6, "24 hours": 24, "7 days": 168}
 range_label = st.selectbox("History window for the run",
                            list(range_options), index=1)
+since = db_utcnow() - timedelta(hours=range_options[range_label])
+
+# Stage A6-4: gate the action on the real data-quality check, so forecasting
+# is only enabled on a genuinely forecastable window (not a count estimate).
+readiness = read(lambda s: forecast_service.check_series_forecastability(
+    s, device_name=device_name, metric=metric, interface_name=interface,
+    data_source=data_source, since=since,
+    device_level_only=(interface is None), cadence=cadence))
+if readiness["ready"]:
+    st.success(
+        f"Forecastable: {readiness['n_observations']} usable observation(s) "
+        f"at {_fmt_eta(readiness['observed_interval_seconds'])} cadence.",
+        icon="✅")
+else:
+    st.warning("Not forecastable yet: "
+               + "; ".join(readiness["reasons"]), icon="📉")
 
 # ------------------------------------------------- explicit run (not on rerun)
 run_btn = st.button("🚀 Run forecast comparison", width="stretch",
-                    disabled=not model_names)
+                    disabled=(not model_names) or (not readiness["ready"]))
 if run_btn:
-    since = db_utcnow() - timedelta(hours=range_options[range_label])
     with st.spinner("Evaluating and forecasting..."):
         result = read(lambda s: forecast_service.run_forecast_comparison(
             s, device_name=device_name, metric=metric,
             interface_name=interface, data_source=data_source,
             horizon=horizon, models=tuple(model_names),
             device_level_only=(interface is None), since=since,
+            cadence=cadence,
             band_mode=BAND_MODES[band_label], band_coverage=coverage,
             ensemble=want_ensemble))
     st.session_state["_fc_result"] = result
@@ -244,7 +290,24 @@ elif result:
     # -------------------------------------------- history + predictions
     st.subheader(f"History & forecast — {device_name} · "
                  f"{interface or '(device-level)'} · {metric}")
-    frame = dedupe_frame(read(lambda s: load_metric_frame(
+    prov = result.get("history_provenance") or {}
+    run_cadence = result.get("cadence", "raw")
+    if run_cadence == "daily":
+        st.caption(
+            f"Daily cadence: {prov.get('rollup', 0)} day(s) from stored daily "
+            f"rollups + {prov.get('raw', 0)} day(s) aggregated from raw "
+            "samples, all on one uniform UTC-day grid (rollup preferred where "
+            "both exist, empty days omitted). Every point is one UTC-day mean.")
+    elif prov.get("rollup"):
+        st.caption(
+            f"History combines {prov.get('raw', 0)} recent raw sample(s) with "
+            f"{prov.get('rollup', 0)} older daily-rollup day(s) "
+            "(rollups are the surviving long-term history once raw retention "
+            "runs). Daily rollups plot at UTC midnight and carry the day's "
+            "mean; they never overlap a day that still has raw samples.")
+    history_loader = (load_metric_frame_daily if run_cadence == "daily"
+                      else load_metric_frame_with_rollups)
+    frame = dedupe_frame(read(lambda s: history_loader(
         s, device_name, metric, interface_name=interface,
         device_level_only=(interface is None),
         data_source=data_source)))
@@ -460,7 +523,9 @@ with st.expander("📐 Rolling-origin backtest - which baseline would have "
                "next steps, so no prediction can see its own future. Reported "
                "honestly: refusals are shown, never back-filled with a guess.")
     if st.button("📉 Run backtest", key="run_backtest"):
-        frame = dedupe_frame(read(lambda s: load_metric_frame(
+        _bt_loader = (load_metric_frame_daily if cadence == "daily"
+                      else load_metric_frame_with_rollups)
+        frame = dedupe_frame(read(lambda s: _bt_loader(
             s, device_name, metric, interface_name=interface,
             device_level_only=(interface is None),
             data_source=data_source)))

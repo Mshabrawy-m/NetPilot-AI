@@ -54,3 +54,6 @@ evaluation/reports/*.json
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Neon CLI local context (org/project/branch ids only — no credentials)
+.neon

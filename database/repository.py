@@ -8,7 +8,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Iterable, Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import Date, delete, func, select
 from sqlalchemy.orm import Session
 
 from database.models import (
@@ -22,6 +22,7 @@ from database.models import (
     Incident,
     Interface,
     Link,
+    MetricDailyRollup,
     MetricSample,
     db_utcnow,
 )
@@ -273,6 +274,63 @@ def get_series_inventory(
     ]
 
 
+def get_rollup_series_inventory(
+    session: Session, *, data_source: str | None = None,
+    device_name: str | None = None, min_days: int = 1,
+) -> list[dict]:
+    """Every aggregated series present in ``metric_daily_rollups`` (Stage A6-4).
+
+    This is the rollup-side counterpart to :func:`get_series_inventory`, added
+    so a series that survives only as daily rollups (raw history shrunk by
+    A6-1 retention) is still discoverable for forecasting. A "series" is a
+    distinct (device, metric, interface) triple; ``n_days`` counts the daily
+    buckets that exist and ``n_source_samples`` sums the raw sample counts the
+    rollups were built from. Ordered richest-first.
+
+    Rollups are ``data_source='live'``-only by construction (A6-2), so passing
+    ``data_source='demo'`` correctly returns nothing - Demo never surfaces a
+    rollup it does not own. No aggregation semantics are changed here; this is
+    a read-only enumeration of what the rollup job already stored.
+    """
+    stmt = (
+        select(
+            MetricDailyRollup.device_name,
+            MetricDailyRollup.metric,
+            MetricDailyRollup.interface_name,
+            MetricDailyRollup.unit,
+            MetricDailyRollup.data_source,
+            func.count(MetricDailyRollup.bucket_date).label("n_days"),
+            func.coalesce(func.sum(MetricDailyRollup.sample_count), 0).label(
+                "n_source_samples"),
+            func.max(MetricDailyRollup.bucket_date).label("latest_date"),
+        )
+        .group_by(MetricDailyRollup.device_name, MetricDailyRollup.metric,
+                  MetricDailyRollup.interface_name, MetricDailyRollup.unit,
+                  MetricDailyRollup.data_source)
+        .having(func.count(MetricDailyRollup.bucket_date)
+                >= max(1, int(min_days)))
+        .order_by(func.count(MetricDailyRollup.bucket_date).desc(),
+                  MetricDailyRollup.device_name, MetricDailyRollup.metric)
+    )
+    if data_source:
+        stmt = stmt.where(MetricDailyRollup.data_source == data_source)
+    if device_name:
+        stmt = stmt.where(MetricDailyRollup.device_name == device_name)
+    return [
+        {
+            "device_name": row.device_name,
+            "metric": row.metric,
+            "interface_name": row.interface_name,
+            "unit": row.unit,
+            "data_source": row.data_source,
+            "n_days": int(row.n_days),
+            "n_source_samples": int(row.n_source_samples or 0),
+            "latest_date": row.latest_date,
+        }
+        for row in session.execute(stmt).all()
+    ]
+
+
 def latest_metric_values(
     session: Session, device_name: str,
 ) -> Sequence[MetricSample]:
@@ -450,6 +508,277 @@ def purge_metric_samples(session: Session, device_name: str | None = None) -> in
         stmt = stmt.where(MetricSample.device_name == device_name)
     result = session.execute(stmt)
     return int(result.rowcount or 0)
+
+
+def delete_expired_live_samples(
+    session: Session, *, cutoff_utc: dt.datetime, batch_size: int,
+) -> int:
+    """Delete raw **live** telemetry older than ``cutoff_utc``, in bounded batches.
+
+    This is the retention-safe counterpart to :func:`purge_metric_samples`. Two
+    predicates are hard-coded and non-negotiable (Stage A6 safety):
+
+    * ``data_source == 'live'`` - Demo history is structurally unreachable here.
+    * ``collected_at < cutoff_utc`` - strict, so a row exactly at the cutoff is
+      kept. ``cutoff_utc`` must be a *naive UTC* value computed by the caller
+      from ``db_utcnow()`` so it lines up with the naive-UTC ``collected_at``
+      column (never ``now() - interval``, which would mix ``timestamptz``).
+
+    Each batch is its own committed transaction using an ``id`` keyset (portable
+    to both SQLite and PostgreSQL), so a long run never holds a write lock across
+    the whole table, and a mid-run failure rolls back only the in-flight batch.
+    It never calls ``purge_metric_samples``. Returns the total rows deleted.
+    """
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size!r}")
+    total = 0
+    while True:
+        batch_ids = (
+            select(MetricSample.id)
+            .where(
+                MetricSample.data_source == "live",
+                MetricSample.collected_at < cutoff_utc,
+            )
+            .order_by(MetricSample.id)
+            .limit(batch_size)
+        )
+        # Both predicates are repeated on the DELETE itself as defense in depth:
+        # even if the keyset subquery were ever changed, the deletion stays
+        # scoped to expired live rows and can never reach demo or fresh data.
+        stmt = delete(MetricSample).where(
+            MetricSample.data_source == "live",
+            MetricSample.collected_at < cutoff_utc,
+            MetricSample.id.in_(batch_ids),
+        )
+        try:
+            result = session.execute(stmt)
+            deleted = int(result.rowcount or 0)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        total += deleted
+        if deleted == 0:
+            break
+    return total
+
+
+def _rollup_timestamp(value):
+    """Coerce an aggregate min()/max() result over a DATETIME column to naive UTC.
+
+    SQLite returns the stored ISO *string* for ``func.min/max(collected_at)``
+    (no ORM type coercion on a labeled aggregate), whereas PostgreSQL returns a
+    real ``datetime``. Normalizing here keeps ``upsert_daily_rollups`` portable
+    and means the same code path is exercised under the offline SQLite tests.
+    """
+    if value is None or isinstance(value, dt.datetime):
+        return value
+    text = str(value)
+    if " " in text and "T" not in text:
+        text = text.replace(" ", "T", 1)
+    return dt.datetime.fromisoformat(text)
+
+
+def _rollup_bucket_date(value) -> dt.date:
+    """Coerce the projected day-truncation expression to a ``datetime.date``.
+
+    The ``Date`` result type already converts SQLite's ``date(...)`` text and
+    psycopg2's ``DATE`` into a ``date``; the extra shapes handled here are a
+    defensive belt so a driver variation can never write a wrong type into the
+    ``Date`` column.
+    """
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    return dt.date.fromisoformat(str(value)[:10])
+
+
+# The ON CONFLICT target: the NOT NULL surrogate ``interface_key`` (NULL folded
+# to '') makes the upsert NULL-safe identically on SQLite and PostgreSQL, without
+# relying on PG15-only NULLS NOT DISTINCT semantics.
+_ROLLUP_CONFLICT_COLUMNS = (
+    "bucket_date", "device_name", "interface_key", "metric", "data_source",
+)
+
+
+def _rollup_bucket_expr(dialect_name: str):
+    """Return the UTC-day bucket expression for the *active* dialect.
+
+    Stage A6-2 requirement 5 says to convert the aggregation bucket explicitly to
+    DATE, but the correct DATE conversion is engine-specific and neither generic
+    form is portable:
+
+    * PostgreSQL uses the canonical ``CAST(collected_at AS DATE)`` - a documented,
+      unambiguous date conversion of the naive-UTC timestamp (``date(col)`` on PG
+      is only a functional-cast alias and is not assumed).
+    * SQLite uses ``date(collected_at)`` - its truncation function - because
+      SQLite gives a generic ``CAST(x AS DATE)`` numeric affinity and returns the
+      integer year (e.g. ``2026``) rather than a calendar day. This is why the
+      offline SQLite suite cannot simply reuse the PostgreSQL spelling.
+
+    Both are labelled ``bucket_date`` and typed ``Date`` so the projected value is
+    a Python ``datetime.date`` on each engine, and both are used for the projection
+    *and* the GROUP BY, so the stored ``bucket_date`` and the grouping key can
+    never disagree - and a window wider than one day would still bucket per
+    calendar day.
+    """
+    col = MetricSample.collected_at
+    if dialect_name == "sqlite":
+        return func.date(col, type_=Date).label("bucket_date")
+    return func.cast(col, Date).label("bucket_date")
+
+
+def rollup_uniqueness_strategy_info(session: Session) -> dict:
+    """Report the NULL-safe uniqueness strategy against the *configured* server.
+
+    Stage A6-2 requirement 4: the choice must be justified by the PostgreSQL
+    version actually in use, never assumed. ``dialect.server_version_info`` is a
+    cached attribute captured at engine construction (it opens no new connection)
+    and the pg dialect parses ``server_version`` into it, so this reads the real
+    configured release. The returned ``chosen`` is always the engine-independent
+    NOT NULL surrogate ``interface_key``: it behaves identically whatever the
+    answer is, which is why a PG14 deployment and a PG16 deployment get the same
+    schema and the same ON CONFLICT target.
+    """
+    from database.models import pg_supports_nulls_not_distinct
+
+    bind = session.get_bind()
+    dialect = bind.dialect
+    version_info = getattr(dialect, "server_version_info", None)
+    major = version_info[0] if version_info else None
+    return {
+        "dialect": dialect.name,
+        "server_version_info": tuple(version_info) if version_info else None,
+        "pg_supports_nulls_not_distinct": pg_supports_nulls_not_distinct(major),
+        "chosen": "surrogate_interface_key",
+        "version_independent": True,
+    }
+
+
+def upsert_daily_rollups(
+    session: Session, *, day_start: dt.datetime, day_end: dt.datetime,
+) -> int:
+    """Aggregate one complete UTC day of raw **live** samples into rollups.
+
+    Rebuilds the window ``[day_start, day_end)`` (normally a single calendar day)
+    *idempotently*: every affected (day, device, interface, metric) key is
+    recomputed from the raw rows and replaced via ``ON CONFLICT DO UPDATE`` -
+    never accumulated - so re-running a completed day reproduces the same
+    numbers, and a historical day can be re-derived when late telemetry arrives.
+    Returns the number of rollup rows written (0 for an empty window; no row is
+    fabricated for a day with no live data).
+
+    Stage A6-2 safety properties:
+    * Only ``data_source == 'live'`` rows are aggregated; Demo history never
+      reaches the rollups, preserving the demo/live boundary.
+    * The bucket is an explicit SQL DATE conversion chosen per dialect
+      (PostgreSQL ``CAST(collected_at AS DATE)``, SQLite ``date(collected_at)``)
+      that is both projected and grouped, so the stored ``bucket_date`` is the
+      database's own UTC day derivation, not a value the Python layer assumes.
+    * ``count`` tallies raw measurement points; ``avg/min/max`` ignore NULL values
+      via SQL aggregates, so a day whose readings were all unavailable yields NULL
+      statistics - never an invented 0. ``unit`` is carried through (max, ignoring
+      NULLs). ``first_seen/last_seen`` are the real observed min/max timestamps.
+    * The whole day is ONE transaction: any failure rolls the entire rebuild back,
+      so a partial day is never left committed.
+    * ``interface_key`` is the conflict target, giving NULL-safe uniqueness
+      (multiple device-level rows with a NULL interface collapse into one).
+    """
+    # Naive-UTC contract is checked FIRST so a timezone-aware argument fails with
+    # a clear ValueError instead of a confusing naive/aware comparison TypeError.
+    if day_start.tzinfo is not None or day_end.tzinfo is not None:
+        raise ValueError("upsert_daily_rollups expects naive UTC datetimes")
+    if day_end <= day_start:
+        raise ValueError("day_end must be after day_start")
+
+    # The dialect decides BOTH the DATE-bucket spelling and the upsert operator,
+    # so it is resolved once here and reused below.
+    dialect_name = session.get_bind().dialect.name
+    bucket_date = _rollup_bucket_expr(dialect_name)
+
+    aggregate = (
+        select(
+            bucket_date,
+            MetricSample.device_name,
+            MetricSample.interface_name,
+            MetricSample.metric,
+            func.count().label("sample_count"),
+            func.avg(MetricSample.value).label("avg_value"),
+            func.min(MetricSample.value).label("min_value"),
+            func.max(MetricSample.value).label("max_value"),
+            func.max(MetricSample.unit).label("unit"),
+            func.min(MetricSample.collected_at).label("first_seen"),
+            func.max(MetricSample.collected_at).label("last_seen"),
+        )
+        .where(
+            MetricSample.data_source == "live",
+            MetricSample.collected_at >= day_start,
+            MetricSample.collected_at < day_end,
+        )
+        # GROUP BY folds NULL interfaces into one group on both engines, which
+        # lines up 1:1 with the interface_key surrogate used for uniqueness.
+        .group_by(
+            bucket_date,
+            MetricSample.device_name,
+            MetricSample.interface_name,
+            MetricSample.metric,
+        )
+    )
+    rows = session.execute(aggregate).all()
+
+    if dialect_name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as _insert
+    elif dialect_name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as _insert
+    else:
+        raise ValueError(f"unsupported dialect for rollups: {dialect_name!r}")
+
+    now = db_utcnow()
+    written = 0
+    try:
+        for r in rows:
+            stmt = _insert(MetricDailyRollup).values(
+                bucket_date=_rollup_bucket_date(r.bucket_date),
+                device_name=r.device_name,
+                interface_name=r.interface_name,
+                interface_key=r.interface_name or "",
+                metric=r.metric,
+                data_source="live",
+                sample_count=int(r.sample_count or 0),
+                avg_value=r.avg_value,
+                min_value=r.min_value,
+                max_value=r.max_value,
+                unit=r.unit,
+                first_seen=_rollup_timestamp(r.first_seen),
+                last_seen=_rollup_timestamp(r.last_seen),
+                updated_at=now,
+            )
+            # ``stmt.excluded`` refers to the row we tried to insert, so the
+            # conflict UPDATE replaces the aggregate from the *fresh* computation
+            # (replace, never accumulate) - the basis of idempotent rebuilds.
+            excluded = stmt.excluded
+            stmt = stmt.on_conflict_do_update(
+                index_elements=list(_ROLLUP_CONFLICT_COLUMNS),
+                set_={
+                    "interface_name": excluded.interface_name,
+                    "sample_count": excluded.sample_count,
+                    "avg_value": excluded.avg_value,
+                    "min_value": excluded.min_value,
+                    "max_value": excluded.max_value,
+                    "unit": excluded.unit,
+                    "first_seen": excluded.first_seen,
+                    "last_seen": excluded.last_seen,
+                    "updated_at": excluded.updated_at,
+                },
+            )
+            session.execute(stmt)
+            written += 1
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return written
 
 
 # ==========================================================================
