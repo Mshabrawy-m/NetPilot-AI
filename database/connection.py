@@ -512,6 +512,54 @@ def missing_schema_objects() -> list[str]:
     return [f"table {name}" for name in missing]
 
 
+def _redacted_target_block() -> str:
+    """Build a credential-safe diagnostic block for schema failures.
+
+    Issues read-only SELECTs on the already-open engine to surface server-side
+    identity (database, user, search_path) and table counts per schema. Never
+    exposes a password, connection string, or userinfo fragment.
+    """
+    from sqlalchemy import text as _txt
+    from tools.diagnose_db_target import parse_target
+
+    try:
+        engine = get_engine()
+        url_str = str(engine.url)  # includes password; only parse, never print
+        target = parse_target(url_str)
+    except Exception:
+        return "[target info unavailable]"
+
+    lines: list[str] = []
+    lines.append(f"  Target: {target.redacted()}")
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(_txt("SET TRANSACTION READ ONLY"))
+            db_name = conn.execute(_txt("SELECT current_database()")).scalar()
+            user_name = conn.execute(_txt("SELECT current_user")).scalar()
+            sp = conn.execute(
+                _txt("SELECT current_setting('search_path')")).scalar()
+            rows = conn.execute(_txt(
+                "SELECT nspname, count(c.relname) "
+                "FROM pg_namespace n "
+                "LEFT JOIN pg_class c "
+                "ON c.relnamespace = n.oid AND c.relkind = 'r' "
+                "WHERE nspname NOT IN ('pg_catalog','information_schema') "
+                "GROUP BY nspname ORDER BY nspname"
+            )).fetchall()
+            conn.rollback()
+    except Exception as exc:
+        lines.append(f"  Server query failed (permissions?): {type(exc).__name__}")
+        return "\n".join(lines)
+
+    lines.append(f"  current_database(): {db_name}")
+    lines.append(f"  current_user: {user_name}")
+    lines.append(f"  search_path: {sp}")
+    schemas = ", ".join(f"{r[0]}({r[1]} tbl)" for r in rows) or "(none)"
+    lines.append(f"  Schemas: {schemas}")
+    return "\n".join(lines)
+
+
 def require_schema() -> None:
     """Verify the schema is ready without creating or migrating anything.
 
@@ -521,15 +569,24 @@ def require_schema() -> None:
     silently attempting DDL the reader role is not granted. The demo/live
     isolation guard runs first so even this read path never connects to a shared
     database from a demo configuration.
+
+    On failure, appends a credential-safe diagnostic block so the operator can
+    compare the target fingerprint with the known-good local WCM value.
     """
     violation = demo_isolation_violation(get_settings())
     if violation:
         raise RuntimeError(violation)
     missing = missing_schema_objects()
     if missing:
+        detail = _redacted_target_block()
         raise RuntimeError(
             "NETPILOT_MANAGE_SCHEMA=false but the database schema is not ready "
             "(missing: " + ", ".join(missing) + "). A read-only application "
             "role cannot create it. Run the schema initialization command as "
             "the schema administrator - `python tools/run_collector.py "
-            "init-schema` (needs DDL privileges) - then restart the reader.")
+            "init-schema` (needs DDL privileges) - then restart the reader.\n\n"
+            "--- DB Target Diagnostics (credential-safe) ---\n"
+            f"{detail}\n"
+            "Compare the fingerprint above with the output of:\n"
+            "  python tools/diagnose_db_target.py --from-wcm\n"
+            "on the operator workstation.")
