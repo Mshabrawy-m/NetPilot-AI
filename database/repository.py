@@ -8,7 +8,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Iterable, Sequence
 
-from sqlalchemy import Date, delete, func, select
+from sqlalchemy import Date, delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from database.models import (
@@ -154,6 +154,46 @@ def add_metric_samples(session: Session, samples: Iterable[dict]) -> int:
         add_metric_sample(session, **s)
         count += 1
     return count
+
+
+def add_metric_samples_bulk(session: Session, samples: Iterable[dict]) -> int:
+    """Insert many metric samples in one executemany round-trip.
+
+    Each mapping must use the ORM column names (``device_name``,
+    ``interface_name``, ``metric``, ``value``, ``unit``, ``data_source``,
+    ``collected_at``). This is the batched write path used by the Windows live
+    collector; callers are responsible for deduplicating within a collection
+    cycle (see :func:`existing_sample_keys`). Values are stored exactly as
+    supplied - a ``None`` remains an honest "not measured", never a zero.
+    """
+    rows = list(samples)
+    if not rows:
+        return 0
+    session.execute(insert(MetricSample), rows)
+    return len(rows)
+
+
+def existing_sample_keys(
+    session: Session, collected_at: dt.datetime, data_source: str = "live",
+) -> set[tuple[str, str | None, str]]:
+    """Return the (device, interface, metric) keys already stored for a cycle.
+
+    The live collector stamps every sample in one cycle with the same
+    second-resolution ``collected_at``. Re-running the same cycle (for example
+    after a transient database failure) must not double-write, so the writer
+    asks this helper which keys already exist before inserting.
+    """
+    rows = session.execute(
+        select(
+            MetricSample.device_name,
+            MetricSample.interface_name,
+            MetricSample.metric,
+        ).where(
+            MetricSample.collected_at == collected_at,
+            MetricSample.data_source == data_source,
+        )
+    ).all()
+    return {(row[0], row[1], row[2]) for row in rows}
 
 
 def get_metric_series(
