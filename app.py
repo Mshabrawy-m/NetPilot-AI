@@ -82,6 +82,83 @@ def _overview() -> None:
         )
 
 
+def _db_diagnostic() -> None:
+    """Credential-safe database target diagnostic for hosted deployments.
+
+    Community Cloud redacts exception text from non-owner viewers, which makes a
+    live connection failure impossible to debug without dashboard access. This
+    page is opt-in (``?diag=1``) and prints only what is safe to publish: the
+    resolved target (host/port/database/user/sslmode/pooler/fingerprint), the
+    driver name, and a sanitised root-cause chain. It never prints a password,
+    a DSN, or any userinfo fragment.
+    """
+    import os
+    import re
+    from urllib.parse import quote, quote_plus
+
+    from sqlalchemy.engine import make_url
+
+    from config import get_settings
+    from database import connection, roles
+    from tools.diagnose_db_target import parse_target
+
+    st.subheader("Database diagnostic")
+    settings = get_settings()
+    env_var = roles.ROLE_URL_ENV[roles.ROLE_APP]
+    st.code(
+        f"demo_mode={settings.demo_mode}\n"
+        f"manage_schema={settings.manage_schema}\n"
+        f"{env_var} present={bool((os.environ.get(env_var) or '').strip())}"
+    )
+
+    try:
+        url = connection._resolve_engine_url()
+    except Exception as exc:  # noqa: BLE001 - diagnostic surface
+        st.error(f"URL resolution failed: {type(exc).__name__}: {exc}")
+        st.stop()
+
+    try:
+        st.code(parse_target(url).redacted())
+        st.code(f"driver={make_url(url).drivername}")
+    except Exception as exc:  # noqa: BLE001 - diagnostic surface
+        st.error(f"URL parse failed: {type(exc).__name__}")
+
+    password = ""
+    try:
+        password = make_url(url).password or ""
+    except Exception:  # noqa: BLE001 - best-effort redaction only
+        password = ""
+
+    def _clean(text: str) -> str:
+        if password:
+            for variant in {password, quote(password, safe=""), quote_plus(password)}:
+                text = text.replace(variant, "***")
+        text = re.sub(r"(?i)([a-z][a-z0-9+.\-]*://)[^\s'\"]+", r"\1<redacted>", text)
+        text = re.sub(r"(?i)(password\s*[=:]\s*)\S+", r"\1***", text)
+        return text[:1500]
+
+    try:
+        from services.app_state import ensure_ready_for_mode
+
+        connection.set_database_role(roles.ROLE_APP)
+        ensure_ready_for_mode()
+    except Exception as exc:  # noqa: BLE001 - diagnostic surface
+        st.error("Database check failed. Root cause chain:")
+        node: BaseException | None = exc
+        seen = 0
+        while node is not None and seen < 6:
+            st.code(f"{type(node).__name__}: {_clean(str(node))}")
+            node = node.__cause__ or node.__context__
+            seen += 1
+    else:
+        st.success("Database is reachable and the schema is ready.")
+
+    st.stop()
+
+
+if st.query_params.get("diag") == "1":
+    _db_diagnostic()
+
 pages = st.navigation(
     {
         "Overview": [
