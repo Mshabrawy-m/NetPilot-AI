@@ -576,7 +576,20 @@ def require_schema() -> None:
     violation = demo_isolation_violation(get_settings())
     if violation:
         raise RuntimeError(violation)
-    missing = missing_schema_objects()
+    try:
+        missing = missing_schema_objects()
+    except Exception as exc:
+        # Connection-level failure (auth, DNS, timeout): still show target
+        # info so the operator can verify the endpoint matches.
+        target_info = _redacted_target_block()
+        raise RuntimeError(
+            f"require_schema() could not reach the database: "
+            f"{type(exc).__name__}\n\n"
+            "--- DB Target Diagnostics (credential-safe) ---\n"
+            f"{target_info}\n"
+            "Check the NETPILOT_DB_URL_APP value in Cloud Secrets. The "
+            "fingerprint must match: `python tools/diagnose_db_target.py "
+            "--from-wcm`\non the operator workstation.") from exc
     if missing:
         detail = _redacted_target_block()
         raise RuntimeError(
