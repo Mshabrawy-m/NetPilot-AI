@@ -351,7 +351,7 @@ image and no external service is required to start the UI:
 | Repository | this repo (the free plan requires it to be public) |
 | **Main script path** | `app.py` (entry point and grouped navigation; legacy page files are not all listed in the sidebar) |
 | Requirements file | `requirements.txt` at the root (Linux wheels only; no Windows-only package, `psycopg2` deliberately left commented out) |
-| Python version | choose **3.11** or **3.12** in *Advanced settings* — both are the versions CI exercises. `runtime.txt` is not honoured by Community Cloud, so it is intentionally absent from this repo. |
+| Python version | `runtime.txt` at the repo root pins **`python-3.12`**, matching the Dockerfile base image (`python:3.12-slim-bookworm`) and the local `.venv` where the 1 464-test suite is validated. You can also confirm the interpreter in *Advanced settings* on the Cloud deploy form. |
 
 **Configuration comes from the Secrets manager, never from a committed `.env`.**
 Top-level scalar entries in app secrets are promoted to environment variables
