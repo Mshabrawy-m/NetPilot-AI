@@ -669,7 +669,13 @@ def _scram_matches_rfc7677() -> bool:
 
 
 def run_selfcheck() -> int:
-    """OFFLINE guarantees. Opens no connection, touches no WCM, writes nothing."""
+    """OFFLINE guarantees. Opens no connection, touches no WCM, writes nothing.
+
+    The Neon CLI credential file is a *live-provisioning* prerequisite, not an
+    offline guarantee: it is reported as a warning when absent so this command
+    (and its CI test) stays green on a clean host. ``provision`` still fails
+    closed with an actionable error if the credential is missing or expired.
+    """
     results: list[tuple[str, bool, str]] = []
     results.append(("SCRAM derivation matches RFC 7677 vector",
                     _scram_matches_rfc7677(), ""))
@@ -710,17 +716,22 @@ def run_selfcheck() -> int:
                     bool(PROJECT_ID_DEFAULT), ""))
     results.append(("BRANCH_ID_DEFAULT set",
                     bool(BRANCH_ID_DEFAULT), ""))
-    token_readable = _NEON_CLI_CRED_PATH.exists()
-    results.append(("Neon CLI credentials file accessible",
-                    token_readable,
-                    "" if token_readable else "(run `npx neon auth`)"))
 
     ok = True
     for name, passed, detail in results:
         print(f"[{'PASS' if passed else 'FAIL'}] {name}"
               + (f" ({detail})" if detail else ""))
         ok = ok and passed
-    print(f"\nselfcheck: {sum(1 for _, p, _ in results if p)}/{len(results)} passed")
+
+    # Live-only prerequisite: do not turn an offline selfcheck red just because
+    # this host has not authenticated the Neon CLI yet.
+    token_readable = _NEON_CLI_CRED_PATH.exists()
+    print(f"[{'PASS' if token_readable else 'WARN'}] "
+          "Neon CLI credentials file accessible"
+          + ("" if token_readable else " (run `npx neon auth` before `provision`)"))
+
+    print(f"\nselfcheck: {sum(1 for _, p, _ in results if p)}/{len(results)} "
+          "offline checks passed")
     return 0 if ok else 1
 
 

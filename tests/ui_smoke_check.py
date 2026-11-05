@@ -53,10 +53,23 @@ for target in TARGETS:
 # ------------------------------------------------- Phase 2 action buttons
 
 
-def press(page: str, label: str, *, select_metric: str | None = None) -> bool:
-    """Open a page, optionally pick a metric, click `label`, rerun, check."""
+def press(page: str, label: str, *, select_metric: str | None = None,
+          select_device: str | None = None) -> bool:
+    """Open a page, optionally pick a device/metric, click `label`, rerun, check."""
     at = AppTest.from_file(str(ROOT / page), default_timeout=180)
     at.run()
+    if select_device is not None:
+        picked = False
+        for box in at.selectbox:
+            if select_device in list(box.options or []):
+                box.select(select_device)
+                picked = True
+                break
+        if not picked:
+            print(f"[FAIL] {page}: no selectbox offered device "
+                  f"'{select_device}'")
+            return False
+        at.run()
     if select_metric is not None:
         picked = False
         for box in at.selectbox:
@@ -72,6 +85,9 @@ def press(page: str, label: str, *, select_metric: str | None = None) -> bool:
     btn = next((b for b in at.button if label in (b.label or "")), None)
     if btn is None:
         print(f"[FAIL] {page}: button '{label}' not rendered")
+        return False
+    if btn.disabled:
+        print(f"[FAIL] {page}: button '{label}' is disabled")
         return False
     btn.click()
     at.run()
@@ -1003,7 +1019,11 @@ actions_ok = (
     and page2_flash_ok
     and page12_lab_ok
     and page12_live_ok
-    and press("app_pages/9_Forecasting.py", "Run forecast comparison")
+    # Pick an explicitly forecastable series: the fabric seeded above adds
+    # devices (CORE1, ...) whose intentionally short 1-hour history becomes the
+    # default selection and correctly disables the run button.
+    and press("app_pages/9_Forecasting.py", "Run forecast comparison",
+              select_device="PC1", select_metric="ping.avg_rtt_ms")
     # Read-only insight action: it must never raise or write.
     and press("app_pages/11_Ops_Center.py", "Run multivariate check")
     # Regression guard: submitting a change proposal used to raise sqlalchemy

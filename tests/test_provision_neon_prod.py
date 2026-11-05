@@ -376,10 +376,15 @@ def test_refuses_non_windows_credential_manager(capsys):
 
 
 # --------------------------------------------------------------------- CLI
-def test_cli_selfcheck_subcommand_runs_offline(capsys):
+def test_cli_selfcheck_subcommand_runs_offline(capsys, monkeypatch, tmp_path):
+    # A clean CI host has no Neon CLI login. That is a live-provisioning
+    # prerequisite, not an offline guarantee, so selfcheck must still pass.
+    monkeypatch.setattr(prov, "_NEON_CLI_CRED_PATH", tmp_path / "missing.json")
     code = prov.main(["selfcheck"])
+    out = capsys.readouterr().out
     assert code == 0
-    assert "selfcheck:" in capsys.readouterr().out
+    assert "selfcheck:" in out
+    assert "[WARN] Neon CLI credentials file accessible" in out
 
 
 def test_cli_provision_requires_confirm_flag_present():
