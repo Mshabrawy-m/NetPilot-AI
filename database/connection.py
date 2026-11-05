@@ -295,6 +295,13 @@ def _build_engine(url: str) -> Engine:
         if path_part and not path_part.startswith(":memory:"):
             Path(path_part).parent.mkdir(parents=True, exist_ok=True)
     elif url.startswith("postgres"):
+        # Normalise bare ``postgresql://`` → ``postgresql+psycopg2://`` so
+        # SQLAlchemy always loads the psycopg2 dialect (our only installed
+        # driver). Without the explicit +psycopg2 suffix, newer SQLAlchemy
+        # tries psycopg3 first and crashes with ModuleNotFoundError on
+        # Streamlit Cloud where only psycopg2-binary is installed.
+        if url.startswith("postgresql://"):
+            url = "postgresql+psycopg2://" + url[len("postgresql://"):]
         # Stage A6b-1 M1: TLS is mandatory for managed/Neon PostgreSQL. The
         # helper validates the configuration and refuses to downgrade an
         # operator-supplied stronger sslmode; bad config raises a credential-
