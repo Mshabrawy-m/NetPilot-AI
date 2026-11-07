@@ -39,6 +39,7 @@ from analytics.time_series import dedupe_frame, load_metric_frame
 from config import get_settings
 from database import repository
 from services import anomaly_service
+from ui import source_controls
 
 st.caption(
     "Anomaly events are explainable statistical deviations, not confirmed "
@@ -76,10 +77,8 @@ if not avail:
     st.info("No measured values stored yet - nothing to analyse.")
     st.stop()
 sources = sorted({src for (_d, _m, _u, src) in avail})
-data_source = st.selectbox("Data source", sources,
-                           format_func=lambda v: f"{v} " + (
-                               "(synthetic demo data - NOT real traffic)"
-                               if v == "demo" else "(virtual lab measurements)"))
+data_source = source_controls.selector(
+    sources, key="np_anomalies_source", demo_mode=get_settings().demo_mode)
 
 settings = get_settings()
 

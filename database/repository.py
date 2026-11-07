@@ -462,12 +462,15 @@ def add_connectivity_test(
 def get_connectivity_history(
     session: Session, limit: int = 100,
     destination: str | None = None, test_type: str | None = None,
+    data_source: str | None = None,
 ) -> Sequence[ConnectivityTest]:
     stmt = select(ConnectivityTest).order_by(ConnectivityTest.tested_at.desc()).limit(limit)
     if destination:
         stmt = stmt.where(ConnectivityTest.destination == destination)
     if test_type:
         stmt = stmt.where(ConnectivityTest.test_type == test_type)
+    if data_source is not None:
+        stmt = stmt.where(ConnectivityTest.data_source == data_source)
     return session.scalars(stmt).all()
 
 
@@ -499,20 +502,29 @@ def finish_collection_run(
     return run
 
 
-def get_last_successful_run(session: Session) -> CollectionRun | None:
-    return session.scalars(
+def get_last_successful_run(
+    session: Session, data_source: str | None = None,
+) -> CollectionRun | None:
+    stmt = (
         select(CollectionRun)
         .where(CollectionRun.finished_at.is_not(None),
                CollectionRun.status.in_(("ok", "partial")))
         .order_by(CollectionRun.finished_at.desc())
         .limit(1)
-    ).first()
+    )
+    if data_source is not None:
+        stmt = stmt.where(CollectionRun.data_source == data_source)
+    return session.scalars(stmt).first()
 
 
-def get_recent_runs(session: Session, limit: int = 20) -> Sequence[CollectionRun]:
-    return session.scalars(
-        select(CollectionRun).order_by(CollectionRun.started_at.desc()).limit(limit)
-    ).all()
+def get_recent_runs(
+    session: Session, limit: int = 20, data_source: str | None = None,
+) -> Sequence[CollectionRun]:
+    stmt = select(CollectionRun).order_by(
+        CollectionRun.started_at.desc()).limit(limit)
+    if data_source is not None:
+        stmt = stmt.where(CollectionRun.data_source == data_source)
+    return session.scalars(stmt).all()
 
 
 def open_incident(session: Session, device_name: str | None, kind: str,
@@ -530,6 +542,30 @@ def resolve_open_incidents(session: Session, device_name: str, kind: str) -> Non
                                Incident.resolved_at.is_(None))
     ).all():
         inc.resolved_at = db_utcnow()
+
+
+def ensure_open_incident(
+    session: Session, device_name: str, kind: str,
+    detail: str | None = None,
+) -> Incident:
+    """Open one incident per (device, kind), or refresh the existing one.
+
+    Derivation runs on every collector cycle, so this keeps a sustained breach
+    as a single open incident instead of creating a new row each time.
+    """
+    existing = session.scalar(
+        select(Incident)
+        .where(Incident.device_name == device_name,
+               Incident.kind == kind,
+               Incident.resolved_at.is_(None))
+        .order_by(Incident.id.desc())
+        .limit(1)
+    )
+    if existing is not None:
+        if detail is not None and existing.detail != detail:
+            existing.detail = detail
+        return existing
+    return open_incident(session, device_name, kind, detail)
 
 
 def get_open_incidents(session: Session) -> Sequence[Incident]:

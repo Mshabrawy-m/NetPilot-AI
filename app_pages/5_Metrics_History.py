@@ -20,6 +20,7 @@ demo_banner_if_active()
 
 from database import repository
 from database.models import db_utcnow
+from ui import source_controls
 
 st.caption(
     "All timestamps are UTC. Only metrics with actual stored values can be "
@@ -27,13 +28,15 @@ st.caption(
     "samples (metric unavailable at that time) appear as gaps."
 )
 
-devices = read(lambda s: list(repository.get_devices(s)))
-if not devices:
-    st.info("No devices yet - collect data first.")
+available = read(lambda s: repository.get_available_metrics(s))
+if not available:
+    st.info("No measured values stored yet - collect data first "
+            "(sidebar: 'Collect now') or run "
+            "`python tools/seed_simulated.py`.")
     st.stop()
 
-device_name = st.selectbox("Device", [d.name for d in devices])
-available = read(lambda s: repository.get_available_metrics(s, device_name))
+devices = sorted({dev for (dev, _m, _u, _src) in available})
+device_name = st.selectbox("Device", devices)
 # Drop rows for other devices (query is already filtered, keep tuples tidy).
 options = [(m, u, src) for (dev, m, u, src) in available if dev == device_name]
 
@@ -47,6 +50,7 @@ labels = [f"{m} ({u or 'unit?'}) [{src}]" for m, u, src in options]
 choice_idx = st.selectbox("Metric (measured values only)", range(len(options)),
                           format_func=lambda i: labels[i])
 metric, unit, src = options[choice_idx]
+source_controls.badge(src)
 
 range_options = {"1 hour": 1, "6 hours": 6, "24 hours": 24, "7 days": 168}
 range_label = st.selectbox("Time range", list(range_options), index=1)

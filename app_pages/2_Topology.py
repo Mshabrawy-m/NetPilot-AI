@@ -28,10 +28,17 @@ render_flash()
 
 from analytics import graph
 from config import get_settings
+from database import source_scope
 from database.connection import get_session
 from services import demo_data, topology_path, topology_service
+from ui import source_controls
 
 settings = get_settings()
+
+sources = read(lambda s: source_scope.available_sources(s))
+source = source_controls.selector(
+    sources, key="np_topology_source", demo_mode=settings.demo_mode)
+topology_source = None if source == source_scope.DEMO else source
 
 
 def _write(fn):
@@ -73,17 +80,18 @@ if settings.demo_mode and has_role("operator"):
             st.rerun()
 
 # ------------------------------------------------------------------ data
-topology = read(lambda s: topology_service.get_topology(s))
+topology = read(lambda s: topology_service.get_topology(
+    s, data_source=topology_source))
 nodes, edges = topology["nodes"], topology["edges"]
 status = topology["status"]
 
 if not nodes:
-    st.info("No devices in the database yet. Run a collection cycle "
-            "(sidebar), or - in demo mode - seed the large fabric above. The "
-            "graph is always generated from stored lab/demo data.")
+    st.info("No devices exist for the selected source yet. Run a collection "
+            "cycle or `python tools/seed_simulated.py`. The graph is always "
+            "generated from stored rows, never a static image.")
     st.stop()
 
-g = read(lambda s: graph.build_from_session(s))
+g = read(lambda s: graph.build_from_session(s, data_source=topology_source))
 summary = graph.connectivity_summary(g)
 spof = graph.single_points_of_failure(g)
 down = sum(1 for n in nodes if n["status"] == "down")
@@ -202,9 +210,12 @@ path_source = path_cols[0].selectbox("From", device_ids,
 path_dest_options = [node for node in device_ids if node != path_source]
 path_destination = path_cols[1].selectbox(
     "To", path_dest_options, key="np_path_destination")
+path_options = [source_scope.DEMO] if settings.demo_mode else sources
 path_data_source = path_cols[2].selectbox(
-    "Measurement source", ["demo", "live"],
-    index=0 if settings.demo_mode else 1, key="np_path_data_source")
+    "Measurement source", path_options,
+    index=(path_options.index(source) if source in path_options else 0),
+    format_func=source_controls.format_source,
+    key="np_path_data_source")
 inspect_clicked = path_cols[3].button(
     "Inspect path", type="primary", key="np_path_inspect", width="stretch",
     disabled=len(device_ids) < 2)

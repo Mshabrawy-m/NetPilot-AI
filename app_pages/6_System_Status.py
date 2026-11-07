@@ -20,11 +20,17 @@ theme.page_header("System Status",
 demo_banner_if_active()
 
 from config import get_settings
-from database import repository
+from database import repository, source_scope
 from database.connection import check_connection
 from network import containerlab_manager
+from ui import source_controls
 
 settings = get_settings()
+
+sources = read(lambda s: source_scope.available_sources(s))
+source = source_controls.selector(
+    sources, key="np_status_source", demo_mode=settings.demo_mode)
+source_filter = None if source == source_scope.DEMO else source
 
 st.subheader("Database")
 db_ok, db_info = check_connection()
@@ -65,7 +71,8 @@ sc3.metric("Cycles done", status.cycles_completed)
 sc4.metric("Skipped overlaps", status.skipped_overlaps)
 
 st.subheader("Recent collection runs")
-runs = read(lambda s: list(repository.get_recent_runs(s, limit=15)))
+runs = read(lambda s: list(repository.get_recent_runs(
+    s, limit=15, data_source=source_filter)))
 if runs:
     st.dataframe(
         pd.DataFrame([{
@@ -82,7 +89,10 @@ if status.last_error:
     st.error(f"Last scheduler error: {status.last_error}", icon="⚠️")
 
 st.subheader("Open incidents")
-incidents = read(lambda s: list(repository.get_open_incidents(s)))
+incidents = read(lambda s: source_scope.filter_incidents(
+    list(repository.get_open_incidents(s)), source)
+    if source != source_scope.DEMO
+    else list(repository.get_open_incidents(s)))
 if incidents:
     st.dataframe(
         pd.DataFrame([{

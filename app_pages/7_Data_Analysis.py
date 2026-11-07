@@ -30,6 +30,7 @@ from analytics.time_series import dedupe_frame, load_metric_frame
 from config import get_settings
 from database import repository
 from database.models import db_utcnow
+from ui import source_controls
 
 st.caption(
     "All timestamps are UTC. Units and the observed sampling interval are "
@@ -47,16 +48,14 @@ def _series_for(f: pd.DataFrame) -> pd.Series:
 # ------------------------------------------------------------------ filters
 avail = read(lambda s: repository.get_available_metrics(s))
 if not avail:
-    st.info("No measured values stored yet - collect data first "
-            "(sidebar: 'Collect now') or enable demo mode.")
+    st.info("No measured values stored yet - run the native collector "
+            "(sidebar: 'Collect now') or seed the labelled simulated source "
+            "with `python tools/seed_simulated.py`.")
     st.stop()
 
 sources = sorted({src for (_d, _m, _u, src) in avail})
-data_source = st.selectbox("Data source", sources,
-                           format_func=lambda v: f"{v} " + (
-                               "(synthetic demonstration data)" if v == "demo"
-                               else "(measurements from the virtual lab)"
-                               if v == "live" else ""))
+data_source = source_controls.selector(
+    sources, key="np_analysis_source", demo_mode=get_settings().demo_mode)
 devices = sorted({d for (d, _m, _u, src) in avail if src == data_source})
 device_name = st.selectbox("Device", devices)
 opts = [(m, u) for (_d, m, u, src) in avail

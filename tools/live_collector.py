@@ -593,24 +593,142 @@ class PersistOutcome:
     error: str | None = None
 
 
-def _sync_devices(session, result: CycleResult) -> None:
+def _sync_topology(session, result: CycleResult) -> None:
+    """Persist the logical live topology derived from the probe targets.
+
+    Real probe data gives the operator host, its default gateway and the
+    measured targets.  The edges are a *logical* model of the path that was
+    actually exercised (host -> gateway -> target); they are never a routing
+    table or a fabricated link inventory.  Status values come from the probes.
+    """
     for spec in result.targets:
         repository.upsert_device(
             session, name=spec.label, type_="target", mgmt_ip=spec.address,
             status=result.device_statuses.get(spec.label, "unknown"))
-    if "collector-host" not in result.device_statuses:
-        return
+
+    # The collector host is always part of the live topology, even when the
+    # optional NIC counter source is unavailable.
+    any_up = any(status == "up" for status in result.device_statuses.values())
     repository.upsert_device(
-        session, name="collector-host", type_="host", status="up")
-    device = repository.get_device_by_name(session, "collector-host")
-    if device is None:  # pragma: no cover - upsert just created it
+        session, name="collector-host", type_="host",
+        status="up" if any_up else "unknown")
+    host = repository.get_device_by_name(session, "collector-host")
+    if host is None:  # pragma: no cover - upsert just created it
         return
-    interfaces = {
+
+    real_interfaces = sorted({
         row["interface_name"] for row in result.samples
         if row["device_name"] == "collector-host" and row["interface_name"]
-    }
-    for name in sorted(interfaces):
-        repository.upsert_interface(session, device, name, status="up")
+    })
+    for name in real_interfaces:
+        repository.upsert_interface(session, host, name, status="up")
+    # A logical uplink makes the host a node in the stored graph even on a
+    # machine where the optional psutil counters are not installed.
+    repository.upsert_interface(
+        session, host, "uplink", status="up" if any_up else "unknown")
+
+    gateway_spec = next(
+        (spec for spec in result.targets if spec.label == "gateway"), None)
+    for spec in result.targets:
+        device = repository.get_device_by_name(session, spec.label)
+        if device is None:  # pragma: no cover - upsert just created it
+            continue
+        repository.upsert_interface(
+            session, device, "wan",
+            status=result.device_statuses.get(spec.label, "unknown"))
+
+    def _link_status(a: str, b: str) -> str:
+        sa = result.device_statuses.get(a, "unknown")
+        sb = result.device_statuses.get(b, "unknown")
+        if sa == "down" or sb == "down":
+            return "down"
+        if sa == "up" and sb == "up":
+            return "up"
+        return "unknown"
+
+    if gateway_spec is not None:
+        gateway = repository.get_device_by_name(session, gateway_spec.label)
+        if gateway is not None:
+            repository.upsert_interface(
+                session, gateway, "lan",
+                status=result.device_statuses.get(gateway_spec.label, "unknown"))
+        repository.upsert_link(
+            session, "collector-host", "uplink", gateway_spec.label, "lan",
+            status=_link_status("collector-host", gateway_spec.label))
+        for spec in result.targets:
+            if spec.label == gateway_spec.label:
+                continue
+            repository.upsert_link(
+                session, gateway_spec.label, "wan", spec.label, "wan",
+                status=_link_status(gateway_spec.label, spec.label))
+    else:
+        for spec in result.targets:
+            repository.upsert_link(
+                session, "collector-host", "uplink", spec.label, "wan",
+                status=_link_status("collector-host", spec.label))
+
+
+#: A sustained loss/RTT breach opens one incident per (device, kind).  These
+#: are derivation thresholds over real probe measurements, not detector output;
+#: the values are documented here and can be overridden by the environment.
+INCIDENT_LOSS_PCT = 20.0
+INCIDENT_RTT_MS = 250.0
+
+
+def _incident_thresholds() -> tuple[float, float]:
+    try:
+        loss = float(os.getenv("NETPILOT_INCIDENT_LOSS_PCT",
+                               str(INCIDENT_LOSS_PCT)))
+    except ValueError:
+        loss = INCIDENT_LOSS_PCT
+    try:
+        rtt = float(os.getenv("NETPILOT_INCIDENT_RTT_MS",
+                              str(INCIDENT_RTT_MS)))
+    except ValueError:
+        rtt = INCIDENT_RTT_MS
+    return loss, rtt
+
+
+def _sample_value(result: CycleResult, device: str, metric: str) -> float | None:
+    for sample in result.samples:
+        if sample["device_name"] == device and sample["metric"] == metric:
+            return sample.get("value")
+    return None
+
+
+def _sync_incidents(session, result: CycleResult) -> None:
+    """Derive open incidents from real loss/RTT threshold breaches.
+
+    A breach keeps a single open incident for the device until a later cycle
+    observes a normal value, at which point it is resolved.  Missing values
+    (a probe that could not measure RTT) never create or resolve an RTT
+    incident.
+    """
+    loss_threshold, rtt_threshold = _incident_thresholds()
+    for spec in result.targets:
+        loss = _sample_value(result, spec.label, "ping.loss_pct")
+        if loss is not None and loss >= loss_threshold:
+            repository.ensure_open_incident(
+                session, spec.label, "packet_loss_breach",
+                f"measured loss {loss:.1f}% >= threshold {loss_threshold:.1f}%")
+        else:
+            repository.resolve_open_incidents(
+                session, spec.label, "packet_loss_breach")
+
+        rtt = _sample_value(result, spec.label, "ping.avg_rtt_ms")
+        if rtt is not None and rtt >= rtt_threshold:
+            repository.ensure_open_incident(
+                session, spec.label, "rtt_breach",
+                f"measured avg RTT {rtt:.1f} ms >= threshold "
+                f"{rtt_threshold:.1f} ms")
+        elif rtt is not None:
+            repository.resolve_open_incidents(
+                session, spec.label, "rtt_breach")
+
+
+def _sync_devices(session, result: CycleResult) -> None:
+    """Backward-compatible alias: devices + topology in one step."""
+    _sync_topology(session, result)
 
 
 def persist_cycle(
@@ -654,7 +772,8 @@ def persist_cycle(
     for attempt in range(attempts):
         try:
             with scope_factory() as session:
-                _sync_devices(session, result)
+                _sync_topology(session, result)
+                _sync_incidents(session, result)
                 existing = repository.existing_sample_keys(
                     session, result.collected_at, data_source)
                 rows: list[dict] = []

@@ -14,14 +14,14 @@ def inspect_path(session, source: str, destination: str, *,
     """Return a shortest structural path and available per-hop observations.
 
     Reachability is calculated from recorded topology links. Metrics are read
-    from only the requested ``demo`` or ``live`` provenance and are never
-    treated as a synthetic connectivity probe.
+    from only the requested provenance (``demo``, ``live`` or ``simulated``)
+    and are never treated as a synthetic connectivity probe.
     """
-    if data_source not in {"demo", "live"}:
-        raise PathInspectionError("data_source must be demo or live")
+    if data_source not in {"demo", "live", "simulated"}:
+        raise PathInspectionError("data_source must be demo, live or simulated")
     if source == destination:
         raise PathInspectionError("choose two different devices")
-    topology = graph.build_from_session(session)
+    topology = graph.build_from_session(session, data_source=data_source)
     if source not in topology or destination not in topology:
         missing = [name for name in (source, destination)
                    if name not in topology]

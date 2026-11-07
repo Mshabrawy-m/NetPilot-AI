@@ -403,3 +403,90 @@ def test_persist_cycle_refuses_non_live_data_source():
     result = _cycle(dt.datetime(2026, 1, 5))
     with pytest.raises(ValueError, match="data_source='live'"):
         live_collector.persist_cycle(result, data_source="demo")
+
+
+# ---------------------------------------------------------------------------
+# Derived live topology and incidents
+# ---------------------------------------------------------------------------
+def test_persist_cycle_derives_logical_topology(db_url):
+    result = live_collector.run_cycle(
+        [live_collector.TargetSpec("192.168.1.1", "gateway"),
+         live_collector.TargetSpec("1.1.1.1", "cloudflare-dns")],
+        ping_fn=_ok_ping, interface_fn=list,
+        now_fn=lambda: dt.datetime(2026, 2, 1))
+
+    outcome = live_collector.persist_cycle(result)
+    assert outcome.ok is True
+
+    session = connection.get_session()
+    try:
+        devices = {device.name: device
+                   for device in repository.get_devices(session)}
+        assert set(devices) >= {"collector-host", "gateway", "cloudflare-dns"}
+        assert devices["collector-host"].type == "host"
+
+        links = {(link.device_a, link.if_a, link.device_b, link.if_b)
+                 for link in repository.get_links(session)}
+        assert ("collector-host", "uplink", "gateway", "lan") in links
+        assert ("gateway", "wan", "cloudflare-dns", "wan") in links
+
+        host = devices["collector-host"]
+        host_ifaces = {iface.name for iface in host.interfaces}
+        assert "uplink" in host_ifaces
+        gateway_ifaces = {iface.name for iface in devices["gateway"].interfaces}
+        assert {"lan", "wan"} <= gateway_ifaces
+    finally:
+        session.close()
+
+
+def test_persist_cycle_derives_and_resolves_loss_incident(db_url):
+    def loss_ping(address, count, timeout):
+        return live_collector.PingSample(
+            target=address, success=True, packets_sent=count,
+            packets_received=count - 1, loss_pct=35.0, avg_rtt_ms=12.0)
+
+    breach = live_collector.run_cycle(
+        [live_collector.TargetSpec("1.1.1.1", "cloudflare-dns")],
+        ping_fn=loss_ping, interface_fn=list,
+        now_fn=lambda: dt.datetime(2026, 2, 2, 0, 0, 0))
+    assert live_collector.persist_cycle(breach).ok is True
+
+    session = connection.get_session()
+    try:
+        open_now = repository.get_open_incidents(session)
+        assert len(open_now) == 1
+        assert open_now[0].device_name == "cloudflare-dns"
+        assert open_now[0].kind == "packet_loss_breach"
+        assert "35.0%" in (open_now[0].detail or "")
+    finally:
+        session.close()
+
+    normal = _cycle(dt.datetime(2026, 2, 2, 0, 1, 0))
+    assert live_collector.persist_cycle(normal).ok is True
+
+    session = connection.get_session()
+    try:
+        assert repository.get_open_incidents(session) == []
+    finally:
+        session.close()
+
+
+def test_persist_cycle_opens_rtt_incident(db_url):
+    def slow_ping(address, count, timeout):
+        return live_collector.PingSample(
+            target=address, success=True, packets_sent=count,
+            packets_received=count, loss_pct=0.0, avg_rtt_ms=400.0)
+
+    result = live_collector.run_cycle(
+        [live_collector.TargetSpec("1.1.1.1", "cloudflare-dns")],
+        ping_fn=slow_ping, interface_fn=list,
+        now_fn=lambda: dt.datetime(2026, 2, 3))
+    assert live_collector.persist_cycle(result).ok is True
+
+    session = connection.get_session()
+    try:
+        incidents = repository.get_open_incidents(session)
+        assert [inc.kind for inc in incidents] == ["rtt_breach"]
+        assert incidents[0].device_name == "cloudflare-dns"
+    finally:
+        session.close()

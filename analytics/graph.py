@@ -49,11 +49,20 @@ def build_graph(devices: Sequence, links: Sequence) -> nx.Graph:
     return g
 
 
-def build_from_session(session) -> nx.Graph:
-    """Convenience bridge: read devices/links through the repository."""
-    from database import repository
-    return build_graph(repository.get_devices(session),
-                       repository.get_links(session))
+def build_from_session(session, *, data_source: str | None = None) -> nx.Graph:
+    """Convenience bridge: read devices/links through the repository.
+
+    When ``data_source`` is given, structural rows are scoped to that source
+    (``live`` vs ``simulated``) before the graph is built, so two provenances
+    are never mixed in one graph.
+    """
+    from database import repository, source_scope
+    devices = repository.get_devices(session)
+    links = repository.get_links(session)
+    if data_source is not None:
+        devices = source_scope.filter_devices(devices, data_source)
+        links = source_scope.filter_links(links, data_source)
+    return build_graph(devices, links)
 
 
 # --------------------------------------------------------------------------

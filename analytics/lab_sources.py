@@ -94,10 +94,10 @@ def load_stored_data(
     """
     if not series:
         raise LabDataError("no series selected for the stored-data source")
-    if data_source not in ("live", "demo"):
+    if data_source not in ("live", "demo", "simulated"):
         raise LabDataError(
-            f"stored data must come from exactly one provenance ('live' or "
-            f"'demo'), got {data_source!r}")
+            "stored data must come from exactly one provenance ('live', "
+            f"'demo' or 'simulated'), got {data_source!r}")
     settings = get_settings()
     cap = max_points or settings.analytics_max_points
     frames: list[pd.DataFrame] = []
@@ -135,9 +135,10 @@ def load_stored_data(
             "the time range or pick another series. Nothing is invented.")
     long_frame = pd.concat(frames, ignore_index=True)
 
-    # Real collected data vs seeded demo fixtures: the wording matters, because
-    # a demo series must never be presented as a lab measurement.
-    is_simulated = data_source == "demo"
+    # Real collected data vs seeded synthetic rows: the wording matters,
+    # because a simulated or demo series must never be presented as a lab
+    # measurement.
+    is_simulated = data_source in ("demo", "simulated")
     source_type = SOURCE_SIMULATED if is_simulated else SOURCE_HISTORICAL
     selection_hash = hashlib.sha256(
         repr(sorted(per_series_counts.items())).encode()).hexdigest()[:12]
@@ -148,15 +149,17 @@ def load_stored_data(
         "labels": ("none - the collector records measurements, nobody labels "
                    "them, so supervised accuracy cannot be computed"
                    if not is_simulated else
-                   "none - seeded demonstration fixtures carry no ground truth"),
+                   "none - seeded synthetic rows carry no ground truth"),
         "synthetic": is_simulated,
         "window": {"since": since.isoformat() if since else None,
                    "until": until.isoformat() if until else None},
         "per_series_counts": per_series_counts,
         "provenance_note": (
             "Seeded by services/demo_data.py: synthetic demonstration data, "
-            "not a lab measurement." if is_simulated else
-            "Collected from the virtual lab by the NetPilot collector."),
+            "not a lab measurement." if data_source == "demo" else
+            "Seeded by tools/seed_simulated.py from the AI Lab simulator: "
+            "synthetic data, NOT real telemetry." if is_simulated else
+            "Collected from real network probes by the NetPilot collector."),
     }
     return canonicalize(
         long_frame, source_type=source_type,

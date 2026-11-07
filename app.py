@@ -22,12 +22,22 @@ def _overview() -> None:
     )
     demo_banner_if_active()
 
-    from database import repository
+    from database import repository, source_scope
     from services import topology_service
+    from ui import source_controls
 
-    devices = read(lambda session: list(repository.get_devices(session)))
+    from config import get_settings
+    settings = get_settings()
+
+    sources = read(lambda session: source_scope.available_sources(session))
+    source = source_controls.selector(
+        sources, key="np_overview_source", demo_mode=settings.demo_mode)
+
+    devices = read(lambda session: source_scope.filter_devices(
+        list(repository.get_devices(session)), source))
     status = topology_service.compute_network_status(devices)
-    last_run = read(lambda session: repository.get_last_successful_run(session))
+    last_run = read(lambda session: repository.get_last_successful_run(
+        session, data_source=None if source == source_scope.DEMO else source))
 
     tone = {
         "healthy": "ok", "degraded": "warn", "down": "bad", "unknown": "muted",
@@ -67,19 +77,27 @@ def _overview() -> None:
         )
     else:
         st.info(
-            "The inventory is empty. Devices appear after a successful "
-            "collection or when demo mode is enabled."
+            "No rows exist yet for the selected source. Devices appear after "
+            "the native collector writes a cycle, or after "
+            "`python tools/seed_simulated.py` seeds the labelled simulated "
+            "source."
         )
 
-    from config import get_settings
-    from network import containerlab_manager
-    settings = get_settings()
-    availability = containerlab_manager.availability()
-    if not settings.demo_mode and not availability["containerlab"]:
-        st.warning(
-            "Live telemetry is unavailable because Containerlab is not "
-            "installed or reachable on this host."
-        )
+    if not settings.demo_mode:
+        has_rows = read(lambda session: source_scope.has_rows(session, source))
+        if not has_rows:
+            if source == source_scope.LIVE:
+                st.info(
+                    "No live measurements are stored yet. Run the native "
+                    "collector (`python tools/live_collector.py --once`) or "
+                    "seed the labelled simulated source "
+                    "(`python tools/seed_simulated.py`). Containerlab is not "
+                    "required for Live Mode.", icon="ℹ️")
+            else:
+                st.info(
+                    "No simulated rows are stored yet. Run "
+                    "`python tools/seed_simulated.py` to populate this "
+                    "clearly-labelled source.", icon="ℹ️")
 
 
 def _db_diagnostic() -> None:

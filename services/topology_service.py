@@ -59,10 +59,18 @@ def compute_network_status(devices: list) -> NetworkStatus:
                          overall=overall)
 
 
-def get_topology(session) -> dict:
-    """Nodes/edges for the Topology page, generated from stored lab data."""
+def get_topology(session, *, data_source: str | None = None) -> dict:
+    """Nodes/edges for the Topology page, generated from stored lab data.
+
+    ``data_source`` scopes the structural rows so live and simulated
+    topologies are never rendered together.
+    """
+    from database import source_scope
     devices = repository.get_devices(session)
     links = repository.get_links(session)
+    if data_source is not None:
+        devices = source_scope.filter_devices(devices, data_source)
+        links = source_scope.filter_links(links, data_source)
     by_name = {}
     for d in devices:
         if not d.name or d.name in by_name:

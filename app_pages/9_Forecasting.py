@@ -43,6 +43,7 @@ from config import get_settings
 from database import repository
 from database.models import db_utcnow
 from services import forecast_service
+from ui import source_controls
 
 st.caption(
     "Protocol: chronological train|val|test split, models fitted on past data "
@@ -89,10 +90,8 @@ if not inventory:
     st.stop()
 sources = sorted({row["data_source"] for row in inventory
                   if row["data_source"]})
-data_source = st.selectbox("Data source", sources,
-                           format_func=lambda v: f"{v} " + (
-                               "(synthetic demo data)" if v == "demo"
-                               else "(virtual lab measurements)"))
+data_source = source_controls.selector(
+    sources, key="np_forecast_source", demo_mode=get_settings().demo_mode)
 devices = sorted({row["device_name"] for row in inventory
                   if row["data_source"] == data_source})
 device_name = st.selectbox("Device", devices)

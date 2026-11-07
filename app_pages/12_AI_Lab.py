@@ -46,7 +46,7 @@ from services import lab_experiment, lab_tasks, prometheus_source
 from services.app_state import (bootstrap, current_user,
                                 demo_banner_if_active, flash, has_role, read,
                                 render_flash, sidebar_status)
-from ui import theme
+from ui import source_controls, theme
 
 # ---------------------------------------------------------------------------
 # Page chrome — must run before any other Streamlit call
@@ -385,12 +385,9 @@ def _source_stored() -> None:
         return
 
     sources = sorted({item["data_source"] for item in inventory})
-    data_source = st.selectbox(
-        "Provenance (exactly one — demo and live rows are never mixed)",
-        sources,
-        format_func=lambda value: f"{value} " + (
-            "(synthetic demo fixtures)" if value == "demo"
-            else "(collected from the virtual lab)"))
+    data_source = source_controls.selector(
+        sources, key="np_lab_stored_source", demo_mode=get_settings().demo_mode,
+        label="Provenance (exactly one — sources are never mixed)")
 
     scoped = [item for item in inventory
               if item["data_source"] == data_source]

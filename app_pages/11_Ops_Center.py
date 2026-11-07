@@ -40,6 +40,7 @@ from database.models import CHANGE_RISK_LEVELS
 from database.models import USER_ROLES
 from services import digital_twin, impact_service
 from services import ops_center_actions as ops_actions
+from ui import source_controls
 
 
 def _render_impact_report(report: dict) -> None:
@@ -286,14 +287,8 @@ def _render_digital_twin_report(report: dict) -> None:
 # ------------------------------------------------------------------ source
 avail = read(lambda s: repository.get_available_metrics(s))
 sources = sorted({src for (_d, _m, _u, src) in avail})
-default_src = "demo" if get_settings().demo_mode else "live"
-data_source = st.selectbox(
-    "Data source", sources or [default_src],
-    index=(sources.index(default_src) if default_src in sources else 0),
-    format_func=lambda v: f"{v} " + (
-        "(synthetic demonstration data)" if v == "demo"
-        else "(measurements from the virtual lab)" if v == "live" else ""),
-)
+data_source = source_controls.selector(
+    sources, key="np_ops_source", demo_mode=get_settings().demo_mode)
 devices = sorted({d for (d, _m, _u, src) in avail if src == data_source})
 
 tab_alerts, tab_events, tab_graph, tab_insights, tab_change = st.tabs(
@@ -405,9 +400,11 @@ with tab_events:
 
 # ------------------------------------------------------------------ graph
 with tab_graph:
-    g = read(lambda s: graph.build_from_session(s))
+    g = read(lambda s: graph.build_from_session(s, data_source=data_source))
     if g.number_of_nodes() == 0:
-        st.info("No topology registered yet - deploy the lab or enable demo mode.")
+        st.info("No topology rows exist for the selected source yet. Run the "
+                "native collector or seed the labelled simulated source; "
+                "Containerlab is not required.")
     else:
         summary = graph.connectivity_summary(g)
         spof = graph.single_points_of_failure(g)
@@ -459,7 +456,7 @@ with tab_insights:
                "deterministic verifier and human review remain authoritative.")
     open_events = read(lambda s: repository.get_anomaly_events(
         s, data_source=data_source, status="open"))
-    g = read(lambda s: graph.build_from_session(s))
+    g = read(lambda s: graph.build_from_session(s, data_source=data_source))
     if len(open_events) >= 2:
         ev_dicts = [{"device_name": e.device_name, "metric": e.metric,
                      "id": e.id, "first_seen_at": e.first_seen_at}

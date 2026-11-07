@@ -22,12 +22,16 @@ theme.page_header("AI Network Assistant",
 demo_banner_if_active()
 
 from config import get_settings
-from database import repository
+from database import repository, source_scope
 from database.connection import get_session
 from services import ai_workflow_service as ai_svc
 from services import nlquery, rag
+from ui import source_controls
 
 settings = get_settings()
+ai_sources = read(lambda s: source_scope.available_sources(s))
+if settings.demo_mode and source_scope.DEMO not in ai_sources:
+    ai_sources = [source_scope.DEMO] + ai_sources
 st.caption(
     "Ask why something is wrong, request an investigation, or propose a policy "
     "change. The assistant gathers read-only evidence, an LLM proposes, and an "
@@ -348,9 +352,9 @@ with tab_agentic:
 
 # ---------------------------------------------------------------- new request
 with tab_new:
-    source = st.radio("Evidence source", ["demo", "live"], horizontal=True,
-                      help="demo = clearly-labelled synthetic fixtures; "
-                           "live = lab measurements already stored.")
+    source = source_controls.selector(
+        ai_sources, key="np_ai_new_source", demo_mode=settings.demo_mode,
+        label="Evidence source")
     st.markdown("#### Suggested investigations")
     st.caption("Prompt starters are selected from this source's stored "
                "inventory, anomalies, and measured metrics. Edit them before "
@@ -411,8 +415,9 @@ with tab_know:
     st.markdown("#### Ask the data — offline, deterministic")
     st.caption("Instant structured answers straight from the stored lab data "
                "(no LLM, nothing invented). Works even without a Groq key.")
-    src = st.radio("Evidence source", ["demo", "live"], horizontal=True,
-                   key="know_src")
+    src = source_controls.selector(
+        ai_sources, key="np_ai_know_source", demo_mode=settings.demo_mode,
+        label="Evidence source")
     q = st.text_input("Question", key="know_q",
                       placeholder="which devices are down? / can R1 reach R3? "
                                   "/ worst latency / single points of failure")

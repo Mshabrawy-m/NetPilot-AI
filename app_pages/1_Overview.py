@@ -11,12 +11,20 @@ sidebar_status()
 theme.page_header("Overview", "Live health of the NetPilot lab at a glance", icon="📊")
 demo_banner_if_active()
 
-from database import repository
+from config import get_settings
+from database import repository, source_scope
 from services import topology_service
+from ui import source_controls
 
-devices = read(lambda s: list(repository.get_devices(s)))
+settings = get_settings()
+sources = read(lambda s: source_scope.available_sources(s))
+source = source_controls.selector(
+    sources, key="np_overview_page_source", demo_mode=settings.demo_mode)
+devices = read(lambda s: source_scope.filter_devices(
+    list(repository.get_devices(s)), source))
 status = topology_service.compute_network_status(devices)
-last_run = read(lambda s: repository.get_last_successful_run(s))
+last_run = read(lambda s: repository.get_last_successful_run(
+    s, data_source=None if source == source_scope.DEMO else source))
 
 _tone = {"healthy": "ok", "degraded": "warn", "down": "bad", "unknown": "muted"}
 _badge = {"healthy": "🟢 HEALTHY", "degraded": "🟡 DEGRADED",
@@ -48,27 +56,15 @@ if last_run is not None:
     )
 else:
     st.warning(
-        "No successful data collection yet. Deploy the lab and press "
-        "'Collect now' in the sidebar, or enable demo mode (see README).",
+        "No successful collection is recorded yet for this source. Run the "
+        "native collector or seed the labelled simulated source; Containerlab "
+        "is not required for Live Mode.",
         icon="⏱",
     )
 
-from config import get_settings
-from network import containerlab_manager
-
-settings = get_settings()
-avail = containerlab_manager.availability()
-if not settings.demo_mode and not avail["containerlab"]:
-    st.info(
-        "Containerlab is not installed on this host, so the virtual lab cannot "
-        "be deployed or inspected here. Live measurements are still collected "
-        "by the standalone Windows collector (`tools/live_collector.py`) and "
-        "appear with source `live`.",
-        icon="ℹ️",
-    )
 if not devices:
-    st.info("The inventory is empty - devices appear after the first "
-            "collection cycle or in demo mode.")
+    st.info("No rows exist yet for the selected source. Devices appear after "
+            "a collection cycle or after `python tools/seed_simulated.py`.")
 
 if status.total:
     st.subheader("Devices at a glance")

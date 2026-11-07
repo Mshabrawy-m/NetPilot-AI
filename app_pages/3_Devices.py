@@ -14,12 +14,20 @@ theme.page_header("Devices & Interfaces",
                   "Lab inventory, status and interfaces", icon="🖥️")
 demo_banner_if_active()
 
-from database import repository
+from config import get_settings
+from database import repository, source_scope
 from database.models import Interface
+from ui import source_controls
 
-devices = read(lambda s: list(repository.get_devices(s)))
+settings = get_settings()
+sources = read(lambda s: source_scope.available_sources(s))
+source = source_controls.selector(
+    sources, key="np_devices_source", demo_mode=settings.demo_mode)
+devices = read(lambda s: source_scope.filter_devices(
+    list(repository.get_devices(s)), source))
 if not devices:
-    st.info("No devices yet - run a collection cycle or start demo mode.")
+    st.info("No devices exist for the selected source yet. Run a collection "
+            "cycle or `python tools/seed_simulated.py`.")
     st.stop()
 
 st.dataframe(
