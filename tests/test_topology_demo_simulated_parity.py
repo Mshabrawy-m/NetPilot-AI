@@ -12,10 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from database import connection, source_scope
+from database import connection
 from services import demo_data
 from tools import seed_simulated
-
 
 ROOT = Path(__file__).resolve().parents[1]
 TOPOLOGY_PAGE = ROOT / "app_pages" / "2_Topology.py"
@@ -26,7 +25,6 @@ ALLOWLISTED_EXCEPTIONS = set()
 
 def _seed_demo_fabric():
     """Seed demo fabric for parity testing."""
-    from network.device_inventory import load_inventory
     with connection.session_scope() as session:
         demo_data.seed_demo_fabric(
             session, core=2, dist=4, access=4, hosts_per_access=5)
@@ -179,17 +177,18 @@ def _extract_features(at):
 
 @pytest.mark.parametrize("fabric_size", ["Compact (~30)", "Standard (~92)"])
 def test_topology_parity_with_fabric(fabric_size, db_url, monkeypatch):
-    """Test that Simulated Topology has same features as Demo Topology."""
-    from streamlit.testing.v1 import AppTest
+    """Test that Simulated Topology has the same feature set as Demo Topology."""
     import os
-    
+
+    from streamlit.testing.v1 import AppTest
+
     monkeypatch.setenv("NETPILOT_DEMO_MODE", "false")
     monkeypatch.setenv("NETPILOT_CHANGE_LOOP_ENABLED", "false")
     monkeypatch.setenv("NETPILOT_LAB_EXECUTION_ENABLED", "false")
-    
+
     _seed_demo_fabric()
     _seed_simulated_fabric()
-    
+
     os.environ["NETPILOT_DEMO_MODE"] = "true"
     try:
         at_demo = AppTest.from_file(str(TOPOLOGY_PAGE), default_timeout=120)
@@ -197,18 +196,25 @@ def test_topology_parity_with_fabric(fabric_size, db_url, monkeypatch):
         demo_features = _extract_features(at_demo)
     finally:
         os.environ["NETPILOT_DEMO_MODE"] = "false"
-    
+
     os.environ["NETPILOT_DEMO_MODE"] = "false"
     try:
         at_sim = AppTest.from_file(str(TOPOLOGY_PAGE), default_timeout=120)
         for box in at_sim.selectbox:
-            label = str(getattr(box, 'label', '') or '').lower()
-            if 'source' in label:
+            label = str(getattr(box, "label", "") or "").lower()
+            if "source" in label:
                 options = list(box.options or [])
-                match = next((opt for opt in options
-                              if str(opt).lower().startswith('simulated')), None)
+                match = next(
+                    (opt for opt in options if str(opt).lower().startswith("simulated")),
+                    None,
+                )
                 if match is not None:
                     box.select(match)
                     at_sim.run()
                     break
-        simula
+        simulated_features = _extract_features(at_sim)
+    finally:
+        os.environ["NETPILOT_DEMO_MODE"] = "false"
+
+    differences = _compare_features(demo_features, simulated_features)
+    assert not differences, "\n".join(differences)

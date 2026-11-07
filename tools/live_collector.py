@@ -709,20 +709,34 @@ def _sync_traceroute_topology(
             mgmt_ip=device.get("lab_ip"),
             status=device.get("status", "unknown"),
         )
-    
-    # Ensure collector-host device exists
+
+    # Ensure collector-host device exists and resolve all device objects before
+    # creating interfaces; repository.upsert_interface() expects a Device ORM
+    # instance, not a string device name.
     collector_host = repository.get_device_by_name(session, "collector-host")
     if collector_host is None:
-        repository.upsert_device(
+        collector_host = repository.upsert_device(
             session, name="collector-host", type_="host", status="up")
-    
+
+    def _device_obj(name: str):
+        device = repository.get_device_by_name(session, name)
+        if device is None:
+            return repository.upsert_device(
+                session,
+                name=name,
+                type_="router",
+                status="unknown",
+            )
+        return device
+
     # Create link from collector-host to first discovered device
     if discovered_path.devices:
         first_device_name = discovered_path.devices[0]["name"]
+        first_device = _device_obj(first_device_name)
         repository.upsert_interface(
-            session, "collector-host", "uplink", status="up")
+            session, collector_host, "uplink", status="up")
         repository.upsert_interface(
-            session, first_device_name, "ingress", status="up")
+            session, first_device, "ingress", status="up")
         repository.upsert_link(
             session,
             "collector-host", "uplink",
@@ -732,23 +746,26 @@ def _sync_traceroute_topology(
     
     # Create links between consecutive devices
     for i, link in enumerate(discovered_path.links):
-        device_a = link["device_a"]
-        device_b = link["device_b"]
+        device_a_name = link["device_a"]
+        device_b_name = link["device_b"]
         status = link.get("status", "up")
-        
-        # Ensure interfaces exist
+
+        # Ensure interfaces exist against the live device records, not the raw
+        # string names returned by the discovery layer.
         if_name_a = f"if_{i}_a"
         if_name_b = f"if_{i}_b"
+        device_a = _device_obj(device_a_name)
+        device_b = _device_obj(device_b_name)
         repository.upsert_interface(
             session, device_a, if_name_a, status=status)
         repository.upsert_interface(
             session, device_b, if_name_b, status=status)
-        
+
         # Create the link
         repository.upsert_link(
             session,
-            device_a, if_name_a,
-            device_b, if_name_b,
+            device_a_name, if_name_a,
+            device_b_name, if_name_b,
             status=status
         )
     

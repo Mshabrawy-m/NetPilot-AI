@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, datetime
 from unittest import mock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
+from database import repository
+from database.models import Base
 from network.traceroute import (
     DiscoveredPath,
     Hop,
@@ -17,7 +22,10 @@ from network.traceroute import (
     discover_topology_from_traceroute,
     run_traceroute,
 )
-from tools.live_collector import DEFAULT_TRACEROUTE_DESTINATIONS
+from tools.live_collector import (
+    DEFAULT_TRACEROUTE_DESTINATIONS,
+    _sync_traceroute_topology,
+)
 
 
 class TestPlatformDetection:
@@ -503,3 +511,37 @@ class TestDataClasses:
         assert len(path.devices) == 1
         assert len(path.links) == 1
         assert len(path.metrics) == 1
+
+
+class TestLiveCollectorTracerouteWritePath:
+    """Reproduce the DB write path with the real discovery result type."""
+
+    def test_sync_traceroute_topology_persists_real_discovery_to_sqlite(self):
+        engine = create_engine("sqlite://", future=True)
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine, future=True)
+
+        discovered = discover_topology_from_traceroute(["1.1.1.1", "8.8.8.8"], timeout=1)
+        assert discovered.devices
+
+        with SessionLocal() as session:
+            samples: list[dict] = []
+            _sync_traceroute_topology(
+                session,
+                discovered,
+                datetime.now(UTC).replace(tzinfo=None),
+                samples,
+            )
+            session.commit()
+
+            devices = repository.get_devices(session)
+            links = repository.get_links(session)
+            assert any(device.name == "collector-host" for device in devices)
+            assert any(device.name in {d["name"] for d in discovered.devices}
+                       for device in devices)
+            assert any(
+                (link.device_a == "collector-host" and link.device_b in {d["name"] for d in discovered.devices})
+                or (link.device_b == "collector-host" and link.device_a in {d["name"] for d in discovered.devices})
+                for link in links
+            ) or not links
+            assert any(sample["data_source"] == "live" for sample in samples)

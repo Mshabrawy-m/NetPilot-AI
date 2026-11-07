@@ -103,7 +103,7 @@ def _parse_tracert_output(destination: str, output: str) -> list[Hop]:
            continue
 
         lower = line.lower()
-        if lower.startswith("tracing route to") or lower.startswith("over a maximum of"):
+        if lower.startswith(("tracing route to", "over a maximum of")):
            continue
         if lower.startswith("trace complete"):
            continue
@@ -317,10 +317,9 @@ def run_traceroute(destination: str, timeout: int = TRACEROUTE_TIMEOUT) -> Trace
     
     # Build safe argv list (no shell injection possible)
     if platform == "win32":
-        # Windows tracert: keep the max hops conservative and avoid DNS lookups;
-        # the output parser is resilient to ``<1 ms`` and timeout-only suffixes.
-        argv = [cmd_name, "-d", "-h", str(min(MAX_HOPS, 12)), "-w",
-                str(1000), destination]
+        # Encourage a bounded, fast probe on Windows: keep the TTL/timeout small
+        # enough to complete promptly while still capturing responsive hops.
+        argv = [cmd_name, "-d", "-h", str(12), "-w", "1000", destination]
     else:
         # Unix traceroute: traceroute [-m max_ttl] [-w wait_time] [-q nqueries] host
         argv = [cmd_name, "-m", str(MAX_HOPS), "-w", str(timeout),
@@ -333,7 +332,6 @@ def run_traceroute(destination: str, timeout: int = TRACEROUTE_TIMEOUT) -> Trace
     )
     
     try:
-        # Run with timeout
         process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -343,7 +341,7 @@ def run_traceroute(destination: str, timeout: int = TRACEROUTE_TIMEOUT) -> Trace
             encoding="utf-8",
             errors="replace",
         )
-        
+
         try:
             stdout, stderr = process.communicate(timeout=timeout)
             return_code = process.returncode
@@ -351,23 +349,28 @@ def run_traceroute(destination: str, timeout: int = TRACEROUTE_TIMEOUT) -> Trace
             process.kill()
             stdout, stderr = process.communicate()
             return_code = -1
-        
+
         result.finished_at = utc_now()
-        
-        if return_code != 0:
-            error_msg = stderr.strip() or stdout.strip()
-            result.success = False
-            result.error = f"Command failed with exit code {return_code}: {error_msg[:500]}"
-            return result
-        
-        # Parse output based on platform
-        output = stdout
+        stdout_text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else (stdout or "")
+        stderr_text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else (stderr or "")
+        output = stdout_text + stderr_text
         if platform == "win32" or _is_windows_output(output):
             result.hops = _parse_tracert_output(destination, output)
         else:
             result.hops = _parse_traceroute_output(destination, output)
-        
-        result.success = True
+
+        if result.hops:
+            result.success = True
+            result.error = None
+            return result
+
+        if return_code != 0:
+            error_msg = (stderr_text or stdout_text or "").strip()
+            result.error = f"Command failed with exit code {return_code}: {error_msg[:500]}"
+            result.success = False
+        else:
+            result.success = False
+            result.error = None
         return result
         
     except OSError as e:
@@ -402,7 +405,7 @@ def discover_topology_from_traceroute(
 
     for destination in destinations:
         traceroute_result = run_traceroute(destination, timeout=timeout)
-        if not traceroute_result.success:
+        if not traceroute_result.hops:
             continue
 
         prev_hop: Hop | None = None
