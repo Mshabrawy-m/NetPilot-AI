@@ -245,3 +245,120 @@ def seed_demo_fabric(core: int = 2, dist: int = 6, access: int = 12,
 def tier_up(session, name: str) -> bool:
     dev = repository.get_device_by_name(session, name)
     return bool(dev and dev.status == "up")
+
+
+def seed_simulated_fabric(core: int = 2, dist: int = 6, access: int = 12,
+                         hosts_per_access: int = 6, seed: int = 4242) -> dict:
+    """SIMULATED-ONLY: expand the live store with a large synthetic campus fabric.
+
+    Same hierarchical network as seed_demo_fabric - ``core`` routers, ``dist``
+    distribution and ``access`` switches and ``hosts_per_access`` hosts under each
+    access switch (default ~90 devices / ~100 links) - with redundant uplinks so the
+    graph views have meaningful structure.  Everything is written to the live database
+    with clearly-labelled ``data_source='simulated'`` provenance and the reserved
+    ``sim:`` prefix on structural names; it never touches the demo store.
+
+    Returns counts {"devices", "links", "samples"}.
+    """
+    import random
+    from datetime import timedelta
+
+    from analytics import lab_simulator
+    from config import utc_now
+    from database.connection import session_scope
+    from network.device_inventory import DeviceRole
+
+    if core < 1 or dist < 1 or access < 1 or hosts_per_access < 0:
+        raise ValueError("core/dist/access must be >= 1 (hosts >= 0)")
+
+    rng = random.Random(seed)
+    now = utc_now().replace(tzinfo=None)  # naive UTC, storage norm
+
+    # Use sim: prefix for all names to match Phase 3B convention
+    cores = [f"sim:CORE{i + 1}" for i in range(core)]
+    dists = [f"sim:DIST{i + 1}" for i in range(dist)]
+    accs = [f"sim:ACC{i + 1}" for i in range(access)]
+    hosts = [f"sim:HOST{i + 1}" for a in range(access)
+             for i in range(a * hosts_per_access,
+                            a * hosts_per_access + hosts_per_access)]
+
+    def tier_status(name: str) -> str:
+        # A deterministic sprinkle of down devices so degraded/down render.
+        if hosts and name == hosts[-1]:             # guarantee one down host
+            return "down"
+        return "up" if rng.random() > 0.08 else "down"
+
+    # Build inventory-style dict for consistent naming
+    inventory_nodes = []
+    for i, n in enumerate(cores):
+        inventory_nodes.append({"name": n[len("sim:"):], "type": "router",
+                               "lab_ip": f"10.0.0.{i + 1}", "role": DeviceRole.CORE})
+    for i, n in enumerate(dists):
+        inventory_nodes.append({"name": n[len("sim:"):], "type": "switch",
+                               "lab_ip": f"10.1.0.{i + 1}", "role": DeviceRole.DIST})
+    for i, n in enumerate(accs):
+        inventory_nodes.append({"name": n[len("sim:"):], "type": "switch",
+                               "lab_ip": f"10.2.0.{i + 1}", "role": DeviceRole.ACCESS})
+    for i, n in enumerate(hosts):
+        inventory_nodes.append({"name": n[len("sim:"):], "type": "host",
+                               "lab_ip": f"10.3.{i // 256}.{i % 256 + 1}", "role": DeviceRole.HOST})
+
+    devices: dict[str, tuple[str, str]] = {}
+    for node in inventory_nodes:
+        devices[node["name"]] = (node["type"], node["lab_ip"])
+
+    # (device_a, if_a, device_b, if_b, subnet) triples for the fabric.
+    links: list[tuple[str, str, str, str, str]] = []
+    for di, d in enumerate(dists):                 # every dist -> every core
+        for ci, c in enumerate(cores):
+            links.append((d, f"eth0/{di + 1}", c, f"eth0/{di + 1}",
+                          f"10.10.{di}.{ci * 4}/30"))
+    for ai, a in enumerate(accs):                  # each acc -> two dists
+        primary = dists[ai % dist]
+        backup = dists[(ai + 1) % dist]
+        links.append((a, "eth0/1", primary, f"eth0/{100 + ai}",
+                      f"10.20.{ai}.0/24"))
+        links.append((a, "eth0/2", backup, f"eth0/{200 + ai}",
+                      f"10.21.{ai}.0/24"))
+    for hi, h in enumerate(hosts):                  # each host -> its access
+        a = accs[hi // hosts_per_access] if hosts_per_access else None
+        if a is None:
+            continue
+        links.append((h, "eth0", a, f"eth1/{hi % hosts_per_access + 1}",
+                      f"10.30.{hi // 6}.{hi % 6 * 16}/28"))
+
+    counts = {"devices": 0, "links": 0, "samples": 0}
+    with session_scope() as session:
+        for name, (dtype, ip) in devices.items():
+            # Store with sim: prefix
+            sim_name = f"sim:{name}"
+            dev = repository.upsert_device(
+                session, name=sim_name, type_=dtype, lab_ip=ip,
+                container=f"simulated-{name}", status=tier_status(sim_name))
+            repository.upsert_interface(session, dev, "eth0",
+                                        ip_cidr=f"{ip}/24",
+                                        status=dev.status)
+            counts["devices"] += 1
+        for a, ifa, b, ifb, subnet in links:
+            both_up = (tier_up(session, a) and tier_up(session, b))
+            repository.upsert_link(session, a, ifa, b, ifb, subnet=subnet,
+                                   status="up" if both_up else "down")
+            counts["links"] += 1
+        # Light, honest ping history for the backbone only.
+        for i in range(12):
+            ts = now - timedelta(minutes=5) * (11 - i)
+            for name in cores + dists:
+                sim_name = f"sim:{name}"
+                if tier_up(session, sim_name):
+                    rtt = round(0.5 + rng.uniform(0, 1.2), 3)
+                    loss = round(rng.choice([0.0, 0.0, 0.0, 1.0]), 1)
+                else:
+                    rtt, loss = None, 100.0
+                repository.add_metric_sample(
+                    session, sim_name, "ping.avg_rtt_ms", rtt, unit="ms",
+                    data_source="simulated", collected_at=ts)
+                repository.add_metric_sample(
+                    session, sim_name, "ping.loss_pct", loss, unit="%",
+                    data_source="simulated", collected_at=ts)
+                counts["samples"] += 2
+    return counts

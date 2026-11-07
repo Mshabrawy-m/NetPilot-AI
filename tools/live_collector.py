@@ -73,6 +73,10 @@ from config import get_settings
 from database import connection, repository, roles
 from database.models import CollectionRun, db_utcnow
 from network.connectivity import _WINDOWS, _parse_ping_output, _ping_binary
+from network.traceroute import (
+    TRACEROUTE_TIMEOUT,
+    discover_topology_from_traceroute,
+)
 
 try:  # optional: only used when the package is already installed
     import psutil
@@ -88,6 +92,13 @@ EXIT_DB = 3
 
 WCM_TARGET_COLLECTOR = "netpilot/prod/netpilot_collector"
 DEFAULT_TARGETS = "gateway,1.1.1.1,8.8.8.8"
+DEFAULT_TRACEROUTE_DESTINATIONS = [
+    "1.1.1.1",
+    "8.8.8.8",
+    "9.9.9.9",
+    "208.67.222.222",
+    "142.250.186.46",
+]
 
 #: Friendly, stable device labels for well-known public resolvers.
 _KNOWN_LABELS = {
@@ -668,6 +679,92 @@ def _sync_topology(session, result: CycleResult) -> None:
                 status=_link_status("collector-host", spec.label))
 
 
+def _sync_traceroute_topology(
+    session,
+    discovered_path,
+    collected_at: dt.datetime,
+    samples_out: list[dict],
+) -> None:
+    """Persist discovered topology from traceroute as devices, links, and metrics.
+    
+    Each distinct hop IP becomes a device, consecutive hops become links,
+    and paths to different destinations merge on shared hops to form a tree/graph.
+    Per-hop RTT metrics are also stored.
+    
+    Args:
+        session: Database session
+        discovered_path: DiscoveredPath from traceroute
+        collected_at: Timestamp for the collection
+        samples_out: List to append metric samples to
+    """
+    if discovered_path is None:
+        return
+    
+    # Upsert all discovered devices
+    for device in discovered_path.devices:
+        repository.upsert_device(
+            session,
+            name=device["name"],
+            type_=device.get("type", "router"),
+            mgmt_ip=device.get("lab_ip"),
+            status=device.get("status", "unknown"),
+        )
+    
+    # Ensure collector-host device exists
+    collector_host = repository.get_device_by_name(session, "collector-host")
+    if collector_host is None:
+        repository.upsert_device(
+            session, name="collector-host", type_="host", status="up")
+    
+    # Create link from collector-host to first discovered device
+    if discovered_path.devices:
+        first_device_name = discovered_path.devices[0]["name"]
+        repository.upsert_interface(
+            session, "collector-host", "uplink", status="up")
+        repository.upsert_interface(
+            session, first_device_name, "ingress", status="up")
+        repository.upsert_link(
+            session,
+            "collector-host", "uplink",
+            first_device_name, "ingress",
+            status="up"
+        )
+    
+    # Create links between consecutive devices
+    for i, link in enumerate(discovered_path.links):
+        device_a = link["device_a"]
+        device_b = link["device_b"]
+        status = link.get("status", "up")
+        
+        # Ensure interfaces exist
+        if_name_a = f"if_{i}_a"
+        if_name_b = f"if_{i}_b"
+        repository.upsert_interface(
+            session, device_a, if_name_a, status=status)
+        repository.upsert_interface(
+            session, device_b, if_name_b, status=status)
+        
+        # Create the link
+        repository.upsert_link(
+            session,
+            device_a, if_name_a,
+            device_b, if_name_b,
+            status=status
+        )
+    
+    # Add per-hop RTT metrics as metric samples
+    for metric in discovered_path.metrics:
+        samples_out.append({
+            "device_name": metric["device_name"],
+            "interface_name": metric.get("interface_name"),
+            "metric": metric["metric"],
+            "value": metric["value"],
+            "unit": metric.get("unit", "ms"),
+            "data_source": "live",
+            "collected_at": metric.get("collected_at", collected_at),
+        })
+
+
 #: A sustained loss/RTT breach opens one incident per (device, kind).  These
 #: are derivation thresholds over real probe measurements, not detector output;
 #: the values are documented here and can be overridden by the environment.
@@ -731,6 +828,25 @@ def _sync_devices(session, result: CycleResult) -> None:
     _sync_topology(session, result)
 
 
+def _parse_traceroute_targets(raw: str | None) -> list[str]:
+    """Parse traceroute targets from comma-separated string."""
+    if raw is None:
+        return DEFAULT_TRACEROUTE_DESTINATIONS.copy()
+    targets = []
+    for token in raw.split(","):
+        token = token.strip()
+        if token:
+            try:
+                # Validate it's a valid address
+                validate_target(token)
+                targets.append(token)
+            except ValueError:
+                logger.warning("Invalid traceroute target: %s", token)
+    if not targets:
+        return DEFAULT_TRACEROUTE_DESTINATIONS.copy()
+    return targets
+
+
 def persist_cycle(
     result: CycleResult,
     *,
@@ -738,6 +854,7 @@ def persist_cycle(
     scope_factory=None,
     sleep_fn: Callable[[float], None] = time.sleep,
     max_attempts: int = 3,
+    traceroute_destinations: list[str] | None = None,
 ) -> PersistOutcome:
     """Write one cycle in a batched transaction with retry/backoff.
 
@@ -769,11 +886,27 @@ def persist_cycle(
     inserted = 0
     skipped = 0
     persist_error: str | None = None
+    # Run traceroute discovery if configured
+    discovered_path = None
+    if traceroute_destinations:
+        try:
+            discovered_path = discover_topology_from_traceroute(
+                traceroute_destinations, timeout=TRACEROUTE_TIMEOUT)
+            logger.info("Traceroute discovered %d devices and %d links",
+                        len(discovered_path.devices), len(discovered_path.links))
+        except OSError as exc:
+            logger.warning("Traceroute discovery failed: %s", type(exc).__name__)
+    
     for attempt in range(attempts):
         try:
             with scope_factory() as session:
                 _sync_topology(session, result)
                 _sync_incidents(session, result)
+                # Sync traceroute-based topology if available
+                if discovered_path is not None:
+                    _sync_traceroute_topology(
+                        session, discovered_path, result.collected_at,
+                        result.samples)
                 existing = repository.existing_sample_keys(
                     session, result.collected_at, data_source)
                 rows: list[dict] = []
@@ -912,6 +1045,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wcm-target", default=WCM_TARGET_COLLECTOR,
                         help="Windows Credential Manager target for the "
                              "collector DSN")
+    parser.add_argument("--traceroute", action="store_true",
+                        help="run OS traceroute/tracert for real topology "
+                             "discovery (discover hops as devices/links)")
+    parser.add_argument("--traceroute-targets", default=None,
+                        help="comma-separated destinations for traceroute "
+                             "(default: multiple public hosts)")
     return parser
 
 
@@ -956,6 +1095,12 @@ def main(argv: list[str] | None = None) -> int:
     interface_fn: Callable[[], list[dict]] = (
         (list) if args.no_interfaces else collect_interface_samples)
 
+    # Parse traceroute targets if enabled
+    traceroute_targets = None
+    if args.traceroute:
+        traceroute_targets = _parse_traceroute_targets(args.traceroute_targets)
+        logger.info("traceroute enabled for destinations: %s", traceroute_targets)
+
     logger.info("targets: %s",
                 ", ".join(f"{spec.label}={spec.address}" for spec in targets))
     logger.info("interval=%.1fs count=%d timeout=%.1fs interfaces=%s",
@@ -976,7 +1121,7 @@ def main(argv: list[str] | None = None) -> int:
             result = run_cycle(
                 targets, count=args.count, timeout_seconds=args.timeout,
                 interface_fn=interface_fn)
-            outcome = persist_cycle(result)
+            outcome = persist_cycle(result, traceroute_destinations=traceroute_targets)
             cycles += 1
             inserted += outcome.inserted
             skipped += outcome.skipped

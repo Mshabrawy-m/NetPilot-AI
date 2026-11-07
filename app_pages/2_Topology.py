@@ -56,8 +56,9 @@ def _write(fn):
 
 
 # ------------------------------------------------------------ demo controls
-# Fabric seeding is a demo-mode, operator-gated convenience. In open mode
-# (auth disabled) has_role always returns True, so this is invisible in live.
+# Fabric seeding: Demo mode uses a separate DB; Simulated/Live write to
+# the selected source with honest provenance. In open mode (auth disabled)
+# has_role always returns True, so the gated section is visible in demo.
 if settings.demo_mode and has_role("operator"):
     with st.expander("🧪 Demo data - expand this view with a large synthetic "
                      "fabric", expanded=False):
@@ -77,6 +78,28 @@ if settings.demo_mode and has_role("operator"):
             counts = _write(lambda s: demo_data.seed_demo_fabric(**params))
             flash(f"Fabric seeded: {counts['devices']} devices, "
                   f"{counts['links']} links (demo).")
+            st.rerun()
+elif source == source_scope.SIMULATED and has_role("operator"):
+    with st.expander("🧪 Simulated data - expand this view with a large "
+                     "synthetic fabric", expanded=False):
+        st.caption("Writes clearly-labelled **simulated** devices/links into the "
+                   "live database with provenance ``data_source='simulated'`` "
+                   "so the four layouts have real scale. Deterministic & "
+                   "idempotent. The fabric uses the reserved ``sim:`` prefix on "
+                   "structural names.")
+        size = st.selectbox(
+            "Fabric size",
+            ["Compact (~30)", "Standard (~92)", "Large (~210)"], index=1)
+        params = {"Compact (~30)": dict(core=2, dist=4, access=4,
+                                        hosts_per_access=5),
+                  "Standard (~92)": dict(core=2, dist=6, access=12,
+                                         hosts_per_access=6),
+                  "Large (~210)": dict(core=2, dist=8, access=20,
+                                       hosts_per_access=9)}[size]
+        if st.button("Seed / refresh simulated fabric", type="primary"):
+            counts = _write(lambda s: demo_data.seed_simulated_fabric(**params))
+            flash(f"Fabric seeded: {counts['devices']} devices, "
+                  f"{counts['links']} links (simulated).")
             st.rerun()
 
 # ------------------------------------------------------------------ data
