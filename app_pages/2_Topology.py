@@ -14,8 +14,15 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from services.app_state import (bootstrap, demo_banner_if_active, flash,
-                                has_role, read, render_flash, sidebar_status)
+from services.app_state import (
+    bootstrap,
+    demo_banner_if_active,
+    flash,
+    has_role,
+    read,
+    render_flash,
+    sidebar_status,
+)
 from ui import theme
 
 bootstrap()
@@ -68,20 +75,23 @@ if settings.demo_mode and has_role("operator"):
         size = st.selectbox(
             "Fabric size",
             ["Compact (~30)", "Standard (~92)", "Large (~210)"], index=1)
-        params = {"Compact (~30)": dict(core=2, dist=4, access=4,
-                                        hosts_per_access=5),
-                  "Standard (~92)": dict(core=2, dist=6, access=12,
-                                         hosts_per_access=6),
-                  "Large (~210)": dict(core=2, dist=8, access=20,
-                                       hosts_per_access=9)}[size]
+        params = {"Compact (~30)": {"core": 2, "dist": 4, "access": 4,
+                                     "hosts_per_access": 5},
+                  "Standard (~92)": {"core": 2, "dist": 6, "access": 12,
+                                     "hosts_per_access": 6},
+                  "Large (~210)": {"core": 2, "dist": 8, "access": 20,
+                                    "hosts_per_access": 9}}[size]
         if st.button("Seed / refresh demo fabric", type="primary"):
             counts = _write(lambda s: demo_data.seed_demo_fabric(**params))
             flash(f"Fabric seeded: {counts['devices']} devices, "
                   f"{counts['links']} links (demo).")
             st.rerun()
 elif source == source_scope.SIMULATED and has_role("operator"):
-    with st.expander("🧪 Simulated data - expand this view with a large "
-                     "synthetic fabric", expanded=False):
+    has_sim_rows = read(lambda s: source_scope.has_rows(s, source_scope.SIMULATED))
+    with st.expander(
+        "🧪 Simulated data - expand this view with a large synthetic fabric",
+        expanded=not has_sim_rows,
+    ):
         st.caption("Writes clearly-labelled **simulated** devices/links into the "
                    "live database with provenance ``data_source='simulated'`` "
                    "so the four layouts have real scale. Deterministic & "
@@ -90,12 +100,12 @@ elif source == source_scope.SIMULATED and has_role("operator"):
         size = st.selectbox(
             "Fabric size",
             ["Compact (~30)", "Standard (~92)", "Large (~210)"], index=1)
-        params = {"Compact (~30)": dict(core=2, dist=4, access=4,
-                                        hosts_per_access=5),
-                  "Standard (~92)": dict(core=2, dist=6, access=12,
-                                         hosts_per_access=6),
-                  "Large (~210)": dict(core=2, dist=8, access=20,
-                                       hosts_per_access=9)}[size]
+        params = {"Compact (~30)": {"core": 2, "dist": 4, "access": 4,
+                                     "hosts_per_access": 5},
+                  "Standard (~92)": {"core": 2, "dist": 6, "access": 12,
+                                     "hosts_per_access": 6},
+                  "Large (~210)": {"core": 2, "dist": 8, "access": 20,
+                                    "hosts_per_access": 9}}[size]
         if st.button("Seed / refresh simulated fabric", type="primary"):
             counts = _write(lambda s: demo_data.seed_simulated_fabric(**params))
             flash(f"Fabric seeded: {counts['devices']} devices, "
@@ -155,7 +165,7 @@ for edge in edges:
     x1, y1 = positions[edge["target"]]
     fig.add_trace(go.Scatter(
         x=[x0, x1, None], y=[y0, y1, None], mode="lines",
-        line=dict(width=2.2, color=edge["color"]),
+        line={"width": 2.2, "color": edge["color"]},
         hoverinfo="text",
         hovertext=(f"Link {edge['source']} ↔ {edge['target']}<br>"
                    f"Interfaces: {edge['label']}<br>Status: {edge['status']}"
@@ -176,10 +186,11 @@ for (ntype, nstatus), members in sorted(groups.items(),
     colors = [m["color"] for m in members]
     fig.add_trace(go.Scatter(
         x=xs, y=ys, mode="markers+text" if show_labels else "markers",
-        marker=dict(size=sizes, color=colors, symbol=SYMBOLS.get(ntype, "circle"),
-                    line=dict(width=1.2, color="white")),
+        marker={"size": sizes, "color": colors,
+                "symbol": SYMBOLS.get(ntype, "circle"),
+                "line": {"width": 1.2, "color": "white"}},
         text=[m["label"] for m in members] if show_labels else None,
-        textposition="bottom center", textfont=dict(size=10),
+        textposition="bottom center", textfont={"size": 10},
         name=f"{ntype} · {nstatus}",
         hoverinfo="text",
         hovertext=[f"{m['label']} ({ntype})<br>IP: {m['ip'] or '-'}"
@@ -187,11 +198,11 @@ for (ntype, nstatus), members in sorted(groups.items(),
                    for m in members],
     ))
 fig.update_layout(
-    height=680, margin=dict(l=20, r=20, t=30, b=20),
-    xaxis=dict(visible=False), yaxis=dict(visible=False),
+    height=680, margin={"l": 20, "r": 20, "t": 30, "b": 20},
+    xaxis={"visible": False}, yaxis={"visible": False},
     plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     hovermode="closest", showlegend=len(groups) > 1,
-    legend=dict(orientation="h", y=1.06, x=0, title_text="type · status"),
+    legend={"orientation": "h", "y": 1.06, "x": 0, "title_text": "type · status"},
 )
 st.plotly_chart(fig, width="stretch",
                 config={"displayModeBar": True, "scrollZoom": True})

@@ -13,8 +13,12 @@ import json
 import pandas as pd
 import streamlit as st
 
-from services.app_state import bootstrap, demo_banner_if_active, read, sidebar_status
-
+from services.app_state import (
+    bootstrap,
+    demo_banner_if_active,
+    read,
+    sidebar_status,
+)
 from ui import theme
 
 bootstrap()
@@ -73,9 +77,9 @@ if settings.demo_mode:
         "source='demo'.", icon="⚠️")
 elif source == source_scope.SIMULATED:
     st.info(
-        "Simulated rows have no real probe destination, so execution is "
-        "disabled for this source. Select `live` to probe the native "
-        "collector's targets; nothing is fabricated here.", icon="🧪")
+        "Simulated rows have no real probe destination. This source uses a "
+        "localhost self-test only; the result is clearly marked as simulated, "
+        "not a live network probe.", icon="🧪")
 
 # Capability check first: a runtime without a ping binary cannot measure
 # anything, and saying so up front beats a misleading per-probe failure.
@@ -96,7 +100,12 @@ if not allowlist.nodes:
         "the labelled simulated source (`python tools/seed_simulated.py`). "
         "Containerlab is not required for Live Mode.", icon="📭")
 
-if can_probe:
+if source == source_scope.SIMULATED:
+    source_name = "loopback self-test"
+    destination = "127.0.0.1"
+    run_ping = st.button("🧪 Run simulated loopback self-test", type="primary")
+    run_tr = False
+elif can_probe:
     col_src, col_dst = st.columns(2)
     source_name = col_src.selectbox(
         "Source", ["collector-host"] + allowlist.node_names, index=0)
@@ -110,9 +119,10 @@ else:
     source_name = destination = None
 
 if run_ping:
-    if settings.demo_mode:
+    if settings.demo_mode or source == source_scope.SIMULATED:
         # Real ping binary against the host loopback only (no network):
-        # exercises execution/parsing/storage, clearly labelled 'demo'.
+        # exercises execution/parsing/storage, clearly labelled 'demo' or
+        # 'simulated'. This is a self-test, never a real network probe.
         probe_result = connectivity.run_selftest_ping()
     else:
         probe_result = connectivity.run_ping(allowlist, destination)
@@ -151,7 +161,9 @@ if run_ping:
                 detail=(probe_result.error or "ok")[:500],
                 avg_latency_ms=probe_result.avg_rtt_ms,
                 packet_loss_pct=probe_result.loss_pct,
-                data_source="demo" if settings.demo_mode else "live")
+                data_source=("demo" if settings.demo_mode
+                             else source_scope.SIMULATED if source == source_scope.SIMULATED
+                             else "live"))
         read(_store)
 
 if run_tr:

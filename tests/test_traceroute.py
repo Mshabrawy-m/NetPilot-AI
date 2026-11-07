@@ -127,6 +127,80 @@ Trace complete."""
         hops = _parse_tracert_output("1.1.1.1", "")
         assert hops == []
 
+    def test_parse_tracert_output_partial_path_with_timeout_suffix(self):
+        """Partial Windows path still keeps the responsive hops and preserves RTTs."""
+        output = """Tracing route to 1.1.1.1 over a maximum of 8 hops
+
+  1    <1 ms    <1 ms    <1 ms  192.168.1.1
+  2     6 ms     6 ms     6 ms  10.50.0.1
+  3    23 ms     6 ms     6 ms  10.36.22.29
+  4     *        *        *     Request timed out.
+  5     *        *        *     Request timed out.
+  6     *        *        *     Request timed out.
+  7     *        *        *     Request timed out.
+  8     *        *        *     Request timed out.
+
+Trace complete."""
+        hops = _parse_tracert_output("1.1.1.1", output)
+
+        assert len(hops) == 8
+        assert [hop.address for hop in hops[:3]] == [
+            "192.168.1.1",
+            "10.50.0.1",
+            "10.36.22.29",
+        ]
+        assert hops[0].rtt1 == pytest.approx(0.5)
+        assert hops[1].rtt1 == pytest.approx(6.0)
+        assert hops[2].rtt1 == pytest.approx(23.0)
+        assert all(hop.responsive for hop in hops[:3])
+        assert all(not hop.responsive for hop in hops[3:])
+
+    def test_parse_tracert_output_reaches_destination(self):
+        """A successful path still yields the final target hop."""
+        output = """Tracing route to 1.1.1.1 over a maximum of 8 hops
+
+  1    <1 ms    <1 ms    <1 ms  192.168.1.1
+  2     6 ms     6 ms     6 ms  10.50.0.1
+  3    23 ms     6 ms     6 ms  10.36.22.29
+  4     8 ms     7 ms     9 ms  1.1.1.1
+
+Trace complete."""
+        hops = _parse_tracert_output("1.1.1.1", output)
+
+        assert len(hops) == 4
+        assert hops[-1].address == "1.1.1.1"
+        assert hops[-1].responsive is True
+
+    def test_discover_topology_from_unresponsive_trail_keeps_honest_hop_summary(self):
+        """Trailing timeout hops become one honest synthetic node, not a fake path."""
+        output = """Tracing route to 1.1.1.1 over a maximum of 8 hops
+
+  1    <1 ms    <1 ms    <1 ms  192.168.1.1
+  2     6 ms     6 ms     6 ms  10.50.0.1
+  3    23 ms     6 ms     6 ms  10.36.22.29
+  4     *        *        *     Request timed out.
+  5     *        *        *     Request timed out.
+  6     *        *        *     Request timed out.
+  7     *        *        *     Request timed out.
+  8     *        *        *     Request timed out.
+
+Trace complete."""
+        with mock.patch("network.traceroute.run_traceroute") as mocked:
+            mocked.return_value = TracerouteResult(
+                destination="1.1.1.1",
+                success=True,
+                hops=_parse_tracert_output("1.1.1.1", output),
+            )
+            path = discover_topology_from_traceroute(["1.1.1.1"], timeout=1)
+
+        assert len(path.devices) >= 5
+        assert any(device["name"] == "unresponsive hops (5)" for device in path.devices)
+        assert any(
+            (link["device_a"] == "1.1.1.1" and link["device_b"] == "unresponsive hops (5)")
+            or (link["device_a"] == "unresponsive hops (5)" and link["device_b"] == "1.1.1.1")
+            for link in path.links
+        )
+
 
 class TestTracerouteOutputParsing:
     """Test Unix traceroute output parsing."""

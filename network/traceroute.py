@@ -19,8 +19,8 @@ from datetime import datetime
 
 from config import utc_now
 
-#: Maximum number of hops to trace
-MAX_HOPS = 30
+#: Default maximum number of hops; keep well below the 37s Windows default loop.
+MAX_HOPS = 12
 #: Timeout in seconds for traceroute command
 TRACEROUTE_TIMEOUT = 10
 #: Maximum number of concurrent traceroutes
@@ -92,93 +92,114 @@ def _is_windows_output(output: str) -> bool:
 
 def _parse_tracert_output(destination: str, output: str) -> list[Hop]:
     """Parse Windows tracert output.
-    
-    Windows tracert format:
-        1     1 ms     1 ms     1 ms  192.168.1.1
-        2     2 ms     1 ms     2 ms  10.0.0.1
-        3    *        *        *     Request timed out.
-        4     5 ms     6 ms     4 ms  203.0.113.45
+
+    Handles the common English tracert variants as well as the captured operator
+    output where RTTs use ``<1 ms`` and trailing hops silently time out.
     """
     hops: list[Hop] = []
-    lines = output.strip().split("\n")
-    
-    for line in lines:
+    for line in output.strip().splitlines():
         line = line.strip()
         if not line:
+           continue
+
+        lower = line.lower()
+        if lower.startswith("tracing route to") or lower.startswith("over a maximum of"):
+           continue
+        if lower.startswith("trace complete"):
+           continue
+        if lower.startswith("request timed out"):
+           continue
+        if "maximum of" in lower and "hops" in lower:
             continue
-        
-        # Skip header lines
-        if line.startswith(("Tracing", "Over")) or \
-           "maximum" in line.lower() or "timeout" in line.lower():
-            continue
-        
-        # Parse hop line: "  1     1 ms     1 ms     1 ms  192.168.1.1"
-        # or: "  3    *        *        *     Request timed out."
-        match = re.match(
-            r"^\s*(\d+)\s+(?:(\d+)\s+ms|\*)\s+(?:(\d+)\s+ms|\*)\s+(?:(\d+)\s+ms|\*)\s+(.*?)\s*$",
-            line
-        )
-        if match:
-            ttl = int(match.group(1))
-            rtt1_str, rtt2_str, rtt3_str = match.group(2), match.group(3), match.group(4)
-            rest = match.group(5).strip()
-            
-            # Parse RTT values
-            def parse_rtt(s):
-                if s == "*":
-                    return None
-                try:
-                    return float(s)
-                except (ValueError, TypeError):
-                    return None
-            
-            rtt1 = parse_rtt(rtt1_str)
-            rtt2 = parse_rtt(rtt2_str)
-            rtt3 = parse_rtt(rtt3_str)
-            
-            # Check if responsive (at least one RTT is not None)
-            responsive = any(r is not None for r in (rtt1, rtt2, rtt3))
-            
-            # Extract address and hostname
-            address = None
-            hostname = None
-            
-            # Rest might be "192.168.1.1" or "router.example.com [192.168.1.1]"
-            # or "Request timed out."
-            if "Request timed out." in rest or not responsive:
-                address = None
-                hostname = None
-            else:
-                # Try to extract IP address from brackets
-                bracket_match = re.search(r"\[([^\]]+)\]", rest)
-                if bracket_match:
-                    hostname = rest.replace(bracket_match.group(0), "").strip()
-                    address = bracket_match.group(1)
-                else:
-                    # Might be just an IP or hostname
-                    parts = rest.split()
-                    if parts:
-                        # Last part is usually the address
-                        potential_addr = parts[-1]
-                        # Check if it's an IP
-                        if re.match(r"^\d+\.\d+\.\d+\.\d+$", potential_addr):
-                            address = potential_addr
-                            hostname = " ".join(parts[:-1]).strip() or None
-                        else:
-                            hostname = rest
-                            address = None
-            
-            hops.append(Hop(
-                ttl=ttl,
-                address=address,
-                hostname=hostname,
-                rtt1=rtt1,
-                rtt2=rtt2,
-                rtt3=rtt3,
-                resolved=address is not None,
-                responsive=responsive
-            ))
-    
+
+        match = re.match(r"^\s*(\d+)\s+(.*)$", line)
+        if not match:
+           continue
+        ttl = int(match.group(1))
+        rest = match.group(2).strip()
+        if not rest:
+           continue
+
+        rtt_values: list[float | None] = []
+        rtt_tokens = re.findall(r"(?:<\d+(?:\.\d+)?|\d+(?:\.\d+)?|\*)\s*ms", rest, flags=re.IGNORECASE)
+        for token in rtt_tokens[:3]:
+           value = token.split("ms", 1)[0].strip()
+           if value == "*":
+               rtt_values.append(None)
+               continue
+           if value.startswith("<"):
+               try:
+                   rtt_values.append(float(value[1:]) * 0.5)
+               except ValueError:
+                   rtt_values.append(None)
+               continue
+           try:
+               rtt_values.append(float(value))
+           except ValueError:
+               rtt_values.append(None)
+
+        if "request timed out" in rest.lower():
+           hops.append(Hop(
+               ttl=ttl,
+               address=None,
+               hostname=None,
+               rtt1=None,
+               rtt2=None,
+               rtt3=None,
+               resolved=False,
+               responsive=False,
+           ))
+           continue
+
+        if len(rtt_values) < 3:
+           # Some windows variants omit the final milliseconds marker on a timeout
+           # line or a partial response. Preserve the hop if it still has an IP.
+           rtt_values.extend([None] * (3 - len(rtt_values)))
+
+        responsive = any(v is not None for v in rtt_values)
+        if not responsive:
+           hops.append(Hop(
+               ttl=ttl,
+               address=None,
+               hostname=None,
+               rtt1=None,
+               rtt2=None,
+               rtt3=None,
+               resolved=False,
+               responsive=False,
+           ))
+           continue
+
+        remaining = re.sub(r"(?:<\d+(?:\.\d+)?|\d+(?:\.\d+)?|\*)\s*ms", " ", rest, flags=re.IGNORECASE)
+        remaining = re.sub(r"\s+", " ", remaining).strip()
+        if not remaining:
+           address = None
+           hostname = None
+        else:
+           bracket_match = re.search(r"\[([^\]]+)\]", remaining)
+           if bracket_match:
+               hostname = remaining[:bracket_match.start()].strip() or None
+               address = bracket_match.group(1).strip()
+           else:
+               parts = remaining.split()
+               if parts and re.fullmatch(r"\d+\.\d+\.\d+\.\d+", parts[-1]):
+                   address = parts[-1]
+                   hostname = " ".join(parts[:-1]).strip() or None
+               else:
+                   hostname = remaining
+                   address = None
+
+        hops.append(Hop(
+           ttl=ttl,
+           address=address,
+           hostname=hostname,
+           rtt1=rtt_values[0] if len(rtt_values) > 0 else None,
+           rtt2=rtt_values[1] if len(rtt_values) > 1 else None,
+           rtt3=rtt_values[2] if len(rtt_values) > 2 else None,
+           resolved=address is not None,
+           responsive=responsive,
+        ))
+
     return hops
 
 
@@ -296,8 +317,10 @@ def run_traceroute(destination: str, timeout: int = TRACEROUTE_TIMEOUT) -> Trace
     
     # Build safe argv list (no shell injection possible)
     if platform == "win32":
-        # Windows tracert: tracert [-d] [-h max_hops] [-j host_list] [-w timeout] target
-        argv = [cmd_name, "-h", str(MAX_HOPS), "-w", str(timeout * 1000), destination]
+        # Windows tracert: keep the max hops conservative and avoid DNS lookups;
+        # the output parser is resilient to ``<1 ms`` and timeout-only suffixes.
+        argv = [cmd_name, "-d", "-h", str(min(MAX_HOPS, 12)), "-w",
+                str(1000), destination]
     else:
         # Unix traceroute: traceroute [-m max_ttl] [-w wait_time] [-q nqueries] host
         argv = [cmd_name, "-m", str(MAX_HOPS), "-w", str(timeout),
@@ -318,6 +341,7 @@ def run_traceroute(destination: str, timeout: int = TRACEROUTE_TIMEOUT) -> Trace
             stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
+            errors="replace",
         )
         
         try:
@@ -358,56 +382,54 @@ def discover_topology_from_traceroute(
     timeout: int = TRACEROUTE_TIMEOUT
 ) -> DiscoveredPath:
     """Discover network topology by running traceroute to multiple destinations.
-    
-    Each distinct hop IP becomes a device, consecutive hops become links.
-    Paths to different destinations merge on shared hops to form a tree/graph.
-    
-    Args:
-        destinations: List of IP addresses or hostnames to trace
-        timeout: Maximum seconds to wait for each traceroute
-    
-    Returns:
-        DiscoveredPath with devices, links, and per-hop metrics
+
+    Responsive hops become real devices; trailing timeout hops are collapsed into
+    a single synthetic node so the topology stays honest without inventing IPs.
     """
     devices_dict: dict[str, dict] = {}  # address -> device info
     links_set: set[tuple[str, str]] = set()  # (src_addr, dst_addr)
     metrics_list: list[dict] = []
-    
+
+    def ensure_device(key: str, *, name: str, lab_ip: str | None, status: str = "up") -> None:
+        if key not in devices_dict:
+            devices_dict[key] = {
+                "name": name,
+                "type": "router",
+                "lab_ip": lab_ip,
+                "mgmt_ip": None,
+                "status": status,
+            }
+
     for destination in destinations:
         traceroute_result = run_traceroute(destination, timeout=timeout)
-        
         if not traceroute_result.success:
             continue
-        
-        # Track previous hop for link creation
+
         prev_hop: Hop | None = None
-        
+        last_responsive: Hop | None = None
+        trailing_unresponsive = 0
+
         for hop in traceroute_result.hops:
-            if hop.address is None:
-                # Can't create a device without an address
-                continue
-            
-            # Add device if not already seen
-            if hop.address not in devices_dict:
-                devices_dict[hop.address] = {
-                    "name": hop.address,
-                    "type": "router",  # Default, could be refined
-                    "lab_ip": hop.address,
-                    "mgmt_ip": None,
-                    "status": "up" if hop.responsive else "down"
-                }
-            
-            # Create link from previous hop to this hop
-            if prev_hop and prev_hop.address and hop.address:
-                link_key = (prev_hop.address, hop.address)
-                if link_key not in links_set:
+            if hop.address is not None:
+                last_responsive = hop
+                trailing_unresponsive = 0
+                ensure_device(
+                    hop.address,
+                    name=hop.address,
+                    lab_ip=hop.address,
+                    status="up" if hop.responsive else "down",
+                )
+                if prev_hop and prev_hop.address and hop.address:
+                    link_key = (
+                        devices_dict[prev_hop.address]["name"],
+                        devices_dict[hop.address]["name"],
+                    )
                     links_set.add(link_key)
-                # Also add reverse for undirected graph
-                reverse_key = (hop.address, prev_hop.address)
-                if reverse_key not in links_set:
-                    links_set.add(reverse_key)
-            
-            # Add per-hop RTT metrics
+                    links_set.add((link_key[1], link_key[0]))
+                prev_hop = hop
+            else:
+                trailing_unresponsive += 1
+
             if hop.responsive:
                 for i, rtt in enumerate([hop.rtt1, hop.rtt2, hop.rtt3], 1):
                     if rtt is not None:
@@ -418,19 +440,29 @@ def discover_topology_from_traceroute(
                             "value": rtt,
                             "unit": "ms",
                             "data_source": "live",
-                            "collected_at": utc_now()
+                            "collected_at": utc_now(),
                         })
-            
-            prev_hop = hop
-    
-    # Convert to lists
+
+        if trailing_unresponsive and last_responsive and last_responsive.address:
+            destination_key = destination
+            ensure_device(destination_key, name=destination, lab_ip=destination, status="up")
+            synthetic_key = f"__unresponsive_{len(devices_dict)}_{destination_key}"
+            synthetic_name = f"unresponsive hops ({trailing_unresponsive})"
+            ensure_device(synthetic_key, name=synthetic_name, lab_ip=None, status="down")
+            last_name = devices_dict[last_responsive.address]["name"]
+            destination_name = devices_dict[destination_key]["name"]
+            links_set.add((last_name, synthetic_name))
+            links_set.add((synthetic_name, last_name))
+            links_set.add((synthetic_name, destination_name))
+            links_set.add((destination_name, synthetic_name))
+
     devices = list(devices_dict.values())
-    links = [{"device_a": src, "device_b": dst, "status": "up"} 
-             for src, dst in links_set]
-    
+    links = [{"device_a": src, "device_b": dst, "status": "up"}
+             for src, dst in sorted(set(links_set))]
+
     return DiscoveredPath(
         destination=", ".join(destinations),
         devices=devices,
         links=links,
-        metrics=metrics_list
+        metrics=metrics_list,
     )

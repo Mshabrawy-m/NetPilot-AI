@@ -93,29 +93,35 @@ def filter_names(names: Iterable[str], source: str) -> list[str]:
 
 
 def available_sources(session) -> list[str]:
-    """Sources that have at least one stored metric series.
+    """Return the sources that actually have rows, ordered for the UI.
 
-    ``live`` is always offered because the native collector is a valid live
-    source even before its first cycle lands.  It is listed **first** only when
-    live measurements actually exist, so a database that contains only seeded
-    simulated rows defaults to the simulated source instead of an empty live
-    view.  Demo mode is handled by the existing demo banner and is not offered
-    as a selectable live-mode source.
+    The default should always be a source that has data. When only simulated rows
+    exist we prefer simulated first; when live rows exist, live stays first.
+    When neither source has data the UI still presents the live source as the
+    default entry point for collection, without inventing a fake simulated graph.
     """
     found: set[str] = set()
     try:
         from database import repository
-        for (_device, _metric, _unit, source) in \
-                repository.get_available_metrics(session):
+        for (_device, _metric, _unit, source) in repository.get_available_metrics(session):
             if source:
                 found.add(str(source))
     except Exception:  # noqa: BLE001 - a page must render even if the DB is down
         found = set()
     found.discard(DEMO)
-    others = sorted(found - {LIVE})
-    if LIVE in found:
-        return [LIVE] + others
-    return others + [LIVE]
+
+    if not found:
+        return [LIVE]
+
+    others = sorted(found - {LIVE, SIMULATED})
+    if LIVE in found and SIMULATED in found:
+        result = [LIVE, SIMULATED]
+    elif SIMULATED in found:
+        result = [SIMULATED, LIVE]
+    else:
+        result = [LIVE]
+    result.extend(others)
+    return result
 
 
 def default_source(sources: Sequence[str], demo_mode: bool = False) -> str:
