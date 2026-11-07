@@ -23,8 +23,10 @@ source = source_controls.selector(
 devices = read(lambda s: source_scope.filter_devices(
     list(repository.get_devices(s)), source))
 status = topology_service.compute_network_status(devices)
+# Ensure data_source is properly typed: None for demo mode, string otherwise
+data_source_value = None if source == source_scope.DEMO else str(source)
 last_run = read(lambda s: repository.get_last_successful_run(
-    s, data_source=None if source == source_scope.DEMO else source))
+    s, data_source=data_source_value))
 
 _tone = {"healthy": "ok", "degraded": "warn", "down": "bad", "unknown": "muted"}
 _badge = {"healthy": "🟢 HEALTHY", "degraded": "🟡 DEGRADED",

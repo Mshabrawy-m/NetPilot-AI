@@ -8,8 +8,12 @@ st.set_page_config(page_title="NetPilot AI", page_icon="🛰️", layout="wide")
 
 def _overview() -> None:
     """Evidence-backed landing page with the most useful network signals."""
+    from config import get_settings
     from services.app_state import (
-        bootstrap, demo_banner_if_active, read, sidebar_status,
+        bootstrap,
+        demo_banner_if_active,
+        read,
+        sidebar_status,
     )
     from ui import theme
 
@@ -26,7 +30,6 @@ def _overview() -> None:
     from services import topology_service
     from ui import source_controls
 
-    from config import get_settings
     settings = get_settings()
 
     sources = read(lambda session: source_scope.available_sources(session))
@@ -36,8 +39,10 @@ def _overview() -> None:
     devices = read(lambda session: source_scope.filter_devices(
         list(repository.get_devices(session)), source))
     status = topology_service.compute_network_status(devices)
+    # Ensure data_source is properly typed: None for demo mode, string otherwise
+    data_source_value = None if source == source_scope.DEMO else str(source)
     last_run = read(lambda session: repository.get_last_successful_run(
-        session, data_source=None if source == source_scope.DEMO else source))
+        session, data_source=data_source_value))
 
     tone = {
         "healthy": "ok", "degraded": "warn", "down": "bad", "unknown": "muted",
