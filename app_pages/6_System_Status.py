@@ -44,10 +44,12 @@ c3.metric("Lab nodes running", len([n for n in nodes
                                     if str(n.get("state", "")).lower() in {"running", "up"}]))
 if not avail["containerlab"]:
     st.warning(
-        "Containerlab is not available on this host, so the live lab cannot "
-        "be inspected or measured here. Deploy the lab on a Docker-supported "
-        "system (README → Lab deployment). This is reported honestly instead "
-        "of shown as fake data.", icon="🧪")
+        "Containerlab is not available on this host, so the virtual lab cannot "
+        "be deployed, inspected or measured here. Independent live "
+        "measurements can still arrive from the standalone Windows collector "
+        "(`tools/live_collector.py`); this panel only reports Containerlab "
+        "state. This is reported honestly instead of shown as fake data.",
+        icon="🧪")
 elif not nodes:
     st.warning("Containerlab exists but no running 'netpilot' lab was found. "
                "Deploy it with `containerlab deploy -t lab/topology.clab.yml`."

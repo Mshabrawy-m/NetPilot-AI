@@ -55,14 +55,16 @@ else:
 
 from config import get_settings
 from network import containerlab_manager
+
 settings = get_settings()
 avail = containerlab_manager.availability()
 if not settings.demo_mode and not avail["containerlab"]:
-    st.error(
-        "Cannot connect to the virtual lab: Containerlab is not installed on "
-        "this host. Live metrics are unavailable until the lab is deployed on "
-        "a Docker-supported environment (README → Lab deployment).",
-        icon="🚫",
+    st.info(
+        "Containerlab is not installed on this host, so the virtual lab cannot "
+        "be deployed or inspected here. Live measurements are still collected "
+        "by the standalone Windows collector (`tools/live_collector.py`) and "
+        "appear with source `live`.",
+        icon="ℹ️",
     )
 if not devices:
     st.info("The inventory is empty - devices appear after the first "

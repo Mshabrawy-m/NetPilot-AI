@@ -1,150 +1,219 @@
-# NetPilot AI — Live Data Demo Runbook (Windows, no Docker)
+# LIVE Demo Runbook (Phase 3A)
 
-This document describes how to flow **real network measurements** into the
-Neon-backed Streamlit Cloud app using the Windows-native live collector.
-Containerlab, Docker, and FRR are NOT required.
+This runbook drives the **Windows-native live collector**. It runs real ICMP
+probes from the operator machine, writes `data_source='live'` measurements to
+Neon Production, and lets the existing Live pages analyse them. Docker,
+Containerlab, WSL and FRR are **not** required.
 
----
+Safety properties, unchanged throughout:
 
-## Prerequisites
+- `NETPILOT_CHANGE_LOOP_ENABLED=false` and
+  `NETPILOT_LAB_EXECUTION_ENABLED=false`; nothing is configured or executed.
+- The collector writes with the least-privilege `netpilot_collector` role only.
+- Demo rows and live rows are never mixed. Every collector row is labelled
+  `data_source='live'`.
+- DSNs and passwords are never printed, logged or committed.
 
-| Requirement | Status |
-|---|---|
-| Windows host with `ping.exe` | built-in |
-| Internet access (8.8.8.8, 1.1.1.1) | required |
-| WCM credential `netpilot/prod/netpilot_collector` | provisioned by Phase 2 |
-| Neon schema ready (22 tables) | provisioned by Phase 2 |
-| Streamlit Cloud app running (Live Mode) | `NETPILOT_DEMO_MODE=false` in Secrets |
-| Safety flags OFF | `CHANGE_LOOP_ENABLED=false`, `LAB_EXECUTION_ENABLED=false` |
+## 1. Prerequisites
 
----
+1. **Operator host**: Windows with the project `.venv` and OS `ping`.
+   `psutil` is optional; local NIC counters are skipped when it is absent.
+2. **Collector credential** in Windows Credential Manager, target
+   `netpilot/prod/netpilot_collector` (user `netpilot_collector`). The runner
+   reads it in-process and never echoes it. Alternatively export
+   `NETPILOT_DB_URL_COLLECTOR` in the shell.
+3. **Neon schema and grants** already deployed: `netpilot_collector` has INSERT
+   on `metric_samples` and INSERT/UPDATE on `devices`, `interfaces`, `links`,
+   `collection_runs`, `incidents`.
+4. **Live mode** for the process: `NETPILOT_DEMO_MODE=false`. The collector
+   refuses to run while demo mode is on, because live and demo data must never
+   mix.
 
-## 1. Collect real telemetry
+No Cloud Secrets change is needed for the collector. The Cloud app only needs a
+manual **Reboot** after code changes; new rows in Neon appear without a reboot.
 
-Run from the project root in PowerShell:
+## 2. Prepare the PowerShell session
+
+`config.py` loads `.env` at import, but `python-dotenv` never overrides a
+variable that is already set. Export the live-mode flags in the shell so a
+local `.env` with `NETPILOT_DEMO_MODE=true` cannot block the run:
 
 ```powershell
-# One-shot (quick test):
+cd "E:\Graduation Projects\NetPilot AI"
+
 $env:NETPILOT_DEMO_MODE = "false"
-.venv\Scripts\python.exe tools/live_collector.py --once --no-interfaces
+$env:NETPILOT_CHANGE_LOOP_ENABLED = "false"
+$env:NETPILOT_LAB_EXECUTION_ENABLED = "false"
 
-# Sustained (5 s interval, 10 minutes):
-.venv\Scripts\python.exe tools/live_collector.py --interval 5 --duration 600
-
-# Custom targets:
-.venv\Scripts\python.exe tools/live_collector.py --targets gateway,1.1.1.1,8.8.8.8,9.9.9.9 --interval 10 --duration 300
+# Optional: verify the credential is present without printing it.
+cmdkey /list | Select-String "netpilot/prod/netpilot_collector"
 ```
 
-### Expected output
+## 3. Run one deterministic cycle
+
+```powershell
+.venv\Scripts\python.exe tools\live_collector.py `
+    --once --no-interfaces --count 3 --timeout 1
+```
+
+Observed output on the operator machine (addresses and timings vary):
 
 ```
+INFO netpilot.live_collector: collector credential loaded from wcm (value not printed)
+INFO netpilot.live_collector: targets: gateway=192.168.1.1, cloudflare-dns=1.1.1.1, google-dns=8.8.8.8
+INFO netpilot.live_collector: interval=30.0s count=3 timeout=1.0s interfaces=off
+INFO netpilot.live_collector: cycle 1: status=ok inserted=9 skipped=0 up=3/3
 Live collector summary
-  cycles: 12
-  samples inserted: 108 (duplicates skipped: 0)
+  cycles: 1
+  samples inserted: 9 (duplicates skipped: 0)
   targets: gateway=192.168.1.1, cloudflare-dns=1.1.1.1, google-dns=8.8.8.8
   last cycle status: ok
 ```
 
-### What it writes
+Nine rows = three targets × three ping metrics. Omit `--no-interfaces` to add
+the local NIC counters.
 
-Per cycle, per target:
-- `ping.avg_rtt_ms` — average round-trip time (ms)
-- `ping.jitter_ms` — statistical jitter across replies (ms)
-- `ping.loss_pct` — packet loss percentage (%)
+Per target the collector records `ping.avg_rtt_ms`, `ping.jitter_ms` and
+`ping.loss_pct`. A failed probe stores `NULL` RTT/jitter and `100.0` loss; values
+are never invented. With NIC counters enabled it also stores
+`if.rx_bytes`/`if.tx_bytes`/error/drop counters and `if.operstate` under the
+`collector-host` device. Add `--no-interfaces` for the smallest, fastest batch.
 
-All rows tagged `data_source='live'`.
+Writes are one batched INSERT per cycle. The idempotency key is
+`(device_name, interface_name, metric)` at second-resolution `collected_at`, so
+a repeated `--once` in the same second is skipped rather than duplicated.
+Transient database errors retry with backoff; a failed write is reported and the
+next cycle retries.
 
-### Minimum data thresholds
-
-| Feature | Non-null points required | Achieved after ~cycles |
-|---|---|---|
-| Data Analysis | 5 | 2 |
-| Anomaly Detection | 12 | 4 (at 5 s interval) |
-| Forecasting | 30 | 10 |
-
----
-
-## 2. Verify data in Streamlit Cloud
-
-1. Open https://netpilot-ai.streamlit.app/
-2. Navigate to **Data Analysis** → select a device (e.g. `google-dns`), metric
-   (`ping.avg_rtt_ms`), time range → a real time-series chart appears.
-3. Navigate to **Anomalies** → click **Run Detection** → if enough points exist
-   (≥12), the detector returns any statistical outliers.
-
----
-
-## 3. Trigger a real anomaly (safe, documented)
-
-**Method**: Ping a host that responds slowly or intermittently.
-No disruption to your machine or the production targets.
+## 4. Continuous collection
 
 ```powershell
-# Add a slow/unreliable target (TEST-NET-1, RFC 5737, unreachable by design):
-.venv\Scripts\python.exe tools/live_collector.py --targets "unstable=192.0.2.1,8.8.8.8" --interval 5 --duration 120
+# One cycle every 30 seconds for 30 minutes, then a clean summary.
+.venv\Scripts\python.exe tools\live_collector.py `
+    --interval 30 --duration 1800
+
+# Or run until Ctrl+C; the exit is clean (code 0).
+.venv\Scripts\python.exe tools\live_collector.py --interval 30
 ```
 
-`192.0.2.1` (TEST-NET-1) will show 100% loss → after 12+ cycles, the anomaly
-detector flags `ping.loss_pct` spike. The Anomalies page shows:
-- The detected event with severity, source detector, and timestamp.
-- The underlying context series.
+`--duration 0` (the default) means "until Ctrl+C". The summary prints on both
+normal completion and Ctrl+C.
 
----
+Exit codes: `0` success, `1` collection error (all probes failed), `2`
+configuration/credential error, `3` database error.
 
-## 4. Full pipeline walkthrough
+## 5. Targets and identities
 
-| Step | Page | Expected result |
-|---|---|---|
-| Collect | (terminal) | `samples inserted: N` |
-| View data | Data Analysis | Real RTT/loss/jitter charts |
-| Detect anomaly | Anomalies → Run Detection | Detects the `unstable` target spike |
-| Forecast | Forecasting → Run | Needs ≥30 points; shows band + prediction if enough |
-| RCA | Anomalies → event detail | Root-cause context (if configured) |
-| AI recommendation | AI Network Assistant | Ask "What's wrong with unstable?" |
-| Digital Twin | (disabled) | `data_source=live` binding exists, verification pending |
-| Approval card | (disabled) | `CHANGE_LOOP_ENABLED=false` → no execution path |
-
-**Safety boundaries**: Execution (change loop, lab commands) is permanently
-disabled on the hosted plane. No device configuration happens.
-
----
-
-## 5. Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `ERROR: no collector credential found` | Run `python tools/provision_neon_prod.py` once to store WCM credentials |
-| `destination unreachable (100% loss)` for all targets | Check internet connectivity; firewall may block outbound ICMP |
-| `ping binary not available` | Verify `C:\Windows\System32\PING.EXE` exists |
-| `NETPILOT_DEMO_MODE=true` refusal | Set `$env:NETPILOT_DEMO_MODE = "false"` before running |
-| Cloud shows no data | Verify collector DSN points to the same Neon branch as Cloud (`fingerprint=f5ee5ef2`) |
-
----
-
-## 6. Stop conditions (do NOT proceed if)
-
-- You see the collector attempting to write `data_source='demo'` (it shouldn't).
-- Safety flags are enabled.
-- The Cloud app is in Demo Mode.
-
----
-
-## Quick reference (all commands)
+Default: `gateway,1.1.1.1,8.8.8.8`. `gateway` is auto-detected from the OS
+routing table and skipped if detection fails.
 
 ```powershell
-# Activate the virtual environment
-cd "e:\Graduation Projects\NetPilot AI"
+# Explicit list (ADDRESS or LABEL=ADDRESS):
+.venv\Scripts\python.exe tools\live_collector.py --once `
+    --targets "gateway,1.1.1.1,8.8.8.8,9.9.9.9"
 
-# Single cycle
-$env:NETPILOT_DEMO_MODE = "false"
-.venv\Scripts\python.exe tools/live_collector.py --once
-
-# 10 minutes at 5s interval
-.venv\Scripts\python.exe tools/live_collector.py --interval 5 --duration 600
-
-# 5 minutes with a high-loss target for anomaly generation
-.venv\Scripts\python.exe tools/live_collector.py --targets "unstable=192.0.2.1,gateway,8.8.8.8" --interval 5 --duration 300
-
-# Run tests only (offline, no DB)
-.venv\Scripts\python.exe -m pytest tests/test_live_collector.py -v
+# Stable custom identity, e.g. to measure a different address under the same
+# device label later:
+.venv\Scripts\python.exe tools\live_collector.py --once `
+    --targets "gateway,1.1.1.1,demo-target=192.0.2.10"
 ```
+
+Known addresses map to stable labels: `1.1.1.1` → `cloudflare-dns`, `8.8.8.8` →
+`google-dns`, `9.9.9.9` → `quad9-dns`. Other IPv4 addresses map to
+`target-<ip-with-dashes>`; hostnames map to `target-<slug>`; an explicit
+`LABEL=ADDRESS` always wins. Labels are validated (alphanumeric, `.`, `_`, `-`),
+addresses are validated IPv4 literals or DNS hostnames, and `ping` is invoked
+with a fixed argv list and `shell=False` — no shell injection is possible.
+
+## 6. Verify the Live pages
+
+Open the Cloud app. Every source selector defaults to `live` when
+`NETPILOT_DEMO_MODE=false`; the available-source lists are built from stored
+measurements, and demo rows live in the separate demo store, so live pages show
+only `data_source='live'`.
+
+| Page | What to check | Honest sparse state |
+| --- | --- | --- |
+| Overview | last successful run says `[source: live]`, device counts | "No successful data collection yet" |
+| Topology | live nodes and link status | "Isolated (no links)" warning, nodes listed |
+| Metrics & History | RTT/jitter/loss charts per device | "No measured values exist for device ..." |
+| Anomalies | persisted events for `live` only | "No persisted anomaly events match these filters ..." |
+| Forecasting | forecastable series and runs | "Not forecastable yet: ... needs >= 30 non-null samples, has N" |
+| Operations center (RCA / insights / Digital Twin / approval) | live events, impact report, simulation status | "No alert rules yet", "Need at least 2 open anomalies ..." |
+| System status | recent runs show `Source: live`, DB reachable | Containerlab warning only describes the virtual lab |
+
+Analysis floors are explicit: `min_points_analysis=5`,
+`min_points_detection=12`, `min_points_forecast=30`. Thinner series are reported
+as skipped with the required count, never plotted as if complete.
+
+## 7. Repeatable end-to-end scenario (execution disabled)
+
+The scenario creates a **real** anomaly from real probes without touching the
+operator network: keep one stable device label (`demo-target`) and change only
+the address it measures. Phase A establishes a baseline; phase B points the same
+label at a deliberately unreachable TEST-NET-2 address (`198.51.100.42`). The
+measurements are genuine; only the target choice is deliberate.
+
+1. **Baseline** — 12 cycles (the detection floor) at 5-second spacing:
+   ```powershell
+   .venv\Scripts\python.exe tools\live_collector.py `
+       --targets "gateway,1.1.1.1,8.8.8.8,demo-target=1.1.1.1" `
+       --interval 5 --duration 60 --count 3 --timeout 1
+   ```
+2. **Inject the change** — same label, unreachable address:
+   ```powershell
+   .venv\Scripts\python.exe tools\live_collector.py `
+       --targets "gateway,1.1.1.1,8.8.8.8,demo-target=198.51.100.42" `
+       --interval 5 --duration 60 --count 3 --timeout 1
+   ```
+   `demo-target` now has `ping.loss_pct=100` and `NULL` RTT samples after a
+   baseline of reachable samples.
+3. **Anomalies** — open *Anomalies*, select source `live`, device
+   `demo-target`, metric `ping.loss_pct`, and press the detection button. The
+   rolling-MAD/z-score result explains the deviation against the trailing
+   baseline. A `data quality` result naming `min_points_detection=12` is the
+   honest sparse state when fewer samples exist.
+4. **RCA and recommendation** — open the event's investigation. The RCA service
+   links evidence and produces a recommendation. Read it; nothing is applied.
+5. **Agent recommendation** — the assistant/ops insights can explain the
+   evidence and propose the next investigation. This is advisory text only.
+6. **Digital Twin** — the Operations center renders a read-only simulation
+   report (`SIMULATED`, `PARTIAL`, `INSUFFICIENT`, `INVALID` or `NOT
+   SIMULATED`). A simulation is not proof that a real change is safe.
+7. **Approval card** — the change-loop tab shows the request, impact report and
+   approval controls. `NETPILOT_CHANGE_LOOP_ENABLED=false` keeps **apply**
+   disabled by design; the card is recorded, not executed. No post-change
+   verification or rollback runs.
+
+To restore normal collection, rerun step 1 or drop the `demo-target` entry.
+
+## 8. Troubleshooting
+
+| Symptom | Cause / fix |
+| --- | --- |
+| `live collector requires NETPILOT_DEMO_MODE=false` | Export the flag in the shell (section 2); `.env` alone may not override it. |
+| `no collector credential found` | Store the DSN in WCM target `netpilot/prod/netpilot_collector`, or set `NETPILOT_DB_URL_COLLECTOR`. |
+| `collector requires a PostgreSQL connection ...` | The resolved collector URL is SQLite. Fix the role credential; do not change grants. |
+| `default gateway could not be detected; skipping it` | Expected on unusual routing setups; other targets still run. |
+| `ping` reported `unsupported` | The OS `ping` binary is missing or not executable; the cycle continues. |
+| Repeated `--once` inserts 0 samples | Same-second idempotency key; wait one second and rerun. |
+
+## 9. Validate the shipped change
+
+```powershell
+.venv\Scripts\python.exe -m compileall -q tools/live_collector.py database/repository.py app_pages/1_Overview.py app_pages/6_System_Status.py
+.venv\Scripts\ruff.exe check tools/live_collector.py tests/test_live_collector.py app_pages/1_Overview.py app_pages/6_System_Status.py
+.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\python.exe tools/secret_scan_check.py
+
+git status --porcelain
+git diff --stat
+git push origin main
+git rev-parse HEAD
+git rev-parse origin/main   # must match HEAD
+```
+
+`database/repository.py` has pre-existing ruff findings (UP035/RUF100) outside
+this change; do not rewrite them here. After pushing code, press **Reboot** on
+share.streamlit.io so the app re-clones. Data-only changes in Neon need no
+reboot.

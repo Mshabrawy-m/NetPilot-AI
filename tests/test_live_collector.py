@@ -99,7 +99,7 @@ def _failed_ping(address, count, timeout):
 def _cycle(fixed_time):
     return live_collector.run_cycle(
         [live_collector.TargetSpec("1.1.1.1", "cloudflare-dns")],
-        ping_fn=_ok_ping, interface_fn=lambda: [],
+        ping_fn=_ok_ping, interface_fn=list,
         now_fn=lambda: fixed_time)
 
 
@@ -276,7 +276,7 @@ def test_run_cycle_maps_real_metrics_to_a_stable_device():
     fixed = dt.datetime(2026, 1, 1, 0, 0, 0, 123456)
     result = live_collector.run_cycle(
         [live_collector.TargetSpec("1.1.1.1", "cloudflare-dns")],
-        ping_fn=_ok_ping, interface_fn=lambda: [],
+        ping_fn=_ok_ping, interface_fn=list,
         now_fn=lambda: fixed)
 
     assert result.status == "ok"
@@ -296,7 +296,7 @@ def test_run_cycle_maps_real_metrics_to_a_stable_device():
 def test_run_cycle_keeps_unmeasured_values_null():
     result = live_collector.run_cycle(
         [live_collector.TargetSpec("192.0.2.1", "demo-target")],
-        ping_fn=_failed_ping, interface_fn=lambda: [],
+        ping_fn=_failed_ping, interface_fn=list,
         now_fn=lambda: dt.datetime(2026, 1, 1))
     assert result.status == "error"
     by_metric = {s["metric"]: s["value"] for s in result.samples}
