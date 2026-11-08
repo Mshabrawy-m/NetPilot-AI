@@ -44,19 +44,21 @@ class NetworkStatus:
 def compute_network_status(devices: list) -> NetworkStatus:
     """Pure function implementing the documented rules above.
 
-    Unresponsive placeholder hops are tracked as ``unknown`` so they are not
-    counted as down devices and do not skew the health threshold.
+    The topology service reports the full inventory totals, but the health band is
+    computed from the active subset (``up`` + ``down``). Unknown/unresponsive
+    placeholder hops are tracked separately and never turn a healthy network into
+    a degraded one, while an all-unknown fleet still resolves to ``down``.
     """
-    active = [d for d in devices if d.status in {"up", "down"}]
-    total = len(active)
-    up = sum(1 for d in active if d.status == "up")
-    down = sum(1 for d in active if d.status == "down")
-    unknown = sum(1 for d in devices if d.status == "unknown")
-    if total == 0:
-        overall = "unknown"
-    elif up == total:
+    total = len(devices)
+    up = sum(1 for d in devices if d.status == "up")
+    down = sum(1 for d in devices if d.status == "down")
+    unknown = sum(1 for d in devices if d.status not in {"up", "down"})
+    active_total = up + down
+    if active_total == 0:
+        overall = "unknown" if total == 0 else "down"
+    elif up == active_total:
         overall = "healthy"
-    elif up >= math.ceil(total / 2):
+    elif up >= math.ceil(active_total / 2):
         overall = "degraded"
     else:
         overall = "down"

@@ -1,0 +1,104 @@
+Timeout (0:00:12)!
+Thread 0x00004ec4 (most recent call first):
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 90 in _worker
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x000049c4 (most recent call first):
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 90 in _worker
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00000f9c (most recent call first):
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\watcher\polling_path_watcher.py", line 90 in task
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 59 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 93 in _worker
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00002c44 (most recent call first):
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\watcher\polling_path_watcher.py", line 90 in task
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 59 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 93 in _worker
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00005184 (most recent call first):
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\socket.py", line 295 in accept
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\socket.py", line 627 in _fallback_socketpair
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 787 in _make_self_pipe
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 640 in __init__
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\windows_events.py", line 316 in __init__
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\events.py", line 720 in new_event_loop
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\events.py", line 823 in new_event_loop
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 137 in _lazy_init
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 58 in __enter__
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 194 in run
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\web\bootstrap.py", line 160 in _run_server_loop
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\web\bootstrap.py", line 541 in run
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\web\cli.py", line 436 in _main_run
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\web\cli.py", line 358 in main_run
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 910 in invoke
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 1415 in invoke
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 2032 in invoke
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 1552 in main
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 1631 in __call__
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\__main__.py", line 20 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main
+Timeout (0:00:12)!
+Thread 0x00004ec4 (most recent call first):
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 90 in _worker
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x000049c4 (most recent call first):
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 90 in _worker
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00000f9c (most recent call first):
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\watcher\polling_path_watcher.py", line 90 in task
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 59 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 93 in _worker
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00002c44 (most recent call first):
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\watcher\polling_path_watcher.py", line 90 in task
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 59 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 93 in _worker
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00005184 (most recent call first):
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\socket.py", line 295 in accept
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\socket.py", line 627 in _fallback_socketpair
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 787 in _make_self_pipe
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 640 in __init__
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\windows_events.py", line 316 in __init__
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\events.py", line 720 in new_event_loop
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\events.py", line 823 in new_event_loop
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 137 in _lazy_init
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 58 in __enter__
+  File "C:\Users\USER\AppData\Local\Programs\Python\Python312\Lib\asyncio\runners.py", line 194 in run
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\web\bootstrap.py", line 160 in _run_server_loop
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\web\bootstrap.py", line 541 in run
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\web\cli.py", line 436 in _main_run
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\web\cli.py", line 358 in main_run
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 910 in invoke
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 1415 in invoke
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 2032 in invoke
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 1552 in main
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\click\core.py", line 1631 in __call__
+  File "E:\Graduation Projects\NetPilot AI\.venv\Lib\site-packages\streamlit\__main__.py", line 20 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 198 in _run_module_as_main

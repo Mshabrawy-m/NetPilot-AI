@@ -46,17 +46,32 @@ def _looks_like_ip(value: str | None) -> bool:
 
 def _find_device_by_ip(session: Session, *, mgmt_ip: str | None = None,
                        lab_ip: str | None = None) -> Device | None:
-    """Return the existing device row for a shared IP, if one is already known."""
+    """Return an existing placeholder row only when the IP is effectively unique.
+
+    Distinct named devices may legitimately share the same lab IP in the
+    transient test fixtures or in a topology snapshot; blindly collapsing every
+    same-IP match would merge two different devices into one record. We only
+    reuse a row when it is effectively a placeholder or the same IP is unique.
+    """
+    matches: list[Device] = []
     for value in (mgmt_ip, lab_ip):
         if not value:
             continue
-        device = session.scalar(
-            select(Device).where(
-                (Device.mgmt_ip == value) | (Device.lab_ip == value)
-            )
+        matches.extend(
+            session.scalars(
+                select(Device).where(
+                    (Device.mgmt_ip == value) | (Device.lab_ip == value)
+                )
+            ).all()
         )
-        if device is not None:
-            return device
+    if not matches:
+        return None
+    if len(matches) > 1:
+        return None
+    device = matches[0]
+    name = str(device.name or "")
+    if not name or _looks_like_ip(name) or name.startswith("target-"):
+        return device
     return None
 
 
