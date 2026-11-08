@@ -392,16 +392,36 @@ def discover_topology_from_traceroute(
     devices_dict: dict[str, dict] = {}  # address -> device info
     links_set: set[tuple[str, str]] = set()  # (src_addr, dst_addr)
     metrics_list: list[dict] = []
+    friendly_names = {
+        "1.1.1.1": "cloudflare-dns",
+        "8.8.8.8": "google-dns",
+        "9.9.9.9": "quad9-dns",
+        "208.67.222.222": "opendns",
+    }
+
+    def canonical_device_name(address: str | None, *, default: str) -> str:
+        if not address:
+            return default
+        return friendly_names.get(address, default)
 
     def ensure_device(key: str, *, name: str, lab_ip: str | None, status: str = "up") -> None:
         if key not in devices_dict:
             devices_dict[key] = {
-                "name": name,
-                "type": "router",
-                "lab_ip": lab_ip,
-                "mgmt_ip": None,
-                "status": status,
+               "name": name,
+               "type": "router",
+               "lab_ip": lab_ip,
+               "mgmt_ip": None,
+               "status": status,
             }
+            return
+        existing = devices_dict[key]
+        if not existing["name"] or existing["name"] == key:
+            existing["name"] = name
+        if not existing["lab_ip"] and lab_ip:
+            existing["lab_ip"] = lab_ip
+        if status != "up" and existing["status"] == "up":
+            return
+        existing["status"] = status
 
     for destination in destinations:
         traceroute_result = run_traceroute(destination, timeout=timeout)
@@ -414,45 +434,45 @@ def discover_topology_from_traceroute(
 
         for hop in traceroute_result.hops:
             if hop.address is not None:
-                last_responsive = hop
-                trailing_unresponsive = 0
-                ensure_device(
-                    hop.address,
-                    name=hop.address,
-                    lab_ip=hop.address,
-                    status="up" if hop.responsive else "unknown",
-                )
-                if prev_hop and prev_hop.address and hop.address:
-                    link_key = tuple(sorted((
-                        devices_dict[prev_hop.address]["name"],
-                        devices_dict[hop.address]["name"],
-                    )))
-                    links_set.add(link_key)
-                prev_hop = hop
+               last_responsive = hop
+               trailing_unresponsive = 0
+               resolved_name = canonical_device_name(hop.address, default=hop.address)
+               ensure_device(
+                   hop.address,
+                   name=resolved_name,
+                   lab_ip=hop.address,
+                   status="up" if hop.responsive else "unknown",
+               )
+               if prev_hop and prev_hop.address and hop.address:
+                   prev_name = canonical_device_name(prev_hop.address, default=devices_dict[prev_hop.address]["name"])
+                   curr_name = canonical_device_name(hop.address, default=devices_dict[hop.address]["name"])
+                   link_key = tuple(sorted((prev_name, curr_name)))
+                   links_set.add(link_key)
+               prev_hop = hop
             else:
-                trailing_unresponsive += 1
+               trailing_unresponsive += 1
 
-            if hop.responsive:
-                for i, rtt in enumerate([hop.rtt1, hop.rtt2, hop.rtt3], 1):
-                    if rtt is not None:
-                        metrics_list.append({
-                            "device_name": hop.address,
-                            "interface_name": None,
-                            "metric": f"traceroute.hop_{i}_rtt_ms",
-                            "value": rtt,
-                            "unit": "ms",
-                            "data_source": "live",
-                            "collected_at": utc_now(),
-                        })
+            if hop.responsive and hop.address is not None:
+               for i, rtt in enumerate([hop.rtt1, hop.rtt2, hop.rtt3], 1):
+                   if rtt is not None:
+                       metrics_list.append({
+                           "device_name": devices_dict[hop.address]["name"],
+                           "interface_name": None,
+                           "metric": f"traceroute.hop_{i}_rtt_ms",
+                           "value": rtt,
+                           "unit": "ms",
+                           "data_source": "live",
+                           "collected_at": utc_now(),
+                       })
 
         if trailing_unresponsive and last_responsive and last_responsive.address:
             destination_key = destination
-            ensure_device(destination_key, name=destination, lab_ip=destination, status="up")
-            synthetic_key = f"__unresponsive_{len(devices_dict)}_{destination_key}"
-            synthetic_name = f"unresponsive hops ({trailing_unresponsive})"
+            destination_name = destination_key
+            ensure_device(destination_key, name=destination_name, lab_ip=destination, status="up")
+            synthetic_key = f"__unresponsive__{destination_key}"
+            synthetic_name = f"unresponsive-path:{destination_key}"
             ensure_device(synthetic_key, name=synthetic_name, lab_ip=None, status="unknown")
-            last_name = devices_dict[last_responsive.address]["name"]
-            destination_name = devices_dict[destination_key]["name"]
+            last_name = devices_dict[last_responsive.address].get("name", last_responsive.address)
             for pair in (
                tuple(sorted((last_name, synthetic_name))),
                tuple(sorted((synthetic_name, destination_name))),

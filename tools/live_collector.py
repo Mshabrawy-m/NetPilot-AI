@@ -67,7 +67,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from config import get_settings
 from database import connection, repository, roles
@@ -604,25 +604,63 @@ class PersistOutcome:
     error: str | None = None
 
 
+def _log_integrity_error(context: str, exc: IntegrityError) -> None:
+    """Log DB uniqueness conflicts without exposing credentials or values."""
+    diag = getattr(getattr(exc, "orig", None), "diag", None)
+    table_name = getattr(diag, "table_name", None) if diag is not None else None
+    constraint_name = (
+        getattr(diag, "constraint_name", None) if diag is not None else None
+    )
+    logger.error(
+        "%s: IntegrityError class=%s table=%s constraint=%s",
+        context,
+        type(exc).__name__,
+        table_name,
+        constraint_name,
+    )
+
+
+def _topology_save(session, label: str, action):
+    try:
+        with session.begin_nested():
+            action()
+        return True
+    except IntegrityError as exc:
+        _log_integrity_error(label, exc)
+        return False
+
+
 def _sync_topology(session, result: CycleResult) -> None:
     """Persist the logical live topology derived from the probe targets.
 
     Real probe data gives the operator host, its default gateway and the
-    measured targets.  The edges are a *logical* model of the path that was
-    actually exercised (host -> gateway -> target); they are never a routing
-    table or a fabricated link inventory.  Status values come from the probes.
+    measured targets. The edges are a logical model of the path actually
+    exercised; they are never a routing table or a fabricated link inventory.
     """
     for spec in result.targets:
-        repository.upsert_device(
-            session, name=spec.label, type_="target", mgmt_ip=spec.address,
-            status=result.device_statuses.get(spec.label, "unknown"))
+        _topology_save(
+            session,
+            f"device:{spec.label}",
+            lambda spec=spec: repository.upsert_device(
+                session,
+                name=spec.label,
+                type_="target",
+                mgmt_ip=spec.address,
+                status=result.device_statuses.get(spec.label, "unknown"),
+            ),
+        )
 
-    # The collector host is always part of the live topology, even when the
-    # optional NIC counter source is unavailable.
     any_up = any(status == "up" for status in result.device_statuses.values())
-    repository.upsert_device(
-        session, name="collector-host", type_="host",
-        status="up" if any_up else "unknown")
+    _topology_save(
+        session,
+        "device:collector-host",
+        lambda: repository.upsert_device(
+            session,
+            name="collector-host",
+            type_="host",
+            status="up" if any_up else "unknown",
+        ),
+    )
     host = repository.get_device_by_name(session, "collector-host")
     if host is None:  # pragma: no cover - upsert just created it
         return
@@ -632,11 +670,20 @@ def _sync_topology(session, result: CycleResult) -> None:
         if row["device_name"] == "collector-host" and row["interface_name"]
     })
     for name in real_interfaces:
-        repository.upsert_interface(session, host, name, status="up")
-    # A logical uplink makes the host a node in the stored graph even on a
-    # machine where the optional psutil counters are not installed.
-    repository.upsert_interface(
-        session, host, "uplink", status="up" if any_up else "unknown")
+        _topology_save(
+            session,
+            f"interface:{name}",
+            lambda name=name: repository.upsert_interface(
+                session, host, name, status="up"
+            ),
+        )
+    _topology_save(
+        session,
+        "interface:collector-host:uplink",
+        lambda: repository.upsert_interface(
+            session, host, "uplink", status="up" if any_up else "unknown"
+        ),
+    )
 
     gateway_spec = next(
         (spec for spec in result.targets if spec.label == "gateway"), None)
@@ -644,9 +691,16 @@ def _sync_topology(session, result: CycleResult) -> None:
         device = repository.get_device_by_name(session, spec.label)
         if device is None:  # pragma: no cover - upsert just created it
             continue
-        repository.upsert_interface(
-            session, device, "wan",
-            status=result.device_statuses.get(spec.label, "unknown"))
+        _topology_save(
+            session,
+            f"interface:{spec.label}:wan",
+            lambda device=device, spec=spec: repository.upsert_interface(
+                session,
+                device,
+                "wan",
+                status=result.device_statuses.get(spec.label, "unknown"),
+            ),
+        )
 
     def _link_status(a: str, b: str) -> str:
         sa = result.device_statuses.get(a, "unknown")
@@ -660,23 +714,57 @@ def _sync_topology(session, result: CycleResult) -> None:
     if gateway_spec is not None:
         gateway = repository.get_device_by_name(session, gateway_spec.label)
         if gateway is not None:
-            repository.upsert_interface(
-                session, gateway, "lan",
-                status=result.device_statuses.get(gateway_spec.label, "unknown"))
-        repository.upsert_link(
-            session, "collector-host", "uplink", gateway_spec.label, "lan",
-            status=_link_status("collector-host", gateway_spec.label))
+            _topology_save(
+                session,
+                f"interface:{gateway_spec.label}:lan",
+                lambda gateway=gateway: repository.upsert_interface(
+                    session,
+                    gateway,
+                    "lan",
+                    status=result.device_statuses.get(gateway_spec.label, "unknown"),
+                ),
+            )
+        _topology_save(
+            session,
+            "link:collector-host->gateway",
+            lambda: repository.upsert_link(
+                session,
+                "collector-host",
+                "uplink",
+                gateway_spec.label,
+                "lan",
+                status=_link_status("collector-host", gateway_spec.label),
+            ),
+        )
         for spec in result.targets:
             if spec.label == gateway_spec.label:
                 continue
-            repository.upsert_link(
-                session, gateway_spec.label, "wan", spec.label, "wan",
-                status=_link_status(gateway_spec.label, spec.label))
+            _topology_save(
+                session,
+                f"link:{gateway_spec.label}->{spec.label}",
+                lambda spec=spec: repository.upsert_link(
+                    session,
+                    gateway_spec.label,
+                    "wan",
+                    spec.label,
+                    "wan",
+                    status=_link_status(gateway_spec.label, spec.label),
+                ),
+            )
     else:
         for spec in result.targets:
-            repository.upsert_link(
-                session, "collector-host", "uplink", spec.label, "wan",
-                status=_link_status("collector-host", spec.label))
+            _topology_save(
+                session,
+                f"link:collector-host->{spec.label}",
+                lambda spec=spec: repository.upsert_link(
+                    session,
+                    "collector-host",
+                    "uplink",
+                    spec.label,
+                    "wan",
+                    status=_link_status("collector-host", spec.label),
+                ),
+            )
 
 
 def _sync_traceroute_topology(
@@ -685,65 +773,45 @@ def _sync_traceroute_topology(
     collected_at: dt.datetime,
     samples_out: list[dict],
 ) -> None:
-    """Persist discovered topology from traceroute as devices, links, and metrics.
-    
-    Each distinct hop IP becomes a device, consecutive hops become links,
-    and paths to different destinations merge on shared hops to form a tree/graph.
-    Per-hop RTT metrics are also stored.
-    
-    Args:
-        session: Database session
-        discovered_path: DiscoveredPath from traceroute
-        collected_at: Timestamp for the collection
-        samples_out: List to append metric samples to
-    """
+    """Persist discovered topology from traceroute as devices, links, and metrics."""
     if discovered_path is None:
         return
-    
-    # Upsert all discovered devices, but merge by shared IP so the gateway seen
-    # as both a live target and a traceroute hop becomes one stored device.
+
     for device in discovered_path.devices:
-        candidate_name = device["name"]
+        candidate_name = str(device["name"])
         candidate_ip = device.get("lab_ip")
         existing = repository.get_device_by_ip(session, candidate_ip)
         if existing is not None and existing.name != candidate_name:
-            if (
-                repository._looks_like_ip(str(existing.name))
-                and not repository._looks_like_ip(str(candidate_name))
-            ):
-                pass
-            elif (
-                existing.name.startswith("target-")
-                and not str(candidate_name).startswith("target-")
-                and not repository._looks_like_ip(str(candidate_name))
-            ):
+            current = str(existing.name or "")
+            if repository._looks_like_ip(current) and not repository._looks_like_ip(candidate_name):
                 existing.name = candidate_name
-            elif (
-                not repository._looks_like_ip(str(existing.name))
-                and repository._looks_like_ip(str(candidate_name))
-            ):
+            elif current.startswith("target-") and not candidate_name.startswith("target-") and not repository._looks_like_ip(candidate_name):
                 existing.name = candidate_name
-        repository.upsert_device(
+            elif not repository._looks_like_ip(current) and repository._looks_like_ip(candidate_name):
+                existing.name = candidate_name
+        _topology_save(
             session,
-            name=candidate_name,
-            type_=device.get("type", "router"),
-            mgmt_ip=candidate_ip,
-            lab_ip=candidate_ip,
-            status=device.get("status", "unknown"),
+            f"traceroute-device:{candidate_name}",
+            lambda candidate_name=candidate_name, device=device: repository.upsert_device(
+                session,
+                name=candidate_name,
+                type_=device.get("type", "router"),
+                mgmt_ip=device.get("lab_ip"),
+                lab_ip=device.get("lab_ip"),
+                status=device.get("status", "unknown"),
+            ),
         )
 
-    # Ensure collector-host device exists and resolve all device objects before
-    # creating interfaces; repository.upsert_interface() expects a Device ORM
-    # instance, not a string device name.
     collector_host = repository.get_device_by_name(session, "collector-host")
     if collector_host is None:
         collector_host = repository.upsert_device(
-            session, name="collector-host", type_="host", status="up")
+            session, name="collector-host", type_="host", status="up"
+        )
 
     def _device_obj(name: str):
         device = repository.get_device_by_name(session, name)
         if device is None:
-            return repository.upsert_device(
+            device = repository.upsert_device(
                 session,
                 name=name,
                 type_="router",
@@ -751,47 +819,69 @@ def _sync_traceroute_topology(
             )
         return device
 
-    # Create link from collector-host to first discovered device
     if discovered_path.devices:
-        first_device_name = discovered_path.devices[0]["name"]
+        first_device_name = str(discovered_path.devices[0]["name"])
         first_device = _device_obj(first_device_name)
-        repository.upsert_interface(
-            session, collector_host, "uplink", status="up")
-        repository.upsert_interface(
-            session, first_device, "ingress", status="up")
-        repository.upsert_link(
+        _topology_save(
             session,
-            "collector-host", "uplink",
-            first_device_name, "ingress",
-            status="up"
+            "traceroute-interface:collector-host:uplink",
+            lambda: repository.upsert_interface(session, collector_host, "uplink", status="up"),
         )
-    
-    # Create links between consecutive devices
-    for i, link in enumerate(discovered_path.links):
-        device_a_name = link["device_a"]
-        device_b_name = link["device_b"]
-        status = link.get("status", "up")
+        _topology_save(
+            session,
+            f"traceroute-interface:{first_device_name}:ingress",
+            lambda first_device=first_device: repository.upsert_interface(
+                session, first_device, "ingress", status="up"
+            ),
+        )
+        _topology_save(
+            session,
+            "traceroute-link:collector-host->first",
+            lambda: repository.upsert_link(
+                session,
+                "collector-host",
+                "uplink",
+                first_device_name,
+                "ingress",
+                status="up",
+            ),
+        )
 
-        # Ensure interfaces exist against the live device records, not the raw
-        # string names returned by the discovery layer.
+    for i, link in enumerate(discovered_path.links):
+        device_a_name = str(link["device_a"])
+        device_b_name = str(link["device_b"])
+        status = link.get("status", "up")
         if_name_a = f"if_{i}_a"
         if_name_b = f"if_{i}_b"
         device_a = _device_obj(device_a_name)
         device_b = _device_obj(device_b_name)
-        repository.upsert_interface(
-            session, device_a, if_name_a, status=status)
-        repository.upsert_interface(
-            session, device_b, if_name_b, status=status)
-
-        # Create the link
-        repository.upsert_link(
+        _topology_save(
             session,
-            device_a_name, if_name_a,
-            device_b_name, if_name_b,
-            status=status
+            f"traceroute-interface:{device_a_name}:{if_name_a}",
+            lambda device_a=device_a, if_name_a=if_name_a, status=status: repository.upsert_interface(
+                session, device_a, if_name_a, status=status
+            ),
         )
-    
-    # Add per-hop RTT metrics as metric samples
+        _topology_save(
+            session,
+            f"traceroute-interface:{device_b_name}:{if_name_b}",
+            lambda device_b=device_b, if_name_b=if_name_b, status=status: repository.upsert_interface(
+                session, device_b, if_name_b, status=status
+            ),
+        )
+        _topology_save(
+            session,
+            f"traceroute-link:{device_a_name}->{device_b_name}",
+            lambda device_a_name=device_a_name, if_name_a=if_name_a, device_b_name=device_b_name, if_name_b=if_name_b, status=status: repository.upsert_link(
+                session,
+                device_a_name,
+                if_name_a,
+                device_b_name,
+                if_name_b,
+                status=status,
+            ),
+        )
+
     for metric in discovered_path.metrics:
         samples_out.append({
             "device_name": metric["device_name"],
@@ -939,13 +1029,6 @@ def persist_cycle(
     for attempt in range(attempts):
         try:
             with scope_factory() as session:
-                _sync_topology(session, result)
-                _sync_incidents(session, result)
-                # Sync traceroute-based topology if available
-                if discovered_path is not None:
-                    _sync_traceroute_topology(
-                        session, discovered_path, result.collected_at,
-                        result.samples)
                 existing = repository.existing_sample_keys(
                     session, result.collected_at, data_source)
                 rows: list[dict] = []
@@ -966,6 +1049,33 @@ def persist_cycle(
             if attempt == attempts - 1:
                 break
             sleep_fn(2 ** attempt)
+        except IntegrityError as exc:
+            _log_integrity_error("metric_samples", exc)
+            persist_error = type(exc).__name__
+            break
+        except Exception as exc:  # noqa: BLE001 - report class, never a DSN
+            persist_error = type(exc).__name__
+            break
+
+    for attempt in range(attempts):
+        try:
+            with scope_factory() as session:
+                _sync_topology(session, result)
+                _sync_incidents(session, result)
+                if discovered_path is not None:
+                    _sync_traceroute_topology(
+                        session, discovered_path, result.collected_at, result.samples)
+            persist_error = None
+            break
+        except OperationalError as exc:
+            persist_error = type(exc).__name__
+            if attempt == attempts - 1:
+                break
+            sleep_fn(2 ** attempt)
+        except IntegrityError as exc:
+            _log_integrity_error("topology", exc)
+            persist_error = None
+            break
         except Exception as exc:  # noqa: BLE001 - report class, never a DSN
             persist_error = type(exc).__name__
             break
@@ -1090,6 +1200,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--traceroute-targets", default=None,
                         help="comma-separated destinations for traceroute "
                              "(default: multiple public hosts)")
+    parser.add_argument("--traceroute-every", type=int, default=10,
+                        help="run traceroute discovery on the first cycle and "
+                             "every N cycles thereafter (default: 10)")
     return parser
 
 
@@ -1146,6 +1259,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.interval, max(1, min(args.count, 20)),
                 max(0.2, min(args.timeout, 10.0)),
                 "off" if args.no_interfaces else "on")
+    if args.traceroute and args.traceroute_every < 1:
+        raise ValueError("--traceroute-every must be at least 1")
 
     started = time.monotonic()
     cycles = 0
@@ -1160,7 +1275,12 @@ def main(argv: list[str] | None = None) -> int:
             result = run_cycle(
                 targets, count=args.count, timeout_seconds=args.timeout,
                 interface_fn=interface_fn)
-            outcome = persist_cycle(result, traceroute_destinations=traceroute_targets)
+            trace_destinations = None
+            if traceroute_targets is not None:
+                should_trace = cycles == 0 or (cycles + 1) % args.traceroute_every == 0
+                if should_trace:
+                    trace_destinations = traceroute_targets
+            outcome = persist_cycle(result, traceroute_destinations=trace_destinations)
             cycles += 1
             inserted += outcome.inserted
             skipped += outcome.skipped

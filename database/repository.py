@@ -45,13 +45,15 @@ def _looks_like_ip(value: str | None) -> bool:
 
 
 def _find_device_by_ip(session: Session, *, mgmt_ip: str | None = None,
-                       lab_ip: str | None = None) -> Device | None:
-    """Return an existing placeholder row only when the IP is effectively unique.
+                       lab_ip: str | None = None,
+                       incoming_name: str | None = None) -> Device | None:
+    """Return a same-IP device only when it is effectively the same record.
 
-    Distinct named devices may legitimately share the same lab IP in the
-    transient test fixtures or in a topology snapshot; blindly collapsing every
-    same-IP match would merge two different devices into one record. We only
-    reuse a row when it is effectively a placeholder or the same IP is unique.
+    Distinct named devices may legitimately share the same lab IP in transient
+    fixtures or topology snapshots. Reuse is allowed only when the IP resolves to
+    a single record and the caller is effectively rehydrating a placeholder / IP
+    label (for example, name is a raw IP or target-* label), or the existing row
+    is already placeholder-like.
     """
     matches: list[Device] = []
     for value in (mgmt_ip, lab_ip):
@@ -66,13 +68,34 @@ def _find_device_by_ip(session: Session, *, mgmt_ip: str | None = None,
         )
     if not matches:
         return None
-    if len(matches) > 1:
+    deduped = list(dict.fromkeys(matches))
+    if len(deduped) > 1:
         return None
-    device = matches[0]
+    device = deduped[0]
     name = str(device.name or "")
     if not name or _looks_like_ip(name) or name.startswith("target-"):
         return device
+    incoming = str(incoming_name or "")
+    if incoming and (_looks_like_ip(incoming) or incoming.startswith("target-")):
+        return device
     return None
+
+
+def _prefer_existing_device_name(existing_name: str | None, incoming_name: str) -> str:
+    """Keep a friendly device label when the same IP appears under a raw IP name."""
+    existing = str(existing_name or "")
+    incoming = str(incoming_name or "")
+    if not existing:
+        return incoming
+    if _looks_like_ip(existing) and not _looks_like_ip(incoming):
+        return incoming
+    if existing.startswith("target-") and not incoming.startswith("target-") and not _looks_like_ip(incoming):
+        return incoming
+    if incoming.startswith("target-") and not existing.startswith("target-") and not _looks_like_ip(existing):
+        return existing
+    if _looks_like_ip(incoming) and not _looks_like_ip(existing):
+        return existing
+    return existing if existing else incoming
 
 
 def upsert_device(
@@ -85,19 +108,18 @@ def upsert_device(
     container: str | None = None,
 ) -> Device:
     """Insert or update a device by name (idempotent inventory sync)."""
-    device = session.scalar(select(Device).where(Device.name == name))
+    incoming_name = str(name)
+    device = session.scalar(select(Device).where(Device.name == incoming_name))
     if device is None:
-        device = _find_device_by_ip(session, mgmt_ip=mgmt_ip, lab_ip=lab_ip)
+        device = _find_device_by_ip(session, mgmt_ip=mgmt_ip, lab_ip=lab_ip,
+                                   incoming_name=incoming_name)
     if device is None:
-        device = Device(name=name)
+        device = Device(name=incoming_name)
         session.add(device)
-    if device.name != name and (
-        _looks_like_ip(str(device.name)) and not _looks_like_ip(str(name))
-        or str(device.name).startswith("target-")
-        and not str(name).startswith("target-")
-        and not _looks_like_ip(str(name))
-    ):
-        device.name = name
+        session.flush()
+    preferred_name = _prefer_existing_device_name(device.name, incoming_name)
+    if device.name != preferred_name:
+        device.name = preferred_name
     device.type = type_
     if mgmt_ip is not None:
         device.mgmt_ip = mgmt_ip
@@ -115,12 +137,13 @@ def upsert_interface(
     session: Session, device: Device, name: str,
     ip_cidr: str | None = None, status: str | None = None,
 ) -> Interface:
+    canonical_name = str(name).strip() or "unnamed"
     iface = session.scalar(
         select(Interface).where(Interface.device_id == device.id,
-                                Interface.name == name)
+                                Interface.name == canonical_name)
     )
     if iface is None:
-        iface = Interface(device_id=device.id, name=name)
+        iface = Interface(device_id=device.id, name=canonical_name)
         session.add(iface)
     if ip_cidr is not None:
         iface.ip_cidr = ip_cidr
@@ -161,17 +184,24 @@ def upsert_link(
     device_b: str, if_b: str, subnet: str | None = None,
     status: str | None = None,
 ) -> Link:
+    left = (str(device_a).strip(), str(if_a).strip())
+    right = (str(device_b).strip(), str(if_b).strip())
     link = session.scalar(
         select(Link).where(
-            ((Link.device_a == device_a) & (Link.if_a == if_a)
-             & (Link.device_b == device_b) & (Link.if_b == if_b))
-            | ((Link.device_a == device_b) & (Link.if_a == if_b)
-               & (Link.device_b == device_a) & (Link.if_b == if_a))
+            ((Link.device_a == left[0]) & (Link.if_a == left[1])
+             & (Link.device_b == right[0]) & (Link.if_b == right[1]))
+            | ((Link.device_a == right[0]) & (Link.if_a == right[1])
+               & (Link.device_b == left[0]) & (Link.if_b == left[1]))
         )
     )
     if link is None:
-        link = Link(device_a=device_a, if_a=if_a, device_b=device_b, if_b=if_b)
+        link = Link(device_a=left[0], if_a=left[1], device_b=right[0], if_b=right[1])
         session.add(link)
+    else:
+        existing = (link.device_a, link.if_a, link.device_b, link.if_b)
+        target = (left[0], left[1], right[0], right[1])
+        if existing != target:
+            link.device_a, link.if_a, link.device_b, link.if_b = target
     if subnet is not None:
         link.subnet = subnet
     if status is not None:

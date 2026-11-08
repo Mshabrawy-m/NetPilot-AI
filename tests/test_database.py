@@ -35,6 +35,18 @@ def test_upsert_device_is_idempotent(session):
     assert devices[0].status == "down"
 
 
+def test_upsert_device_reuses_unique_ip_match_even_for_friendly_name(session):
+    repository.upsert_device(session, name="R1", type_="router", lab_ip="10.0.0.1")
+    session.commit()
+
+    repository.upsert_device(session, name="10.0.0.1", type_="router", lab_ip="10.0.0.1")
+    session.commit()
+
+    devices = repository.get_devices(session)
+    assert [d.name for d in devices] == ["R1"]
+    assert devices[0].lab_ip == "10.0.0.1"
+
+
 def test_create_and_read_link(session):
     repository.upsert_device(session, name="R1")
     repository.upsert_device(session, name="R2")

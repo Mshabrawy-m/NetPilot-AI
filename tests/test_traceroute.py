@@ -1,4 +1,4 @@
-"""Tests for network/traceroute.py - OS traceroute topology discovery."""
+﻿"""Tests for network/traceroute.py - OS traceroute topology discovery."""
 from __future__ import annotations
 
 import subprocess
@@ -202,10 +202,10 @@ Trace complete."""
             path = discover_topology_from_traceroute(["1.1.1.1"], timeout=1)
 
         assert len(path.devices) >= 5
-        assert any(device["name"] == "unresponsive hops (5)" for device in path.devices)
+        assert any(device["name"] == "unresponsive-path:1.1.1.1" for device in path.devices)
         assert any(
-            (link["device_a"] == "1.1.1.1" and link["device_b"] == "unresponsive hops (5)")
-            or (link["device_a"] == "unresponsive hops (5)" and link["device_b"] == "1.1.1.1")
+            (link["device_a"] == "1.1.1.1" and link["device_b"] == "unresponsive-path:1.1.1.1")
+            or (link["device_a"] == "unresponsive-path:1.1.1.1" and link["device_b"] == "1.1.1.1")
             for link in path.links
         )
 
