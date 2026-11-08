@@ -57,3 +57,16 @@ evaluation/reports/*.json
 
 # Neon CLI local context (org/project/branch ids only — no credentials)
 .neon
+# local audit / agent / temp artifacts
+.audit-*
+.agents/
+.pytest-core-runtime/
+.runtime-*
+*.sqlite
+verify_*.png
+.browser-*.png
+full_pytest*.txt
+parity_failures.txt
+pytest_exact_summary.py
+*.orig
+skills-lock.json
