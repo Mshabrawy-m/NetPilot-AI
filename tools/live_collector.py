@@ -700,13 +700,35 @@ def _sync_traceroute_topology(
     if discovered_path is None:
         return
     
-    # Upsert all discovered devices
+    # Upsert all discovered devices, but merge by shared IP so the gateway seen
+    # as both a live target and a traceroute hop becomes one stored device.
     for device in discovered_path.devices:
+        candidate_name = device["name"]
+        candidate_ip = device.get("lab_ip")
+        existing = repository.get_device_by_ip(session, candidate_ip)
+        if existing is not None and existing.name != candidate_name:
+            if (
+                repository._looks_like_ip(str(existing.name))
+                and not repository._looks_like_ip(str(candidate_name))
+            ):
+                pass
+            elif (
+                existing.name.startswith("target-")
+                and not str(candidate_name).startswith("target-")
+                and not repository._looks_like_ip(str(candidate_name))
+            ):
+                existing.name = candidate_name
+            elif (
+                not repository._looks_like_ip(str(existing.name))
+                and repository._looks_like_ip(str(candidate_name))
+            ):
+                existing.name = candidate_name
         repository.upsert_device(
             session,
-            name=device["name"],
+            name=candidate_name,
             type_=device.get("type", "router"),
-            mgmt_ip=device.get("lab_ip"),
+            mgmt_ip=candidate_ip,
+            lab_ip=candidate_ip,
             status=device.get("status", "unknown"),
         )
 

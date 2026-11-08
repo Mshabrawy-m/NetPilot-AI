@@ -8,7 +8,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Iterable, Sequence
 
-from sqlalchemy import Date, delete, func, insert, select
+from sqlalchemy import Date, delete, func, insert, or_, select
 from sqlalchemy.orm import Session
 
 from database.models import (
@@ -31,6 +31,35 @@ from database.models import (
 # --------------------------------------------------------------------------
 # Devices & interfaces
 # --------------------------------------------------------------------------
+def _looks_like_ip(value: str | None) -> bool:
+    """True when a device label is an IPv4 literal, not a friendly name."""
+    text = (value or "").strip()
+    if not text:
+        return False
+    try:
+        import ipaddress
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        return False
+
+
+def _find_device_by_ip(session: Session, *, mgmt_ip: str | None = None,
+                       lab_ip: str | None = None) -> Device | None:
+    """Return the existing device row for a shared IP, if one is already known."""
+    for value in (mgmt_ip, lab_ip):
+        if not value:
+            continue
+        device = session.scalar(
+            select(Device).where(
+                (Device.mgmt_ip == value) | (Device.lab_ip == value)
+            )
+        )
+        if device is not None:
+            return device
+    return None
+
+
 def upsert_device(
     session: Session,
     name: str,
@@ -43,8 +72,17 @@ def upsert_device(
     """Insert or update a device by name (idempotent inventory sync)."""
     device = session.scalar(select(Device).where(Device.name == name))
     if device is None:
+        device = _find_device_by_ip(session, mgmt_ip=mgmt_ip, lab_ip=lab_ip)
+    if device is None:
         device = Device(name=name)
         session.add(device)
+    if device.name != name and (
+        _looks_like_ip(str(device.name)) and not _looks_like_ip(str(name))
+        or str(device.name).startswith("target-")
+        and not str(name).startswith("target-")
+        and not _looks_like_ip(str(name))
+    ):
+        device.name = name
     device.type = type_
     if mgmt_ip is not None:
         device.mgmt_ip = mgmt_ip
@@ -85,6 +123,14 @@ def get_device_by_name(session: Session, name: str) -> Device | None:
     return session.scalar(select(Device).where(Device.name == name))
 
 
+def get_device_by_ip(session: Session, ip: str | None) -> Device | None:
+    if not ip:
+        return None
+    return session.scalar(
+        select(Device).where((Device.mgmt_ip == ip) | (Device.lab_ip == ip))
+    )
+
+
 def set_device_status(session: Session, name: str, status: str) -> None:
     device = session.scalar(select(Device).where(Device.name == name))
     if device is not None:
@@ -102,8 +148,10 @@ def upsert_link(
 ) -> Link:
     link = session.scalar(
         select(Link).where(
-            Link.device_a == device_a, Link.if_a == if_a,
-            Link.device_b == device_b, Link.if_b == if_b,
+            ((Link.device_a == device_a) & (Link.if_a == if_a)
+             & (Link.device_b == device_b) & (Link.if_b == if_b))
+            | ((Link.device_a == device_b) & (Link.if_a == if_b)
+               & (Link.device_b == device_a) & (Link.if_b == if_a))
         )
     )
     if link is None:

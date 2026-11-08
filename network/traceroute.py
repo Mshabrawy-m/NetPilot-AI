@@ -420,15 +420,14 @@ def discover_topology_from_traceroute(
                     hop.address,
                     name=hop.address,
                     lab_ip=hop.address,
-                    status="up" if hop.responsive else "down",
+                    status="up" if hop.responsive else "unknown",
                 )
                 if prev_hop and prev_hop.address and hop.address:
-                    link_key = (
+                    link_key = tuple(sorted((
                         devices_dict[prev_hop.address]["name"],
                         devices_dict[hop.address]["name"],
-                    )
+                    )))
                     links_set.add(link_key)
-                    links_set.add((link_key[1], link_key[0]))
                 prev_hop = hop
             else:
                 trailing_unresponsive += 1
@@ -451,13 +450,14 @@ def discover_topology_from_traceroute(
             ensure_device(destination_key, name=destination, lab_ip=destination, status="up")
             synthetic_key = f"__unresponsive_{len(devices_dict)}_{destination_key}"
             synthetic_name = f"unresponsive hops ({trailing_unresponsive})"
-            ensure_device(synthetic_key, name=synthetic_name, lab_ip=None, status="down")
+            ensure_device(synthetic_key, name=synthetic_name, lab_ip=None, status="unknown")
             last_name = devices_dict[last_responsive.address]["name"]
             destination_name = devices_dict[destination_key]["name"]
-            links_set.add((last_name, synthetic_name))
-            links_set.add((synthetic_name, last_name))
-            links_set.add((synthetic_name, destination_name))
-            links_set.add((destination_name, synthetic_name))
+            for pair in (
+               tuple(sorted((last_name, synthetic_name))),
+               tuple(sorted((synthetic_name, destination_name))),
+            ):
+               links_set.add(pair)
 
     devices = list(devices_dict.values())
     links = [{"device_a": src, "device_b": dst, "status": "up"}

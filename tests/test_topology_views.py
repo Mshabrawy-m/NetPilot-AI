@@ -85,7 +85,8 @@ def test_database_topology_labels_dangling_devices_and_skips_invalid_edges(
     repository.upsert_device(session, "R2", type_="router", status="up")
     repository.upsert_link(session, "R1", "eth1", "R2", "eth1",
                            status="up")
-    # Reversed duplicate must not become a second visual connection.
+    # Reversed duplicate must collapse to one visual connection without
+    # generating a noisy warning about a second duplicate link row.
     repository.upsert_link(session, "R2", "eth1", "R1", "eth1",
                            status="up")
     # Legacy/malformed records have no relational endpoint constraint.
@@ -103,7 +104,7 @@ def test_database_topology_labels_dangling_devices_and_skips_invalid_edges(
     assert len(result["edges"]) == 2
     assert all(edge["status"] == "unknown" for edge in result["edges"]
                if edge["target"] == "GHOST")
-    assert len(result["warnings"]) == 4
+    assert len(result["warnings"]) == 3
 
 
 # ----------------------------------------------------------------- fabric

@@ -41,10 +41,12 @@ from services import demo_data, topology_path, topology_service
 from ui import source_controls
 
 settings = get_settings()
+demo_mode = settings.demo_mode
+SIMULATED = source_scope.SIMULATED
 
 sources = read(lambda s: source_scope.available_sources(s))
 source = source_controls.selector(
-    sources, key="np_topology_source", demo_mode=settings.demo_mode)
+    sources, key="np_topology_source", demo_mode=demo_mode)
 topology_source = None if source == source_scope.DEMO else source
 
 

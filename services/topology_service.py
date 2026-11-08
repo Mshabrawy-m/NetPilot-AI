@@ -42,11 +42,16 @@ class NetworkStatus:
 
 
 def compute_network_status(devices: list) -> NetworkStatus:
-    """Pure function implementing the documented rules above."""
-    total = len(devices)
-    up = sum(1 for d in devices if d.status == "up")
-    down = sum(1 for d in devices if d.status == "down")
-    unknown = total - up - down
+    """Pure function implementing the documented rules above.
+
+    Unresponsive placeholder hops are tracked as ``unknown`` so they are not
+    counted as down devices and do not skew the health threshold.
+    """
+    active = [d for d in devices if d.status in {"up", "down"}]
+    total = len(active)
+    up = sum(1 for d in active if d.status == "up")
+    down = sum(1 for d in active if d.status == "down")
+    unknown = sum(1 for d in devices if d.status == "unknown")
     if total == 0:
         overall = "unknown"
     elif up == total:

@@ -490,3 +490,44 @@ def test_persist_cycle_opens_rtt_incident(db_url):
         assert incidents[0].device_name == "cloudflare-dns"
     finally:
         session.close()
+
+
+def test_persist_cycle_second_run_is_idempotent_and_unknown_nodes_do_not_degrade(db_url):
+    from services import topology_service
+
+    result = live_collector.run_cycle(
+        [
+            live_collector.TargetSpec("192.168.1.1", "gateway"),
+            live_collector.TargetSpec("1.1.1.1", "cloudflare-dns"),
+        ],
+        ping_fn=_ok_ping,
+        interface_fn=list,
+        now_fn=lambda: dt.datetime(2026, 3, 10, 12, 0, 0),
+    )
+    assert live_collector.persist_cycle(result).ok is True
+
+    session = connection.get_session()
+    try:
+        before_devices = len(repository.get_devices(session))
+        before_links = len(repository.get_links(session))
+
+        second = live_collector.persist_cycle(result)
+        assert second.ok is True
+
+        after_devices = len(repository.get_devices(session))
+        after_links = len(repository.get_links(session))
+        assert after_devices == before_devices
+        assert after_links == before_links
+
+        gateway = repository.get_device_by_name(session, "gateway")
+        assert gateway is not None
+        assert gateway.mgmt_ip == "192.168.1.1"
+        assert repository.get_device_by_ip(session, "192.168.1.1").name == "gateway"
+
+        repository.upsert_device(
+            session, name="unresponsive hops (3)", type_="router", status="unknown")
+        status = topology_service.compute_network_status(repository.get_devices(session))
+        assert status.overall != "degraded"
+        assert status.down == 0
+    finally:
+        session.close()
