@@ -39,14 +39,22 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from analytics import data_quality, evaluation, time_series
-from services.anomaly_service import load_ready_series
-from analytics.forecasting import (FORECAST_MODELS, MODEL_KWARGS,
-                                   apply_holdout_bands,
-                                   realized_band_coverage)
+from analytics import data_quality, evaluation, series_prep, time_series
+from analytics.backtest import (
+    MEAN_ENSEMBLE_NAME,
+    STRONG_DEFAULT_MODELS,
+    strong_rolling_origin_backtest,
+)
+from analytics.forecasting import (
+    FORECAST_MODELS,
+    MODEL_KWARGS,
+    apply_holdout_bands,
+    realized_band_coverage,
+)
 from config import get_settings
 from database import repository
 from database.models import db_utcnow
+from services.anomaly_service import load_ready_series
 
 #: Models compared when the caller does not choose. ``seasonal_naive`` and
 #: ``holt_winters`` are listed because both refuse out loud (a recorded skip
@@ -177,6 +185,317 @@ def check_series_forecastability(
         "observed_interval_seconds": quality.observed_interval_seconds,
         "provenance": provenance,
     }
+
+
+# ------------------------------------------------------- strong models (A)
+#: Minimum usable points before a strong-model backtest is attempted. The same
+#: floor is stated in the UI message, so a refusal can never be vague.
+STRONG_MIN_POINTS = series_prep.MIN_POINTS
+STRONG_MODELS = STRONG_DEFAULT_MODELS
+
+
+def _strong_future(name: str, finite: pd.Series, horizon: int,
+                   future_timestamps: list[pd.Timestamp],
+                   interval_seconds: float | None, season_hours: float,
+                   time_cap_seconds: float, max_lags: int):
+    """Fit one registry model on the full finite run and return its future."""
+    fn = FORECAST_MODELS.get(name)
+    if fn is None:
+        return None, "unknown model"
+    supplied = {
+        "interval_seconds": interval_seconds,
+        "season_hours": season_hours,
+        "time_cap_seconds": time_cap_seconds,
+        "max_lags": max_lags,
+    }
+    kwargs = {key: supplied[key] for key in MODEL_KWARGS.get(name, ())
+              if key in supplied and supplied[key] is not None}
+    try:
+        res = fn(finite, horizon,
+                 future_timestamps=future_timestamps or None, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - model error is reported
+        return None, f"{type(exc).__name__}: {exc}"
+    if not res.ok:
+        return None, res.reason or "model refused"
+    return res, None
+
+
+def compute_strong_forecast(
+    series: pd.Series, *,
+    horizon: int = 10,
+    models: tuple[str, ...] = STRONG_MODELS,
+    interval_seconds: float | None = None,
+    season_hours: float = 24.0,
+    coverage: float = 0.95,
+    n_folds: int = 5,
+    min_train: int = STRONG_MIN_POINTS,
+    ensemble_size: int = 3,
+    time_cap_seconds: float = 4.0,
+    max_lags: int = 24,
+    series_hash: str | None = None,
+) -> dict:
+    """Backtest strong models on a prepared series and forecast its future.
+
+    Pure function (no DB, no Streamlit) so the page can cache it with
+    ``st.cache_data`` keyed by ``series_hash``. The series is expected to be the
+    regular-grid output of :func:`analytics.series_prep.prepare_regular_series`;
+    NaN values mark long gaps and are never bridged.
+    """
+    floor = max(int(STRONG_MIN_POINTS), int(min_train))
+    values = pd.to_numeric(pd.Series(series), errors="coerce")
+    finite = values.dropna()
+    n_points = len(finite)
+    base = {
+        "status": "insufficient_data", "n_points": n_points,
+        "n_grid_points": len(values), "series_hash": series_hash,
+        "interval_seconds": interval_seconds, "coverage": coverage,
+        "models": {}, "backtest": {}, "forecast": [],
+        "best_model": None, "chosen_model": None,
+        "best_criterion": "backtest MAE",
+    }
+    if n_points < floor:
+        base["message"] = series_prep.insufficient_data_message(n_points, floor)
+        return base
+
+    # The final refit must use ONE contiguous run as well: concatenating across
+    # a NaN gap would invent a transition that never happened. Prefer the most
+    # recent run (the natural forecast origin); fall back to the longest run
+    # only when the latest one is too short to fit anything.
+    segments = series_prep.finite_segments(values.to_numpy(dtype=float))
+    if segments:
+        start, end = segments[-1]
+        if end - start < 20:
+            start, end = max(segments, key=lambda bounds: bounds[1] - bounds[0])
+        finite = values.iloc[start:end]
+    else:
+        finite = values.dropna()
+    base["fit_points"] = len(finite)
+
+    bt = strong_rolling_origin_backtest(
+        values, models=tuple(models), horizon=horizon, n_folds=n_folds,
+        min_train=min_train, interval_seconds=interval_seconds,
+        season_hours=season_hours, coverage=coverage,
+        ensemble_size=ensemble_size, time_cap_seconds=time_cap_seconds,
+        max_lags=max_lags)
+    if bt.get("status") != "ok":
+        base.update({"backtest": bt,
+                     "message": "; ".join(bt.get("reasons") or [bt["status"]])})
+        return base
+
+    best = bt["best_model"]
+    ranked = sorted(bt["models"].items(), key=lambda kv: (kv[1]["mae"],
+                                                          kv[0]))
+    origin = finite.index.max()
+    if interval_seconds and isinstance(finite.index, pd.DatetimeIndex):
+        future_timestamps = [
+            origin + pd.Timedelta(seconds=float(interval_seconds) * (h + 1))
+            for h in range(horizon)
+        ]
+    else:
+        future_timestamps = []
+
+    fit_names = ([m for m in (bt.get("ensemble") or {}).get("members", [])]
+                 if best == MEAN_ENSEMBLE_NAME else [best])
+    if best == MEAN_ENSEMBLE_NAME:
+        # Only the blend's own members may enter its average; a fallback to a
+        # non-member is handled separately below and changes ``chosen``.
+        attempts = fit_names
+    else:
+        attempts = [best] + [name for name, _ in ranked
+                             if name != best
+                             and name != MEAN_ENSEMBLE_NAME]
+    chosen = best
+    chosen_stats = bt["models"].get(best, {})
+    forecasts: list[list[float]] = []
+    fit_notes: dict[str, str] = {}
+    used_names: list[str] = []
+    for name in attempts:
+        if name == MEAN_ENSEMBLE_NAME:
+            continue
+        res, reason = _strong_future(
+            name, finite, horizon, future_timestamps, interval_seconds,
+            season_hours, time_cap_seconds, max_lags)
+        if res is None:
+            fit_notes[name] = reason or "no future forecast"
+            continue
+        preds = [float(f.get("predicted_value", float("nan")))
+                 for f in res.future]
+        if len(preds) < horizon:
+            preds += [float("nan")] * (horizon - len(preds))
+        if not any(math.isfinite(p) for p in preds):
+            fit_notes[name] = "model produced no finite future steps"
+            continue
+        forecasts.append(preds[:horizon])
+        used_names.append(name)
+        if best == MEAN_ENSEMBLE_NAME:
+            if len(forecasts) >= len(fit_names):
+                break
+        else:
+            break
+
+    if best == MEAN_ENSEMBLE_NAME and not forecasts:
+        # The blend's members all failed to refit: fall back to the best single
+        # model and say so rather than publishing an empty "ensemble".
+        for name, _ in ranked:
+            if name == MEAN_ENSEMBLE_NAME:
+                continue
+            res, reason = _strong_future(
+                name, finite, horizon, future_timestamps, interval_seconds,
+                season_hours, time_cap_seconds, max_lags)
+            if res is None:
+                fit_notes[name] = reason or "no future forecast"
+                continue
+            preds = [float(f.get("predicted_value", float("nan")))
+                     for f in res.future]
+            if not any(math.isfinite(p) for p in preds):
+                fit_notes[name] = "model produced no finite future steps"
+                continue
+            forecasts = [preds + [float("nan")] * (horizon - len(preds))]
+            used_names = [name]
+            chosen = name
+            chosen_stats = bt["models"].get(name, {})
+            break
+    elif best != MEAN_ENSEMBLE_NAME and not forecasts:
+        for name, stats in ranked:
+            if name in used_names or name == MEAN_ENSEMBLE_NAME:
+                continue
+            res, reason = _strong_future(
+                name, finite, horizon, future_timestamps, interval_seconds,
+                season_hours, time_cap_seconds, max_lags)
+            if res is None:
+                fit_notes[name] = reason or "no future forecast"
+                continue
+            preds = [float(f.get("predicted_value", float("nan")))
+                     for f in res.future]
+            if not any(math.isfinite(p) for p in preds):
+                fit_notes[name] = "model produced no finite future steps"
+                continue
+            forecasts = [preds + [float("nan")] * (horizon - len(preds))]
+            used_names = [name]
+            chosen = name
+            chosen_stats = stats
+            break
+
+    widths = (chosen_stats.get("interval_half_widths") or {})
+    pooled = chosen_stats.get("pooled_half_width")
+    rows: list[dict] = []
+    if forecasts and future_timestamps:
+        for step in range(1, horizon + 1):
+            available = [pred[step - 1] for pred in forecasts
+                         if step - 1 < len(pred) and math.isfinite(pred[step - 1])]
+            if not available:
+                continue
+            predicted = sum(available) / len(available)
+            half = widths.get(step, pooled)
+            if half is None or not math.isfinite(float(half)):
+                half = 0.0
+            half = max(0.0, float(half))
+            rows.append({
+                "target_timestamp": future_timestamps[step - 1],
+                "step": step, "predicted_value": predicted,
+                "lower_bound": predicted - half,
+                "upper_bound": predicted + half,
+                "interval_half_width": half,
+                "method": ("mean ensemble" if len(used_names) > 1
+                           else used_names[0] if used_names else chosen),
+            })
+
+    result = dict(base)
+    result.update({
+        "status": "ok",
+        "backtest": bt,
+        "models": bt["models"],
+        "best_model": best,
+        "chosen_model": chosen,
+        "chosen_members": used_names if len(used_names) > 1 else [],
+        "best_criterion": "backtest MAE",
+        "forecast": rows,
+        "forecast_note": (
+            None if rows else
+            "no future steps could be published (the selected model's "
+            "full-history refit produced none)"),
+        "fit_notes": fit_notes,
+        "ensemble": bt.get("ensemble"),
+        "n_folds": bt.get("folds"),
+        "n_segments": bt.get("n_segments"),
+    })
+    return result
+
+
+def run_strong_forecast(
+    session: Session, *,
+    device_name: str, metric: str,
+    interface_name: str | None, data_source: str,
+    horizon: int | None = None,
+    models: tuple[str, ...] = STRONG_MODELS,
+    interval_seconds: float | None = None,
+    max_gap_steps: int = series_prep.DEFAULT_MAX_GAP_STEPS,
+    n_folds: int = 5,
+    min_train: int = STRONG_MIN_POINTS,
+    coverage: float = 0.95,
+    ensemble_size: int = 3,
+    since: dt.datetime | None = None,
+    time_cap_seconds: float = 4.0,
+    max_lags: int = 24,
+    device_level_only: bool = False,
+) -> dict:
+    """Load one series read-only, regularise it, then run the strong backtest.
+
+    This is the DB-facing entry point. It uses the app's existing read path
+    (:func:`services.anomaly_service.load_ready_series`), never writes, and
+    returns the regularisation provenance alongside the measured backtest.
+    """
+    settings = get_settings()
+    horizon = horizon or settings.forecast_horizon_default
+    frame, quality = load_ready_series(
+        session, device_name, metric, interface_name, data_source,
+        purpose=data_quality.FORECAST, since=since,
+        device_level_only=device_level_only, include_rollups=False,
+        cadence="raw")
+    interval = (float(interval_seconds) if interval_seconds
+                else (quality.observed_interval_seconds
+                      or series_prep.DEFAULT_INTERVAL_SECONDS))
+    prepared = series_prep.prepare_regular_series(
+        frame, interval_seconds=interval, max_gap_steps=max_gap_steps)
+    result = compute_strong_forecast(
+        prepared["series"], horizon=horizon, models=tuple(models),
+        interval_seconds=interval, season_hours=settings.season_hours,
+        coverage=coverage, n_folds=n_folds, min_train=min_train,
+        ensemble_size=ensemble_size, time_cap_seconds=time_cap_seconds,
+        max_lags=max_lags, series_hash=prepared["series_hash"])
+    result.update({
+        "device_name": device_name, "metric": metric,
+        "interface_name": interface_name, "data_source": data_source,
+        "unit": prepared.get("unit"),
+        "interval_seconds": interval,
+        "n_grid_points": prepared["n_points"],
+        "prep": {key: prepared[key] for key in (
+            "n_raw_rows", "n_duplicates", "n_points", "n_observed",
+            "n_imputed", "n_missing", "n_long_gaps", "interval_seconds",
+            "max_gap_steps", "series_hash")},
+        "quality_ready": bool(quality.ready(data_quality.FORECAST)),
+        "quality_reasons": list(quality.reasons_for(data_quality.FORECAST)
+                                or quality.reasons),
+    })
+    return result
+
+
+def strong_comparison_rows(result: dict) -> list[dict]:
+    """The exact comparison table the UI and the proof export share."""
+    rows = []
+    for name, stats in (result.get("backtest") or {}).get("models", {}).items():
+        rows.append({
+            "source": result.get("data_source"),
+            "device": result.get("device_name"),
+            "metric": result.get("metric"),
+            "n_points": stats.get("n_points"),
+            "model": name,
+            "MAE": stats.get("mae"),
+            "RMSE": stats.get("rmse"),
+            "MAPE": stats.get("mape"),
+            "MASE": stats.get("mase"),
+        })
+    return rows
 
 
 def run_forecast_comparison(

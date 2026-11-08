@@ -49,6 +49,8 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import time
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -65,6 +67,9 @@ class ForecastResult:
     reason: str | None = None
     # holdout predictions aligned to split.test (set by the service)
     test_pred: list[float] = dataclasses.field(default_factory=list)
+    # optional native prediction intervals for the holdout predictions
+    test_lower: list[float] = dataclasses.field(default_factory=list)
+    test_upper: list[float] = dataclasses.field(default_factory=list)
     # future predictions, step 1..horizon relative to forecast origin
     future: list[dict] = dataclasses.field(default_factory=list)
     # 1-step training residual std, also used for the sqrt(h) bands
@@ -468,6 +473,295 @@ def ridge_lag_forecast(train: pd.Series, horizon: int,
     return res
 
 
+# ------------------------------------------------------------------- SARIMA
+def _longest_finite_run(values: np.ndarray) -> tuple[int, int]:
+    """Half-open bounds of the longest contiguous finite run.
+
+    A model is fitted inside one run only. Concatenating across an interior
+    NaN gap would silently invent a transition that never happened, which is
+    exactly the fabrication the resampling rule forbids.
+    """
+    finite = np.isfinite(values)
+    best_start = best_end = 0
+    start = None
+    for i, ok in enumerate(finite):
+        if ok and start is None:
+            start = i
+        elif not ok and start is not None:
+            if i - start > best_end - best_start:
+                best_start, best_end = start, i
+            start = None
+    if start is not None and len(values) - start > best_end - best_start:
+        best_start, best_end = start, len(values)
+    return best_start, best_end
+
+
+#: Bounded, deterministic order search. The first candidate is always attempted;
+#: later candidates stop when the caller's time cap expires, so a slow host can
+#: never make the page hang forever.
+_SARIMA_ORDERS = (
+    (1, 0, 0),
+    (0, 1, 1),
+    (1, 1, 0),
+    (1, 1, 1),
+    (2, 1, 1),
+    (0, 1, 0),
+)
+
+
+def _sarima_seasonal_order(train_len: int,
+                           season_len: int | None) -> tuple[int, int, int, int]:
+    """A small seasonal term only when it is affordable and defensible.
+
+    A 30 s grid makes a 24 h season 2880 samples long, which is not a sensible
+    SARIMA seasonal order. We therefore only add one when a full season fits in
+    a small, bounded number of samples and the history has at least three of
+    them. Otherwise the model is a plain (but still automatic-order) ARIMA.
+    """
+    if season_len is None or season_len < 2 or season_len > 12:
+        return (0, 0, 0, 0)
+    if train_len < 3 * season_len:
+        return (0, 0, 0, 0)
+    return (1, 0, 0, int(season_len))
+
+
+def sarima_forecast(train: pd.Series, horizon: int,
+                    interval_seconds: float | None = None,
+                    future_timestamps: list[pd.Timestamp] | None = None,
+                    test: pd.Series | None = None,
+                    season_hours: float = 24.0,
+                    time_cap_seconds: float = 4.0) -> ForecastResult:
+    """SARIMA via statsmodels with a bounded automatic order search.
+
+    The search is deterministic: a fixed candidate list, the lowest AIC wins,
+    and ties keep the earlier candidate. ``time_cap_seconds`` is a wall-clock
+    safety valve, not part of the statistical model - the first candidate is
+    always fitted so a result exists even on a slow machine.
+
+    Native prediction intervals come from the fitted state-space model. When
+    the model cannot be fitted (statsmodels missing, singular data, no
+    convergence) the result is an honest refusal with the reason, never a
+    silent fallback to a different model.
+    """
+    cfg = {"model": "SARIMAX", "orders": [list(o) for o in _SARIMA_ORDERS],
+           "time_cap_seconds": time_cap_seconds}
+    try:
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+    except Exception as exc:  # noqa: BLE001 - optional dependency probe
+        return _result("sarima", "1.0", cfg, False,
+                       f"statsmodels unavailable: {exc}")
+    raw = pd.to_numeric(train, errors="coerce").to_numpy(dtype=float)
+    start, end = _longest_finite_run(raw)
+    y = raw[start:end]
+    if len(y) < 20:
+        return _result("sarima", "1.0", cfg, False,
+                       f"need >= 20 finite training samples in one contiguous "
+                       f"run, has {len(y)}")
+    season_len = _season_length(season_hours, interval_seconds)
+    seasonal_order = _sarima_seasonal_order(len(y), season_len)
+    cfg["season_len"] = season_len
+    cfg["seasonal_order"] = list(seasonal_order)
+
+    deadline = time.monotonic() + max(0.1, float(time_cap_seconds))
+    best_fit = None
+    best_order = None
+    best_aic = float("inf")
+    last_error = None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for order in _SARIMA_ORDERS:
+            if best_fit is not None and time.monotonic() > deadline:
+                break
+            trend = "c" if order[1] == 0 else "n"
+            try:
+                model = SARIMAX(
+                    y, order=order, seasonal_order=seasonal_order,
+                    trend=trend, enforce_stationarity=False,
+                    enforce_invertibility=False)
+                fit = model.fit(disp=False, maxiter=50)
+            except Exception as exc:  # noqa: BLE001 - candidate failure is not fatal
+                last_error = f"{type(exc).__name__}: {exc}"
+                continue
+            aic = float(getattr(fit, "aic", float("inf")))
+            if np.isfinite(aic) and aic < best_aic - 1e-9:
+                best_aic = aic
+                best_fit = fit
+                best_order = order
+    if best_fit is None:
+        return _result("sarima", "1.0", cfg, False,
+                       "no SARIMA candidate converged"
+                       + (f" ({last_error})" if last_error else ""))
+    cfg.update({"order": list(best_order), "aic": best_aic,
+                "tuned_on": "train AIC"})
+    residuals = np.asarray(best_fit.resid, dtype=float)
+    residuals = residuals[np.isfinite(residuals)]
+    sigma = float(np.std(residuals, ddof=1)) if len(residuals) >= 2 else 0.0
+    res = _result("sarima", "1.0", cfg, True)
+    res.train_mape_guard = sigma
+
+    def _interval(mean, conf):
+        lower, upper = [], []
+        for i, value in enumerate(np.asarray(mean, dtype=float)):
+            lo = float(conf[i, 0]) if conf is not None else value
+            hi = float(conf[i, 1]) if conf is not None else value
+            if not np.isfinite(lo) or lo > value:
+                lo = value
+            if not np.isfinite(hi) or hi < value:
+                hi = value
+            lower.append(lo)
+            upper.append(hi)
+        return lower, upper
+
+    try:
+        if test is not None and len(test) > 0:
+            forecast = best_fit.get_forecast(steps=len(test))
+            mean = np.asarray(forecast.predicted_mean, dtype=float)
+            conf = np.asarray(forecast.conf_int(alpha=0.05), dtype=float)
+            res.test_pred = [float(v) for v in mean]
+            res.test_lower, res.test_upper = _interval(mean, conf)
+        if future_timestamps:
+            forecast = best_fit.get_forecast(steps=len(future_timestamps))
+            mean = np.asarray(forecast.predicted_mean, dtype=float)
+            conf = np.asarray(forecast.conf_int(alpha=0.05), dtype=float)
+            lower, upper = _interval(mean, conf)
+            res.future = [{
+                "target_timestamp": ts, "step": h + 1,
+                "predicted_value": float(mean[h]),
+                "lower_bound": lower[h], "upper_bound": upper[h],
+            } for h, ts in enumerate(future_timestamps)]
+    except Exception as exc:  # noqa: BLE001 - fit succeeded, forecast failed
+        return _result("sarima", "1.0", cfg, False,
+                       f"SARIMA fitted but could not forecast: "
+                       f"{type(exc).__name__}: {exc}")
+    return res
+
+
+# ------------------------------------------------- HistGradientBoosting lags
+def _tod_features(stamp) -> tuple[float, float]:
+    """Sine/cosine time-of-day features from a timestamp (0,0 when unknown)."""
+    try:
+        ts = pd.Timestamp(stamp)
+        seconds = (ts.hour * 3600 + ts.minute * 60 + ts.second
+                   + ts.microsecond / 1_000_000.0)
+        angle = 2.0 * math.pi * seconds / 86400.0
+        return math.sin(angle), math.cos(angle)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+
+
+def _hgb_row(history: np.ndarray, stamp, max_lags: int,
+             roll_window: int) -> np.ndarray:
+    lags = history[-max_lags:][::-1]
+    window = history[-roll_window:]
+    mean = float(np.mean(window)) if window.size else 0.0
+    std = float(np.std(window)) if window.size else 0.0
+    sin_tod, cos_tod = _tod_features(stamp)
+    return np.concatenate([lags, np.array([mean, std, sin_tod, cos_tod])])
+
+
+def hgb_lag_forecast(train: pd.Series, horizon: int,
+                     future_timestamps: list[pd.Timestamp] | None = None,
+                     test: pd.Series | None = None,
+                     max_lags: int = 24,
+                     random_state: int = 42) -> ForecastResult:
+    """Recursive multi-step HistGradientBoosting on lag/rolling/time-of-day.
+
+    One model learns ``y[t]`` from the previous ``max_lags`` values, their
+    rolling mean/std and the time-of-day. Future steps are produced
+    recursively: each prediction is appended to the history before the next
+    feature row is built. Holdout predictions use only values before the
+    forecast origin, so no held-out observation feeds back into a later step.
+
+    Deterministic by construction: a fixed ``random_state`` and
+    ``early_stopping=False`` (no random validation split). Native intervals are
+    empirical quantiles of the in-sample one-step residuals, widened by
+    ``sqrt(h)`` for later steps.
+    """
+    try:
+        from sklearn.ensemble import HistGradientBoostingRegressor
+    except Exception as exc:  # noqa: BLE001 - optional dependency probe
+        return _result("hgb_lag", "1.0", {}, False,
+                       f"scikit-learn unavailable: {exc}")
+    series = pd.to_numeric(train, errors="coerce")
+    raw = series.to_numpy(dtype=float)
+    first, last = _longest_finite_run(raw)
+    y = raw[first:last]
+    if len(y) < max_lags + 20:
+        return _result("hgb_lag", "1.0", {"lags": max_lags}, False,
+                       f"need >= {max_lags + 20} finite training samples in "
+                       f"one contiguous run for a {max_lags}-lag design, has "
+                       f"{len(y)}")
+    index = series.index[first:last]
+    roll_window = min(max_lags, 8)
+    rows = len(y) - max_lags
+    X = np.empty((rows, max_lags + 4), dtype=float)
+    target = np.empty(rows, dtype=float)
+    for j, t in enumerate(range(max_lags, len(y))):
+        X[j] = _hgb_row(y[:t], index[t], max_lags, roll_window)
+        target[j] = y[t]
+    model = HistGradientBoostingRegressor(
+        max_iter=200, learning_rate=0.08, max_depth=6,
+        min_samples_leaf=5, l2_regularization=1.0,
+        early_stopping=False, random_state=random_state)
+    model.fit(X, target)
+    in_sample = model.predict(X)
+    residuals = in_sample - target
+    residuals = residuals[np.isfinite(residuals)]
+    sigma = float(np.std(residuals, ddof=1)) if len(residuals) >= 2 else 0.0
+    cfg = {"lags": max_lags, "rolling_window": roll_window,
+           "features": "lags + rolling mean/std + time-of-day sin/cos",
+           "recursive": True, "random_state": random_state}
+    res = _result("hgb_lag", "1.0", cfg, True)
+    res.train_mape_guard = sigma
+
+    def _stamp_for(step: int):
+        if future_timestamps and step - 1 < len(future_timestamps):
+            return future_timestamps[step - 1]
+        if test is not None and step - 1 < len(test):
+            return test.index[step - 1]
+        if isinstance(index, pd.DatetimeIndex) and len(index) >= 2:
+            delta = index[-1] - index[-2]
+            return index[-1] + delta * step
+        return None
+
+    def _recursive(steps: int) -> list[float]:
+        history = list(y)
+        preds: list[float] = []
+        for step in range(1, steps + 1):
+            row = _hgb_row(np.asarray(history, dtype=float),
+                           _stamp_for(step), max_lags, roll_window)
+            value = float(model.predict(row.reshape(1, -1))[0])
+            preds.append(value)
+            history.append(value)
+        return preds
+
+    if residuals.size:
+        lo_q = float(np.quantile(residuals, 0.025))
+        hi_q = float(np.quantile(residuals, 0.975))
+        base_half = max(abs(lo_q), abs(hi_q))
+    else:
+        base_half = sigma
+    if test is not None and len(test) > 0:
+        res.test_pred = _recursive(len(test))
+        res.test_lower = [p - base_half * math.sqrt(h + 1)
+                          for h, p in enumerate(res.test_pred)]
+        res.test_upper = [p + base_half * math.sqrt(h + 1)
+                          for h, p in enumerate(res.test_pred)]
+    if future_timestamps:
+        preds = _recursive(len(future_timestamps))
+        res.future = []
+        for h, (ts, value) in enumerate(zip(future_timestamps, preds),
+                                        start=1):
+            half = base_half * math.sqrt(h)
+            res.future.append({
+                "target_timestamp": ts, "step": h,
+                "predicted_value": value,
+                "lower_bound": value - half,
+                "upper_bound": value + half,
+            })
+    return res
+
+
 #: Registry used by the forecast service; naive is always available.
 FORECAST_MODELS = {
     "naive": naive_forecast,
@@ -475,6 +769,8 @@ FORECAST_MODELS = {
     "holt_damped": holt_damped_forecast,
     "holt_winters": holt_winters_forecast,
     "ridge_lag": ridge_lag_forecast,
+    "sarima": sarima_forecast,
+    "hgb_lag": hgb_lag_forecast,
 }
 
 #: Extra keyword arguments each registry entry accepts from the service.
@@ -487,6 +783,8 @@ MODEL_KWARGS = {
     "holt_winters": ("interval_seconds", "season_hours"),
     "holt_damped": ("val",),
     "ridge_lag": ("max_lags",),
+    "sarima": ("interval_seconds", "season_hours", "time_cap_seconds"),
+    "hgb_lag": ("max_lags",),
 }
 
 

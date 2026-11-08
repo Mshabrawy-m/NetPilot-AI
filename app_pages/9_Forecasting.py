@@ -18,14 +18,14 @@ in dedicated tables and never mixed with observations.
 """
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from services.app_state import (bootstrap, demo_banner_if_active, read,
-                                sidebar_status)
+from services.app_state import bootstrap, demo_banner_if_active, read, sidebar_status
 from ui import theme
 
 bootstrap()
@@ -35,10 +35,14 @@ theme.page_header("Forecasting",
                   icon="🔮")
 demo_banner_if_active()
 
+from analytics import backtest, series_prep
 from analytics.forecasting import FORECAST_MODELS
-from analytics import backtest
-from analytics.time_series import (dedupe_frame, load_metric_frame_daily,
-                                   load_metric_frame_with_rollups)
+from analytics.time_series import (
+    dedupe_frame,
+    load_metric_frame,
+    load_metric_frame_daily,
+    load_metric_frame_with_rollups,
+)
 from config import get_settings
 from database import repository
 from database.models import db_utcnow
@@ -57,6 +61,27 @@ BAND_MODES = {
     "Empirical, constant width": "empirical",
     "Normal approximation (model's own)": "normal_sqrt_h",
 }
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def _cached_strong_forecast(series_hash: str, index_ns: tuple,
+                            values: tuple, interval_seconds: float,
+                            horizon: int, models: tuple, coverage: float,
+                            n_folds: int, min_train: int, ensemble_size: int,
+                            time_cap_seconds: float, max_lags: int) -> dict:
+    """Cache the strong backtest by the prepared series hash.
+
+    ``series_hash`` is the first cache key so two different selections can
+    never collide. The values are passed too, which makes the key even stricter
+    without changing the documented contract: the hash identifies the series.
+    """
+    series = pd.Series(list(values), index=pd.to_datetime(list(index_ns)))
+    return forecast_service.compute_strong_forecast(
+        series, horizon=horizon, models=tuple(models),
+        interval_seconds=interval_seconds, coverage=coverage,
+        n_folds=n_folds, min_train=min_train, ensemble_size=ensemble_size,
+        time_cap_seconds=time_cap_seconds, max_lags=max_lags,
+        series_hash=series_hash)
 
 
 def _fmt(value, digits=3, suffix=""):
@@ -562,3 +587,158 @@ with st.expander("📐 Rolling-origin backtest - which baseline would have "
                 if bt["skipped"]:
                     st.caption("Skipped: " + ", ".join(
                         f"{k} ({val})" for k, val in bt["skipped"].items()))
+
+st.divider()
+with st.expander("🚀 Strong models - SARIMA + gradient boosting + mean ensemble",
+                 expanded=False):
+    st.caption(
+        "**Data preparation rule (applied before any backtest):** duplicate "
+        "timestamps are collapsed (last write wins), then the series is placed "
+        "on a fixed grid whose interval is chosen below (default 30 s). A gap "
+        "of at most the configured number of steps is linearly interpolated "
+        "and labelled as imputed; a longer gap stays NaN forever and ends a "
+        "contiguous run. No model, metric or plot ever draws a line across a "
+        "long gap - the backtest only trains and scores inside finite runs."
+    )
+    strong_cols = st.columns(3)
+    with strong_cols[0]:
+        default_interval = round(
+            readiness.get("observed_interval_seconds")
+            or series_prep.DEFAULT_INTERVAL_SECONDS)
+        strong_interval = st.number_input(
+            "Fixed grid interval (seconds)", min_value=5, max_value=3600,
+            value=max(5, default_interval), step=5, key="strong_interval")
+        strong_gap = st.number_input(
+            "Interpolate gaps up to (steps)", min_value=0, max_value=10,
+            value=series_prep.DEFAULT_MAX_GAP_STEPS, step=1, key="strong_gap")
+    with strong_cols[1]:
+        strong_folds = st.slider("Rolling-origin folds (expanding window)",
+                                 3, 10, 5, key="strong_folds")
+        strong_models = st.multiselect(
+            "Strong models to compare", list(FORECAST_MODELS),
+            default=list(forecast_service.STRONG_MODELS), key="strong_models")
+    with strong_cols[2]:
+        strong_coverage = st.slider(
+            "Prediction interval coverage", 0.60, 0.99,
+            float(coverage), 0.05, key="strong_coverage")
+        strong_ensemble = st.slider("Mean ensemble of best N models", 2, 3, 3,
+                                    key="strong_ensemble")
+    if st.button("🧪 Run strong backtest & forecast", key="run_strong",
+                 disabled=not strong_models):
+        strong_frame = dedupe_frame(read(lambda s: load_metric_frame(
+            s, device_name, metric, interface_name=interface,
+            data_source=data_source, since=since,
+            device_level_only=(interface is None))))
+        if strong_frame.empty or strong_frame["value"].notna().sum() == 0:
+            st.info("No raw observations in the selected window for the "
+                    "strong-model path.")
+        else:
+            prepared = series_prep.prepare_regular_series(
+                strong_frame, interval_seconds=float(strong_interval),
+                max_gap_steps=int(strong_gap))
+            strong_series = prepared["series"]
+            started = time.perf_counter()
+            strong_result = _cached_strong_forecast(
+                prepared["series_hash"],
+                tuple(int(ts.value) for ts in strong_series.index),
+                tuple(strong_series.tolist()),
+                float(strong_interval), int(horizon),
+                tuple(strong_models), float(strong_coverage),
+                int(strong_folds), series_prep.MIN_POINTS,
+                int(strong_ensemble), 4.0, 24)
+            elapsed = time.perf_counter() - started
+            st.session_state["_strong_result"] = strong_result
+            st.session_state["_strong_series"] = strong_series
+            st.session_state["_strong_context"] = {
+                "data_source": data_source, "device_name": device_name,
+                "metric": metric, "interface_name": interface,
+                "n_raw_rows": prepared["n_raw_rows"],
+                "n_duplicates": prepared["n_duplicates"],
+                "n_points": prepared["n_points"],
+                "n_observed": prepared["n_observed"],
+                "n_imputed": prepared["n_imputed"],
+                "n_missing": prepared["n_missing"],
+                "n_long_gaps": prepared["n_long_gaps"],
+                "series_hash": prepared["series_hash"],
+                "interval_seconds": float(strong_interval),
+                "elapsed_seconds": elapsed,
+            }
+            st.session_state["_strong_at"] = db_utcnow()
+
+    strong_result = st.session_state.get("_strong_result")
+    if strong_result:
+        ctx = st.session_state.get("_strong_context") or {}
+        source_controls.badge(ctx.get("data_source") or data_source)
+        st.caption(
+            f"Source **{ctx.get('data_source') or data_source}** · "
+            f"device **{ctx.get('device_name') or device_name}** · "
+            f"metric **{ctx.get('metric') or metric}** · "
+            f"usable points **{strong_result.get('n_points')}** "
+            f"(fit run {strong_result.get('fit_points')}) · "
+            f"grid **{ctx.get('interval_seconds')} s** · "
+            f"raw rows {ctx.get('n_raw_rows')} (duplicates collapsed "
+            f"{ctx.get('n_duplicates')}) · imputed {ctx.get('n_imputed')} · "
+            f"missing {ctx.get('n_missing')} · long gaps "
+            f"{ctx.get('n_long_gaps')} · series hash "
+            f"`{str(ctx.get('series_hash'))[:12]}` · "
+            f"computed in **{ctx.get('elapsed_seconds', 0):.2f} s**.")
+        if strong_result.get("status") != "ok":
+            st.error(strong_result.get("message")
+                     or "The strong backtest did not produce a result.",
+                     icon="📉")
+        else:
+            table = pd.DataFrame(
+                forecast_service.strong_comparison_rows(strong_result))
+            st.markdown("**Backtest comparison** (rolling origins, expanding "
+                        "window, identical scoring points per fold)")
+            st.dataframe(table, hide_index=True, width="stretch")
+            st.caption("MASE is computed against the naive one-step scale of "
+                       "each fold's training window; MAPE skips near-zero "
+                       "actuals instead of reporting an exploded ratio. "
+                       "Intervals are empirical residual quantiles from the "
+                       "same backtest.")
+            chosen = strong_result.get("chosen_model")
+            st.success(
+                f"Chosen model: **{chosen}** (criterion: "
+                f"{strong_result.get('best_criterion')}; backtest folds: "
+                f"{strong_result.get('n_folds')}, contiguous runs: "
+                f"{strong_result.get('n_segments')}).")
+            if strong_result.get("forecast"):
+                fdf = pd.DataFrame(strong_result["forecast"])
+                st.dataframe(
+                    fdf[["target_timestamp", "step", "predicted_value",
+                         "lower_bound", "upper_bound"]],
+                    hide_index=True, width="stretch")
+                fig = go.Figure()
+                hist_series = st.session_state.get("_strong_series")
+                if hist_series is not None:
+                    hist = hist_series.dropna()
+                    fig.add_trace(go.Scatter(
+                        x=hist.index, y=hist.to_numpy(), mode="lines",
+                        name="regular-grid observations"))
+                fig.add_trace(go.Scatter(
+                    x=fdf["target_timestamp"], y=fdf["predicted_value"],
+                    mode="lines+markers", name=f"forecast: {chosen}",
+                    line={"dash": "dash", "width": 3}))
+                fig.add_trace(go.Scatter(
+                    x=fdf["target_timestamp"], y=fdf["upper_bound"],
+                    line={"width": 0}, showlegend=False, hoverinfo="skip"))
+                fig.add_trace(go.Scatter(
+                    x=fdf["target_timestamp"], y=fdf["lower_bound"],
+                    fill="tonexty", opacity=0.18, line={"width": 0},
+                    name=f"{float(strong_result.get('coverage', 0.95)):.0%} "
+                         "empirical interval"))
+                fig.update_layout(
+                    height=390, margin={"l": 10, "r": 10, "t": 30, "b": 10},
+                    xaxis_title="Time (UTC)", yaxis_title=metric)
+                st.plotly_chart(fig, width="stretch")
+            else:
+                st.warning(strong_result.get("forecast_note")
+                           or "No future steps were published.", icon="⚠️")
+            notes = strong_result.get("fit_notes") or {}
+            if notes:
+                st.caption("Models that could not be refit for the future "
+                           "(the backtest above is still their real measured "
+                           "result): " + "; ".join(
+                               f"{name}: {reason}"
+                               for name, reason in notes.items()))

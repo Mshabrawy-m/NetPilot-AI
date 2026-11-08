@@ -20,9 +20,12 @@ plotly
 # there; it is kept here for local convenience.
 python-dotenv
 
-# Phase 2 analytics. statsmodels is intentionally NOT used (its compiled
-# Kalman/CFA extensions are blocked by this machine's Windows App Control) -
-# damped Holt is implemented in pure NumPy in analytics/forecasting.py.
+# Phase 2 analytics. SARIMA uses statsmodels' compiled state-space code; the
+# version below is the one verified locally (Python 3.12.10, statsmodels
+# 0.15.0, scikit-learn 1.5.2). scikit-learn was already present and is kept
+# unpinned for the hosted-runner reason documented at the top of this file.
+# The pure-NumPy Holt baselines remain in analytics/forecasting.py.
+statsmodels==0.15.0
 scikit-learn
 scipy
 
