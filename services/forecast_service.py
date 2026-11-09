@@ -240,22 +240,16 @@ def compute_strong_forecast(
     ``st.cache_data`` keyed by ``series_hash``. The series is expected to be the
     regular-grid output of :func:`analytics.series_prep.prepare_regular_series`;
     NaN values mark long gaps and are never bridged.
+
+    The result separates two counts that used to be conflated as ``n_points``:
+    ``series_len`` is the number of usable points in the single contiguous run
+    used for the final fit, and ``eval_points`` is how many points the chosen
+    model actually scored across the rolling-origin folds.
     """
     floor = max(int(STRONG_MIN_POINTS), int(min_train))
     values = pd.to_numeric(pd.Series(series), errors="coerce")
     finite = values.dropna()
-    n_points = len(finite)
-    base = {
-        "status": "insufficient_data", "n_points": n_points,
-        "n_grid_points": len(values), "series_hash": series_hash,
-        "interval_seconds": interval_seconds, "coverage": coverage,
-        "models": {}, "backtest": {}, "forecast": [],
-        "best_model": None, "chosen_model": None,
-        "best_criterion": "backtest MAE",
-    }
-    if n_points < floor:
-        base["message"] = series_prep.insufficient_data_message(n_points, floor)
-        return base
+    n_usable = len(finite)
 
     # The final refit must use ONE contiguous run as well: concatenating across
     # a NaN gap would invent a transition that never happened. Prefer the most
@@ -266,10 +260,23 @@ def compute_strong_forecast(
         start, end = segments[-1]
         if end - start < 20:
             start, end = max(segments, key=lambda bounds: bounds[1] - bounds[0])
-        finite = values.iloc[start:end]
+        fit_run = values.iloc[start:end]
     else:
-        finite = values.dropna()
-    base["fit_points"] = len(finite)
+        fit_run = finite
+    series_len = len(fit_run)
+
+    base = {
+        "status": "insufficient_data", "series_len": series_len,
+        "eval_points": 0, "n_usable_points": n_usable,
+        "n_grid_points": len(values), "series_hash": series_hash,
+        "interval_seconds": interval_seconds, "coverage": coverage,
+        "models": {}, "backtest": {}, "forecast": [],
+        "best_model": None, "chosen_model": None,
+        "best_criterion": "backtest MAE",
+    }
+    if n_usable < floor:
+        base["message"] = series_prep.insufficient_data_message(n_usable, floor)
+        return base
 
     bt = strong_rolling_origin_backtest(
         values, models=tuple(models), horizon=horizon, n_folds=n_folds,
@@ -285,8 +292,8 @@ def compute_strong_forecast(
     best = bt["best_model"]
     ranked = sorted(bt["models"].items(), key=lambda kv: (kv[1]["mae"],
                                                           kv[0]))
-    origin = finite.index.max()
-    if interval_seconds and isinstance(finite.index, pd.DatetimeIndex):
+    origin = fit_run.index.max()
+    if interval_seconds and isinstance(fit_run.index, pd.DatetimeIndex):
         future_timestamps = [
             origin + pd.Timedelta(seconds=float(interval_seconds) * (h + 1))
             for h in range(horizon)
@@ -313,7 +320,7 @@ def compute_strong_forecast(
         if name == MEAN_ENSEMBLE_NAME:
             continue
         res, reason = _strong_future(
-            name, finite, horizon, future_timestamps, interval_seconds,
+            name, fit_run, horizon, future_timestamps, interval_seconds,
             season_hours, time_cap_seconds, max_lags)
         if res is None:
             fit_notes[name] = reason or "no future forecast"
@@ -340,7 +347,7 @@ def compute_strong_forecast(
             if name == MEAN_ENSEMBLE_NAME:
                 continue
             res, reason = _strong_future(
-                name, finite, horizon, future_timestamps, interval_seconds,
+                name, fit_run, horizon, future_timestamps, interval_seconds,
                 season_hours, time_cap_seconds, max_lags)
             if res is None:
                 fit_notes[name] = reason or "no future forecast"
@@ -360,7 +367,7 @@ def compute_strong_forecast(
             if name in used_names or name == MEAN_ENSEMBLE_NAME:
                 continue
             res, reason = _strong_future(
-                name, finite, horizon, future_timestamps, interval_seconds,
+                name, fit_run, horizon, future_timestamps, interval_seconds,
                 season_hours, time_cap_seconds, max_lags)
             if res is None:
                 fit_notes[name] = reason or "no future forecast"
@@ -410,6 +417,8 @@ def compute_strong_forecast(
         "chosen_members": used_names if len(used_names) > 1 else [],
         "best_criterion": "backtest MAE",
         "forecast": rows,
+        "series_len": series_len,
+        "eval_points": (chosen_stats or {}).get("eval_points"),
         "forecast_note": (
             None if rows else
             "no future steps could be published (the selected model's "
@@ -481,14 +490,21 @@ def run_strong_forecast(
 
 
 def strong_comparison_rows(result: dict) -> list[dict]:
-    """The exact comparison table the UI and the proof export share."""
+    """The exact comparison table the UI and the proof export share.
+
+    ``series_len`` is the number of usable points in the contiguous run used
+    for the final fit; ``eval_points`` is how many points that model actually
+    scored across the rolling-origin folds (per model, and it may exceed
+    ``series_len`` because every fold is scored).
+    """
     rows = []
     for name, stats in (result.get("backtest") or {}).get("models", {}).items():
         rows.append({
             "source": result.get("data_source"),
             "device": result.get("device_name"),
             "metric": result.get("metric"),
-            "n_points": stats.get("n_points"),
+            "series_len": result.get("series_len"),
+            "eval_points": stats.get("eval_points"),
             "model": name,
             "MAE": stats.get("mae"),
             "RMSE": stats.get("rmse"),

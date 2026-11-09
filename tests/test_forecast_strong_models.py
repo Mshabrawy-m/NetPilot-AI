@@ -26,7 +26,10 @@ from analytics.forecasting import (
     hgb_lag_forecast,
     sarima_forecast,
 )
-from services.forecast_service import compute_strong_forecast
+from services.forecast_service import (
+    compute_strong_forecast,
+    strong_comparison_rows,
+)
 
 BASE = dt.datetime(2026, 1, 1, 0, 0, 0)
 
@@ -230,6 +233,32 @@ def test_long_nan_gap_splits_runs_and_is_never_bridged():
     assert result["n_segments"] >= 2
     assert all(math.isfinite(row["predicted_value"])
                for row in result["forecast"])
+
+
+def test_comparison_rows_separate_series_len_from_eval_points():
+    series = synthetic(130, season=12)
+    series.iloc[55:75] = float("nan")
+    prepared = series_prep.prepare_regular_series(
+        pd.DataFrame({"collected_at": series.index, "value": series.values}),
+        interval_seconds=30, max_gap_steps=3)
+    result = compute_strong_forecast(
+        prepared["series"], horizon=3, models=("naive",),
+        interval_seconds=30, n_folds=3, min_train=30)
+    assert result["status"] == "ok", result.get("message")
+    # 110 finite points exist, but the final fit uses one 55-point run.
+    assert result["n_usable_points"] == 110
+    assert result["series_len"] == 55
+    assert result["eval_points"] == 9  # 3 folds x 3 scored steps
+    rows = strong_comparison_rows({
+        **result, "data_source": "demo", "device_name": "dev",
+        "metric": "m"})
+    assert len(rows) == 1
+    assert list(rows[0]) == ["source", "device", "metric", "series_len",
+                             "eval_points", "model", "MAE", "RMSE", "MAPE",
+                             "MASE"]
+    assert "n_points" not in rows[0]
+    assert rows[0]["series_len"] == 55
+    assert rows[0]["eval_points"] == 9
 
 
 def test_outliers_do_not_break_the_metrics():

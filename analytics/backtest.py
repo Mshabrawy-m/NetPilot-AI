@@ -229,7 +229,7 @@ def _finalize_bucket(bucket: dict, coverage: float) -> dict | None:
                  if bucket["pct"] else None),
         "mase": (sum(bucket["mase"]) / len(bucket["mase"])
                  if bucket["mase"] else None),
-        "n_points": n,
+        "eval_points": n,
         "per_step_mae": per_step,
         "interval_half_widths": widths,
         "pooled_half_width": float(pooled_width),
@@ -299,7 +299,7 @@ def strong_rolling_origin_backtest(
                  f"{min_train}).")
             ],
             "models": {}, "skipped": {}, "folds": 0,
-            "n_points": int(np.isfinite(values).sum()),
+            "n_finite_points": int(np.isfinite(values).sum()),
             "n_segments": len(segments),
         }
 
@@ -314,7 +314,7 @@ def strong_rolling_origin_backtest(
             "reasons": [(f"need at least 3 distinct rolling origins, found "
                          f"{len(folds)}")],
             "models": {}, "skipped": {}, "folds": len(folds),
-            "n_points": int(np.isfinite(values).sum()),
+            "n_finite_points": int(np.isfinite(values).sum()),
             "n_segments": len(segments),
         }
 
@@ -373,7 +373,7 @@ def strong_rolling_origin_backtest(
             "reasons": [("no model produced an evaluable prediction on any "
                          "rolling origin")],
             "models": {}, "skipped": skipped, "folds": len(folds),
-            "n_points": int(np.isfinite(values).sum()),
+            "n_finite_points": int(np.isfinite(values).sum()),
             "n_segments": len(segments),
         }
 
@@ -420,7 +420,7 @@ def strong_rolling_origin_backtest(
         "best_criterion": "backtest MAE",
         "ensemble": ensemble_info,
         "coverage": coverage,
-        "n_points": int(np.isfinite(values).sum()),
+        "n_finite_points": int(np.isfinite(values).sum()),
         "n_segments": len(segments),
         "min_train": min_train,
         "models_requested": list(models),
