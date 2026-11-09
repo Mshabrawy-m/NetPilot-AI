@@ -431,11 +431,17 @@ def discover_topology_from_traceroute(
         prev_hop: Hop | None = None
         last_responsive: Hop | None = None
         trailing_unresponsive = 0
+        consecutive_unresponsive = 0
 
         for hop in traceroute_result.hops:
+            # Never walk past the documented hop budget (defensive: some
+            # localized parsers can emit more lines than the command allowed).
+            if hop.ttl > MAX_HOPS:
+                break
             if hop.address is not None:
                last_responsive = hop
                trailing_unresponsive = 0
+               consecutive_unresponsive = 0
                resolved_name = canonical_device_name(hop.address, default=hop.address)
                ensure_device(
                    hop.address,
@@ -451,6 +457,11 @@ def discover_topology_from_traceroute(
                prev_hop = hop
             else:
                trailing_unresponsive += 1
+               consecutive_unresponsive += 1
+               # The ISP hides the rest of the path; three silent hops in a row
+               # is enough evidence for one honest "unresponsive path" marker.
+               if consecutive_unresponsive >= 3:
+                   break
 
             if hop.responsive and hop.address is not None:
                for i, rtt in enumerate([hop.rtt1, hop.rtt2, hop.rtt3], 1):
@@ -468,7 +479,8 @@ def discover_topology_from_traceroute(
         if trailing_unresponsive and last_responsive and last_responsive.address:
             destination_key = destination
             destination_name = destination_key
-            ensure_device(destination_key, name=destination_name, lab_ip=destination, status="up")
+            ensure_device(destination_key, name=destination_name,
+                          lab_ip=destination, status="up")
             synthetic_key = f"__unresponsive__{destination_key}"
             synthetic_name = f"unresponsive-path:{destination_key}"
             ensure_device(synthetic_key, name=synthetic_name, lab_ip=None, status="unknown")

@@ -51,6 +51,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import errno
+import hashlib
 import ipaddress
 import locale
 import logging
@@ -621,13 +622,29 @@ def _log_integrity_error(context: str, exc: IntegrityError) -> None:
 
 
 def _topology_save(session, label: str, action):
+    """Run one topology entity write in its own savepoint.
+
+    Returns ``(ok, value)``. A failed entity rolls back only its savepoint, so
+    the outer session stays usable and can never be left in
+    ``PendingRollbackError``. If the session was already inactive (a prior
+    failure outside a savepoint), it is rolled back explicitly.
+    """
     try:
         with session.begin_nested():
-            action()
-        return True
+            value = action()
+        return True, value
     except IntegrityError as exc:
         _log_integrity_error(label, exc)
-        return False
+    except Exception as exc:  # noqa: BLE001 - one entity must not poison the cycle
+        logger.warning("%s: topology write failed (%s)",
+                       label, type(exc).__name__)
+    if not session.is_active:
+        try:
+            session.rollback()
+        except Exception:  # best effort recovery
+            logger.debug("%s: rollback after topology failure failed",
+                         label, exc_info=True)
+    return False, None
 
 
 def _sync_topology(session, result: CycleResult) -> None:
@@ -767,107 +784,193 @@ def _sync_topology(session, result: CycleResult) -> None:
             )
 
 
+def _trace_interface_name(peer: str) -> str:
+    """Stable, bounded interface label for an observed traceroute adjacency.
+
+    Derived only from the peer name, so the same logical link always resolves
+    to the same ``(device_a, if_a, device_b, if_b)`` tuple and
+    :func:`repository.upsert_link` dedupes it instead of inserting a new row
+    on every discovery cycle.
+    """
+    raw = str(peer or "peer")
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    safe = re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw).strip("_") or "peer"
+    budget = 64 - len("trace:") - len("-") - len(digest)
+    return f"trace:{safe[:budget]}-{digest}"[:64]
+
+
+def _traceroute_metric_rows(
+    discovered_path, collected_at: dt.datetime,
+    name_map: dict[str, str] | None = None,
+) -> list[dict]:
+    """Convert discovered per-hop RTTs into ``metric_samples`` row dicts."""
+    if discovered_path is None:
+        return []
+    mapping = name_map or {}
+    rows: list[dict] = []
+    for metric in discovered_path.metrics:
+        raw_name = str(metric["device_name"])
+        rows.append({
+            "device_name": mapping.get(raw_name, raw_name),
+            "interface_name": metric.get("interface_name"),
+            "metric": metric["metric"],
+            "value": metric["value"],
+            "unit": metric.get("unit", "ms"),
+            "data_source": "live",
+            "collected_at": metric.get("collected_at", collected_at),
+        })
+    return rows
+
+
+def _resolve_traceroute_metric_names(session, discovered_path) -> dict[str, str]:
+    """Read-only map from discovered labels to the device rows they belong to.
+
+    Existing friendly names win (``192.168.1.1`` -> ``gateway``), so traceroute
+    metrics are stored under the same device label the topology page shows.
+    """
+    if discovered_path is None:
+        return {}
+    mapping: dict[str, str] = {}
+    for device in discovered_path.devices:
+        candidate_name = str(device.get("name") or "")
+        if not candidate_name:
+            continue
+        existing = repository.find_device_for_hop(
+            session,
+            hop_ip=device.get("lab_ip"),
+            preferred_name=candidate_name,
+        )
+        if existing is not None:
+            mapping[candidate_name] = str(existing.name)
+    return mapping
+
+
 def _sync_traceroute_topology(
     session,
     discovered_path,
     collected_at: dt.datetime,
-    samples_out: list[dict],
+    samples_out: list[dict] | None,
+    name_map: dict[str, str] | None = None,
 ) -> None:
-    """Persist discovered topology from traceroute as devices, links, and metrics."""
+    """Persist discovered topology from traceroute as devices and links.
+
+    Every device is resolved to one existing row (never renamed, never
+    duplicated) inside its own savepoint. Links are built from the resolved
+    names with stable interface labels, so repeated cycles dedupe by
+    ``(device_a, if_a, device_b, if_b)``. Metric rows are appended to
+    ``samples_out`` when supplied (the collector writes them earlier, in their
+    own transaction, so a topology failure can never drop a cycle's samples).
+    """
     if discovered_path is None:
         return
 
+    resolved_names: dict[str, str] = dict(name_map or {})
+    devices_by_name: dict[str, object] = {}
+
     for device in discovered_path.devices:
-        candidate_name = str(device["name"])
-        candidate_ip = device.get("lab_ip")
-        existing = repository.get_device_by_ip(session, candidate_ip)
-        if existing is not None and existing.name != candidate_name:
-            current = str(existing.name or "")
-            if repository._looks_like_ip(current) and not repository._looks_like_ip(candidate_name):
-                existing.name = candidate_name
-            elif current.startswith("target-") and not candidate_name.startswith("target-") and not repository._looks_like_ip(candidate_name):
-                existing.name = candidate_name
-            elif not repository._looks_like_ip(current) and repository._looks_like_ip(candidate_name):
-                existing.name = candidate_name
-        _topology_save(
+        candidate_name = str(device.get("name") or "").strip()
+        if not candidate_name:
+            continue
+        ok, resolved = _topology_save(
             session,
             f"traceroute-device:{candidate_name}",
-            lambda candidate_name=candidate_name, device=device: repository.upsert_device(
-                session,
-                name=candidate_name,
-                type_=device.get("type", "router"),
-                mgmt_ip=device.get("lab_ip"),
-                lab_ip=device.get("lab_ip"),
-                status=device.get("status", "unknown"),
+            lambda candidate_name=candidate_name, device=device: (
+                repository.resolve_device_for_hop(
+                    session,
+                    hop_ip=device.get("lab_ip"),
+                    preferred_name=candidate_name,
+                    type_=device.get("type", "router"),
+                    status=device.get("status", "unknown"),
+                )
             ),
         )
+        if ok and resolved is not None:
+            resolved_names[candidate_name] = str(resolved.name)
+            devices_by_name[str(resolved.name)] = resolved
+        else:
+            logger.warning(
+                "traceroute: device %s could not be resolved; its links are "
+                "skipped this cycle", candidate_name)
 
-    collector_host = repository.get_device_by_name(session, "collector-host")
+    ok, collector_host = _topology_save(
+        session,
+        "traceroute-device:collector-host",
+        lambda: repository.upsert_device(
+            session, name="collector-host", type_="host", status="up"),
+    )
+    if not ok or collector_host is None:
+        collector_host = repository.get_device_by_name(session, "collector-host")
     if collector_host is None:
-        collector_host = repository.upsert_device(
-            session, name="collector-host", type_="host", status="up"
-        )
-
-    def _device_obj(name: str):
-        device = repository.get_device_by_name(session, name)
-        if device is None:
-            device = repository.upsert_device(
-                session,
-                name=name,
-                type_="router",
-                status="unknown",
-            )
-        return device
+        logger.warning("traceroute: collector-host unavailable; topology skipped")
+        if samples_out is not None:
+            samples_out.extend(
+                _traceroute_metric_rows(discovered_path, collected_at))
+        return
+    devices_by_name.setdefault(str(collector_host.name), collector_host)
 
     if discovered_path.devices:
-        first_device_name = str(discovered_path.devices[0]["name"])
-        first_device = _device_obj(first_device_name)
-        _topology_save(
-            session,
-            "traceroute-interface:collector-host:uplink",
-            lambda: repository.upsert_interface(session, collector_host, "uplink", status="up"),
-        )
-        _topology_save(
-            session,
-            f"traceroute-interface:{first_device_name}:ingress",
-            lambda first_device=first_device: repository.upsert_interface(
-                session, first_device, "ingress", status="up"
-            ),
-        )
-        _topology_save(
-            session,
-            "traceroute-link:collector-host->first",
-            lambda: repository.upsert_link(
+        first_candidate = str(discovered_path.devices[0].get("name") or "")
+        first_device_name = resolved_names.get(first_candidate)
+        first_device = (devices_by_name.get(first_device_name)
+                        if first_device_name else None)
+        if first_device is not None:
+            _topology_save(
                 session,
-                "collector-host",
-                "uplink",
-                first_device_name,
-                "ingress",
-                status="up",
-            ),
-        )
+                "traceroute-interface:collector-host:uplink",
+                lambda: repository.upsert_interface(
+                    session, collector_host, "uplink", status="up"),
+            )
+            _topology_save(
+                session,
+                f"traceroute-interface:{first_device_name}:ingress",
+                lambda first_device=first_device: repository.upsert_interface(
+                    session, first_device, "ingress", status="up"),
+            )
+            _topology_save(
+                session,
+                "traceroute-link:collector-host->first",
+                lambda first_device_name=first_device_name: repository.upsert_link(
+                    session,
+                    "collector-host",
+                    "uplink",
+                    first_device_name,
+                    "ingress",
+                    status="up",
+                ),
+            )
+        else:
+            logger.warning(
+                "traceroute: first hop %s unresolved; host link skipped",
+                first_candidate)
 
-    for i, link in enumerate(discovered_path.links):
-        device_a_name = str(link["device_a"])
-        device_b_name = str(link["device_b"])
+    for link in discovered_path.links:
+        raw_a = str(link.get("device_a") or "")
+        raw_b = str(link.get("device_b") or "")
+        device_a_name = resolved_names.get(raw_a, raw_a)
+        device_b_name = resolved_names.get(raw_b, raw_b)
+        device_a = devices_by_name.get(device_a_name)
+        device_b = devices_by_name.get(device_b_name)
+        if device_a is None or device_b is None or device_a_name == device_b_name:
+            logger.warning(
+                "traceroute: link %s <-> %s references an unresolved device; "
+                "skipped this cycle", raw_a, raw_b)
+            continue
         status = link.get("status", "up")
-        if_name_a = f"if_{i}_a"
-        if_name_b = f"if_{i}_b"
-        device_a = _device_obj(device_a_name)
-        device_b = _device_obj(device_b_name)
+        if_name_a = _trace_interface_name(device_b_name)
+        if_name_b = _trace_interface_name(device_a_name)
         _topology_save(
             session,
             f"traceroute-interface:{device_a_name}:{if_name_a}",
-            lambda device_a=device_a, if_name_a=if_name_a, status=status: repository.upsert_interface(
-                session, device_a, if_name_a, status=status
-            ),
+            lambda device_a=device_a, if_name_a=if_name_a, status=status: (
+                repository.upsert_interface(
+                    session, device_a, if_name_a, status=status)),
         )
         _topology_save(
             session,
             f"traceroute-interface:{device_b_name}:{if_name_b}",
-            lambda device_b=device_b, if_name_b=if_name_b, status=status: repository.upsert_interface(
-                session, device_b, if_name_b, status=status
-            ),
+            lambda device_b=device_b, if_name_b=if_name_b, status=status: (
+                repository.upsert_interface(
+                    session, device_b, if_name_b, status=status)),
         )
         _topology_save(
             session,
@@ -882,16 +985,9 @@ def _sync_traceroute_topology(
             ),
         )
 
-    for metric in discovered_path.metrics:
-        samples_out.append({
-            "device_name": metric["device_name"],
-            "interface_name": metric.get("interface_name"),
-            "metric": metric["metric"],
-            "value": metric["value"],
-            "unit": metric.get("unit", "ms"),
-            "data_source": "live",
-            "collected_at": metric.get("collected_at", collected_at),
-        })
+    if samples_out is not None:
+        samples_out.extend(
+            _traceroute_metric_rows(discovered_path, collected_at))
 
 
 #: A sustained loss/RTT breach opens one incident per (device, kind).  These
@@ -1026,14 +1122,27 @@ def persist_cycle(
         except OSError as exc:
             logger.warning("Traceroute discovery failed: %s", type(exc).__name__)
     
+    trace_name_map: dict[str, str] = {}
+    trace_rows: list[dict] = []
     for attempt in range(attempts):
         try:
             with scope_factory() as session:
+                # Resolve existing friendly labels before the sample write so a
+                # traceroute hop is stored under the same device the topology
+                # page shows. This is read-only: the topology transaction owns
+                # every device INSERT.
+                try:
+                    trace_name_map = _resolve_traceroute_metric_names(
+                        session, discovered_path)
+                except Exception:  # noqa: BLE001 - fall back to discovered names
+                    trace_name_map = {}
+                trace_rows = _traceroute_metric_rows(
+                    discovered_path, result.collected_at, trace_name_map)
                 existing = repository.existing_sample_keys(
                     session, result.collected_at, data_source)
                 rows: list[dict] = []
                 seen = set(existing)
-                for sample in result.samples:
+                for sample in list(result.samples) + trace_rows:
                     key = (sample["device_name"], sample["interface_name"],
                            sample["metric"])
                     if key in seen:
@@ -1060,11 +1169,20 @@ def persist_cycle(
     for attempt in range(attempts):
         try:
             with scope_factory() as session:
-                _sync_topology(session, result)
-                _sync_incidents(session, result)
-                if discovered_path is not None:
-                    _sync_traceroute_topology(
-                        session, discovered_path, result.collected_at, result.samples)
+                try:
+                    _sync_topology(session, result)
+                    _topology_save(
+                        session, "incidents",
+                        lambda: _sync_incidents(session, result))
+                    if discovered_path is not None:
+                        _sync_traceroute_topology(
+                            session, discovered_path, result.collected_at,
+                            samples_out=None, name_map=trace_name_map)
+                except Exception:
+                    # Never leave the session in PendingRollbackError: the
+                    # sample batch is already committed in its own transaction.
+                    session.rollback()
+                    raise
             persist_error = None
             break
         except OperationalError as exc:
@@ -1077,7 +1195,10 @@ def persist_cycle(
             persist_error = None
             break
         except Exception as exc:  # noqa: BLE001 - report class, never a DSN
-            persist_error = type(exc).__name__
+            logger.warning(
+                "topology sync failed (%s); the cycle's samples are already "
+                "stored", type(exc).__name__)
+            persist_error = None
             break
 
     status = result.status if persist_error is None else "error"

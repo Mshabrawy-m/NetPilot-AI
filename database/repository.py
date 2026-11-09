@@ -98,6 +98,148 @@ def _prefer_existing_device_name(existing_name: str | None, incoming_name: str) 
     return existing if existing else incoming
 
 
+def _is_placeholder_device_name(name: str | None) -> bool:
+    """True for raw-IP, ``target-*`` and synthetic ``unresponsive-path:*`` labels."""
+    text = str(name or "")
+    return (not text or _looks_like_ip(text)
+            or text.startswith(("target-", "unresponsive-path:")))
+
+
+def _pick_hop_device(matches: Sequence[Device], *, hop_ip: str | None,
+                     preferred_name: str) -> Device | None:
+    """Choose the single best same-IP row without ever creating a second one.
+
+    A friendly label (``gateway``, ``cloudflare-dns``) always wins over a stale
+    raw-IP duplicate for the same address, so traceroute discovery never
+    renames a friendly row and never collides with the duplicate.
+    """
+    if not matches:
+        return None
+    preferred = str(preferred_name or "")
+
+    def rank(device: Device) -> tuple[int, int]:
+        name = str(device.name or "")
+        if name == preferred:
+            return (0, int(device.id or 0))
+        if not _is_placeholder_device_name(name):
+            return (1, int(device.id or 0))
+        if hop_ip and name == hop_ip:
+            return (2, int(device.id or 0))
+        return (3, int(device.id or 0))
+
+    return min(matches, key=rank)
+
+
+def find_device_for_hop(
+    session: Session, *, hop_ip: str | None, preferred_name: str,
+) -> Device | None:
+    """Read-only traceroute-hop lookup: same IP first, then the hop's name.
+
+    This mirrors :func:`resolve_device_for_hop` but never writes, so a caller
+    can resolve metric labels before the sample transaction without creating a
+    device row that a later topology failure would leave behind.
+    """
+    if hop_ip:
+        matches = session.scalars(
+            select(Device)
+            .where(or_(Device.mgmt_ip == hop_ip, Device.lab_ip == hop_ip))
+            .order_by(Device.id)
+        ).all()
+        device = _pick_hop_device(matches, hop_ip=hop_ip,
+                                  preferred_name=preferred_name)
+        if device is not None:
+            return device
+    for candidate in (hop_ip, preferred_name):
+        if not candidate:
+            continue
+        device = session.scalar(
+            select(Device)
+            .where(Device.name == candidate)
+            .order_by(Device.id)
+            .limit(1)
+        )
+        if device is not None:
+            return device
+    return None
+
+
+def _insert_device_ignore_conflict(session: Session, values: dict) -> None:
+    """``INSERT ... ON CONFLICT (name) DO NOTHING`` for SQLite and PostgreSQL.
+
+    The devices table owns the unique name index (``ix_devices_name``); an
+    existing row always wins so two concurrent discoveries can never create a
+    duplicate device. Unsupported dialects fall back to a plain INSERT and let
+    the caller's savepoint contain the conflict.
+    """
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    elif dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    else:
+        session.execute(insert(Device).values(**values))
+        return
+    session.execute(
+        dialect_insert(Device)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["name"])
+    )
+
+
+def resolve_device_for_hop(
+    session: Session, *, hop_ip: str | None, preferred_name: str,
+    type_: str = "router", status: str = "unknown",
+) -> Device:
+    """Resolve one traceroute hop to exactly one existing device row.
+
+    Resolution order (documented in the traceroute write path):
+      1. an existing device whose ``mgmt_ip``/``lab_ip`` equals the hop IP;
+      2. an existing device whose name equals the hop IP (or, for a synthetic
+         placeholder, its stable name);
+      3. ``INSERT ... ON CONFLICT (name) DO NOTHING`` followed by a re-select.
+
+    A resolved row is never renamed: keeping the friendly label already stored
+    for an IP is what prevents the duplicate-name ``IntegrityError``. Status and
+    any missing IP column are refreshed; the caller owns the savepoint.
+    """
+    preferred = str(preferred_name or "").strip()
+    if not preferred:
+        preferred = str(hop_ip or "").strip()
+    if not preferred:
+        raise ValueError("a traceroute device needs a name or an IP")
+
+    device = find_device_for_hop(session, hop_ip=hop_ip,
+                                 preferred_name=preferred)
+    if device is None:
+        _insert_device_ignore_conflict(session, {
+            "name": preferred,
+            "type": type_,
+            "mgmt_ip": hop_ip,
+            "lab_ip": hop_ip,
+            "status": status,
+            "updated_at": db_utcnow(),
+        })
+        device = session.scalar(
+            select(Device)
+            .where(Device.name == preferred)
+            .order_by(Device.id)
+            .limit(1)
+        )
+    if device is None:  # pragma: no cover - ON CONFLICT guarantees a row
+        raise RuntimeError("device row could not be resolved after insert")
+
+    device.type = type_
+    if hop_ip:
+        if not device.mgmt_ip:
+            device.mgmt_ip = hop_ip
+        if not device.lab_ip:
+            device.lab_ip = hop_ip
+    device.status = status
+    device.updated_at = db_utcnow()
+    session.flush()
+    return device
+
+
 def upsert_device(
     session: Session,
     name: str,
