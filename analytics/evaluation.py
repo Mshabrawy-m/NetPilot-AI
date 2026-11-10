@@ -153,8 +153,9 @@ def mase(actual, predicted, train) -> float | None:
     """Mean absolute scaled error (the forecast-competition standard).
 
     Scale = mean absolute **one-step difference of the training series**, i.e.
-    what the naive model would have achieved in-sample. <1 beats the naive
-    baseline on that history, >1 is worse than naive. Scale-free and unit-free,
+    what the naive model would have achieved in-sample. <1 is better than that
+    in-sample one-step naive error, >1 is worse. It is not a comparison with a
+    live naive forecast. Scale-free and unit-free,
     so it is comparable across metrics with very different magnitudes. None when
     the training history carries no variability (a flat series gives no
     defensible scale) or when there is nothing to score.

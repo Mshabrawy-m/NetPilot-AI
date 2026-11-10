@@ -180,3 +180,44 @@ def derive_for_counter_metric(
         "unit": "bps" if is_bytes else "count/s",
         "utilization": capacity_bps is not None and is_bytes,
     }
+
+
+def forecast_input_frame(
+    frame: pd.DataFrame,
+    metric: str,
+    max_gap_seconds: float | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    """Return the series a forecaster should model for ``metric``.
+
+    A cumulative counter (``if.rx_bytes``, ``if.tx_bytes`` and the other
+    registry entries) stores the total since the interface came up. Forecasting
+    that value predicts the running total, which is not a useful network
+    signal. For those metrics this derives the per-interval rate instead, using
+    the existing Phase-2 rules: a negative delta is a counter reset/wrap
+    candidate and its interval is omitted (never turned into a negative rate),
+    as are intervals with non-positive elapsed time or an oversized gap. Only
+    ``RATE_OK`` intervals reach the forecaster.
+
+    Non-counter metrics are returned unchanged. The second element describes
+    the conversion so the UI/proof can state exactly what was modelled.
+    """
+    if metric not in COUNTER_METRICS:
+        return frame, {"counter": False, "metric": metric}
+    derived = derive_for_counter_metric(
+        frame, metric, max_gap_seconds=max_gap_seconds)
+    rates = derived["rates"]
+    usable = rates[rates["status"] == RATE_OK][
+        ["collected_at", "value", "unit"]].copy()
+    meta = {
+        "counter": True,
+        "metric": metric,
+        "rate_metric": derived["rate_metric"],
+        "delta_metric": derived["delta_metric"],
+        "unit": derived["unit"],
+        "n_counter_intervals": len(rates),
+        "n_usable_intervals": len(usable),
+        "n_reset_intervals": int((rates["status"] == RATE_RESET).sum()),
+        "n_gap_intervals": int((rates["status"] == RATE_GAP).sum()),
+        "n_bad_elapsed": int((rates["status"] == RATE_BAD_ELAPSED).sum()),
+    }
+    return usable, meta

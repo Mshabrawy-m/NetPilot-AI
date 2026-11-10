@@ -53,14 +53,23 @@ covered by **115 new offline tests** (suite: **813 passed**).
 |---|---|---|
 | `mape` | mean absolute percentage error, in percent | points whose *actual* is (near) zero are **skipped**, not clipped; `NULL` when nothing survives the guard — an unavailable metric is never shown as 0 % |
 | `smape` | symmetric MAPE, `100·mean(2·|f−a| / (|f|+|a|))`, bounded 0–200 % | pairs with an exactly-zero denominator skipped; `NULL` when nothing is scoreable |
-| `mase` | MAE ÷ mean absolute **one-step difference of the training series** (in-sample naive); `<1` beats naive | `NULL` on a flat (or <2-point) training history — no honest scale exists |
-| `skill_vs_naive` | `1 − MAE / MAE_naive` on the *same* holdout timestamps | `NULL` without a naive reference, and when the naive baseline is perfect (dividing by zero error is meaningless) |
+| `mase` | MAE ÷ mean absolute **one-step difference of the training series** (in-sample naive); `<1` is better than that in-sample one-step naive error | `NULL` on a flat (or <2-point) training history — no honest scale exists |
+| holdout `skill_vs_naive` | Skill score `1 − MAE / MAE_naive` on the *same* holdout timestamps | `NULL` without a naive reference, and when the naive baseline is perfect (dividing by zero error is meaningless) |
 
 All four keep the existing `_pairs` rule: only timestamps with both an actual
 and a prediction are scored, and the number of scoreable points is reported so
 a 3-of-7 evaluation can never be read as a 7-point result. `score_detection`
 (precision/recall/F1 on timestamp sets) already existed and is now the engine
 behind the new calibration service.
+
+The rolling-origin backtest uses a different, directly interpretable
+`skill_vs_naive` ratio: `MAE_model / MAE_naive`, computed only on the exact
+evaluation points scored by both models. It reports `wins_vs_naive` as clearly
+better below 0.95, tie from 0.95 through 1.05, and worse above 1.05; when the
+naive MAE is zero, the ratio and verdict are `NULL` and `naive_perfect` is true.
+`skill_eval_points` records the size of that shared comparison set. MASE below
+1 means better than the in-sample one-step naive error, not better than a
+forecasted naive baseline.
 
 ### 2.2 `forecasting.py` — Holt-Winters and calibrated bands
 

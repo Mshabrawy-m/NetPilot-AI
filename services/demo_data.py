@@ -13,6 +13,7 @@ not measurements of any real network.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 from datetime import timedelta
@@ -26,6 +27,17 @@ DEMO_BANNER = (
     "DEMO MODE: the data on this page is synthetic fixture data "
     "(NETPILOT_DEMO_MODE=true), NOT measurements from a real network."
 )
+
+
+def _stable_bucket(name: str, modulus: int = 7) -> int:
+    """Stable small integer for a name.
+
+    Python's built-in ``hash()`` is salted per process (PYTHONHASHSEED), so
+    using it in a fixture made two fresh runs produce different demo data.
+    A SHA-256 digest is stable across processes and machines.
+    """
+    digest = hashlib.sha256(name.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % modulus
 
 
 def seed_demo_data(hours: int = 6, interval_minutes: int = 5,
@@ -88,6 +100,10 @@ def seed_demo_data(hours: int = 6, interval_minutes: int = 5,
 
     with session_scope() as session:
         run = repository.start_collection_run(session, "demo")
+        # Per-interface cumulative error counter (the live collector stores the
+        # NIC's monotonic errin value, so the demo must too - otherwise the
+        # rate derivation would treat every sample as a reset).
+        rx_error_totals: dict[str, int] = {}
         for i in range(points):
             ts = now - step * (points - 1 - i)
             for node in nodes:
@@ -102,7 +118,7 @@ def seed_demo_data(hours: int = 6, interval_minutes: int = 5,
                         unit="%", data_source="demo", collected_at=ts)
                     counts["samples"] += 2
                     continue
-                base_rtt = 1.0 + (hash(node.name) % 7)
+                base_rtt = 1.0 + _stable_bucket(node.name, 7)
                 jitter = rng.uniform(0, 1.5) + (0.6 * math.sin(i / 3.0))
                 rtt = round(max(0.05, base_rtt + jitter), 3)
                 loss = round(max(0.0, rng.choice([0.0, 0.0, 0.0, 33.3])), 1)
@@ -116,11 +132,14 @@ def seed_demo_data(hours: int = 6, interval_minutes: int = 5,
                 for iface in node.interfaces[:1]:
                     rx = 1_000_000 * i + rng.randint(0, 50_000)
                     tx = 800_000 * i + rng.randint(0, 40_000)
+                    rx_error_totals[node.name] = (
+                        rx_error_totals.get(node.name, 0)
+                        + rng.choice([0, 0, 0, 1, 2]))
                     for metric, value, unit in (
                             ("if.rx_bytes", float(rx), "bytes"),
                             ("if.tx_bytes", float(tx), "bytes"),
                             ("if.rx_errors",
-                             float(rng.choice([0, 0, 0, 1, 2])), "count"),
+                             float(rx_error_totals[node.name]), "count"),
                             ("if.operstate", 1.0, "link")):
                         repository.add_metric_sample(
                             session, node.name, metric, value, unit=unit,

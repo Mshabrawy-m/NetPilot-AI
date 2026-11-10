@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analytics import series_prep
+from analytics import derived_metrics, series_prep
 from analytics.backtest import MEAN_ENSEMBLE_NAME, strong_rolling_origin_backtest
 from analytics.forecasting import (
     FORECAST_MODELS,
@@ -255,10 +255,66 @@ def test_comparison_rows_separate_series_len_from_eval_points():
     assert len(rows) == 1
     assert list(rows[0]) == ["source", "device", "metric", "series_len",
                              "eval_points", "model", "MAE", "RMSE", "MAPE",
-                             "MASE"]
+                             "MASE", "skill_vs_naive", "wins_vs_naive",
+                             "naive_perfect", "skill_eval_points"]
     assert "n_points" not in rows[0]
     assert rows[0]["series_len"] == 55
     assert rows[0]["eval_points"] == 9
+    assert rows[0]["skill_vs_naive"] == pytest.approx(1.0)
+    assert rows[0]["wins_vs_naive"] == "tie"
+    assert rows[0]["naive_perfect"] is False
+    assert rows[0]["skill_eval_points"] == 9
+
+
+@pytest.mark.parametrize(
+    ("metric", "rate_metric", "rate_unit", "multiplier"),
+    [
+        ("if.rx_bytes", "if.rx_bps", "bps", 8.0),
+        ("if.tx_bytes", "if.tx_bps", "bps", 8.0),
+        ("if.rx_errors", "if.rx_errors_per_sec", "count/s", 1.0),
+        ("if.tx_errors", "if.tx_errors_per_sec", "count/s", 1.0),
+        ("if.rx_dropped", "if.rx_dropped_per_sec", "count/s", 1.0),
+        ("if.tx_dropped", "if.tx_dropped_per_sec", "count/s", 1.0),
+    ],
+)
+def test_counter_metrics_are_forecast_as_per_interval_rates(
+        metric, rate_metric, rate_unit, multiplier):
+    start = pd.Timestamp("2026-01-01 00:00:00")
+    frame = pd.DataFrame({
+        "collected_at": [start + pd.Timedelta(seconds=30 * i)
+                         for i in range(6)],
+        "value": [100.0, 200.0, 300.0, 50.0, 150.0, 250.0],  # reset at 50
+        "sample_id": list(range(6)),
+        "unit": ["bytes" if multiplier == 8.0 else "count"] * 6,
+    })
+    out, meta = derived_metrics.forecast_input_frame(frame, metric)
+    assert meta["counter"] is True
+    assert meta["rate_metric"] == rate_metric
+    assert meta["n_reset_intervals"] == 1
+    # Five intervals, one reset -> four usable; each delta is 100 bytes / 30 s.
+    assert len(out) == 4
+    assert out["value"].tolist() == pytest.approx(
+        [100 * multiplier / 30] * 4)
+    assert out["unit"].eq(rate_unit).all()
+
+    same, meta2 = derived_metrics.forecast_input_frame(frame, "ping.avg_rtt_ms")
+    assert meta2["counter"] is False
+    assert same is frame
+
+
+def test_strong_backtest_skills_are_measured_on_common_points():
+    series = synthetic(170, season=12)
+    result = strong_rolling_origin_backtest(
+        series, models=("naive", "holt_damped", "hgb_lag"),
+        horizon=4, n_folds=3, min_train=50, interval_seconds=30)
+    assert result["status"] == "ok", result.get("reasons")
+    naive = result["models"]["naive"]
+    assert naive["skill_vs_naive"] == pytest.approx(1.0)
+    assert naive["wins_vs_naive"] == "tie"
+    for stats in result["models"].values():
+        assert stats["wins_vs_naive"] in {
+            "clearly better", "tie", "worse", None}
+        assert 0 <= stats["skill_eval_points"] <= stats["eval_points"]
 
 
 def test_outliers_do_not_break_the_metrics():

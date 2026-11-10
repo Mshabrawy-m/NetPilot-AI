@@ -1,8 +1,13 @@
 """Offline tests for the rolling-origin forecast backtest (Slice 4c)."""
 import numpy as np
 import pandas as pd
+import pytest
 
-from analytics.backtest import _model_kwargs, rolling_origin_backtest
+from analytics.backtest import (
+    _model_kwargs,
+    classify_wins_vs_naive,
+    rolling_origin_backtest,
+)
 
 
 def _series(values):
@@ -105,9 +110,9 @@ def test_holt_winters_runs_through_the_backtest_kwargs_route():
     assert hw["n_points"] > 0 and hw["mae"] < 4.0
     assert len(hw["per_step_mae"]) == 6
     # the season-blind naive baseline copies the previous sample and is wrecked
-    # by the rhythm, which is what the skill score is meant to expose
+    # by the rhythm, which is what the skill ratio is meant to expose
     assert hw["mae"] < result["models"]["naive"]["mae"]
-    assert hw["skill_vs_naive"] > 0.0
+    assert hw["skill_vs_naive"] < 1.0
 
 
 def test_holt_winters_without_an_interval_is_skipped_not_fabricated():
@@ -118,3 +123,39 @@ def test_holt_winters_without_an_interval_is_skipped_not_fabricated():
     assert result["models"] == {}
     assert result["best_model"] is None
     assert "interval" in result["skipped"]["holt_winters"].lower()
+
+
+# --------------------------------------------------- skill vs naive (ratio)
+def test_wins_vs_naive_uses_the_documented_thresholds():
+    assert classify_wins_vs_naive(0.94) == "clearly better"
+    assert classify_wins_vs_naive(0.95) == "tie"
+    assert classify_wins_vs_naive(1.0) == "tie"
+    assert classify_wins_vs_naive(1.05) == "tie"
+    assert classify_wins_vs_naive(1.06) == "worse"
+    assert classify_wins_vs_naive(None) is None
+
+
+def test_skill_vs_naive_is_the_mae_ratio_on_common_points():
+    values = [10 + 0.5 * i + (3 if i % 7 == 0 else 0) for i in range(80)]
+    result = rolling_origin_backtest(_series(values), horizon=6,
+                                     models=("naive", "holt_damped"))
+    naive = result["models"]["naive"]
+    hw = result["models"]["holt_damped"]
+    assert naive["skill_vs_naive"] == pytest.approx(1.0)
+    assert naive["wins_vs_naive"] == "tie"
+    # Both models scored every origin here, so the ratio is exactly the
+    # ratio of their own reported MAEs.
+    assert hw["skill_vs_naive"] == pytest.approx(hw["mae"] / naive["mae"])
+    assert hw["skill_eval_points"] == naive["skill_eval_points"]
+    assert result["naive_perfect"] is False
+
+
+def test_naive_perfect_leaves_skill_undefined():
+    result = rolling_origin_backtest(_series([5.0] * 60), horizon=6,
+                                     models=("naive",))
+    stats = result["models"]["naive"]
+    assert stats["mae"] == pytest.approx(0.0)
+    assert stats["naive_perfect"] is True
+    assert stats["skill_vs_naive"] is None
+    assert stats["wins_vs_naive"] is None
+    assert result["naive_perfect"] is True

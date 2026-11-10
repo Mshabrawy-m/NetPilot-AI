@@ -35,7 +35,7 @@ theme.page_header("Forecasting",
                   icon="🔮")
 demo_banner_if_active()
 
-from analytics import backtest, series_prep
+from analytics import backtest, derived_metrics, series_prep
 from analytics.forecasting import FORECAST_MODELS
 from analytics.time_series import (
     dedupe_frame,
@@ -290,8 +290,9 @@ elif result:
         "band": r["band"], "note": r["reason"] or "",
     } for r in ranking])
     st.dataframe(eval_df, hide_index=True, width="stretch")
-    st.caption("MASE < 1 means the model beats the naive one-step-drift "
-               "scale; skill > 0 means it beats the naive baseline on this "
+    st.caption("MASE < 1 means the error is better than the in-sample "
+               "one-step naive error (it is not a comparison with a live naive "
+               "forecast); skill > 0 means it beats the naive baseline on this "
                "holdout. 'n/a' is a metric that is not defensible for this "
                "data, not a zero.")
     if best_row:
@@ -553,9 +554,24 @@ with st.expander("📐 Rolling-origin backtest - which baseline would have "
             s, device_name, metric, interface_name=interface,
             device_level_only=(interface is None),
             data_source=data_source)))
+        raw_times = pd.to_datetime(frame["collected_at"])
+        raw_deltas = (raw_times.sort_values().diff().dropna()
+                      .dt.total_seconds())
+        raw_interval = (float(raw_deltas.median())
+                        if not raw_deltas.empty else None)
+        frame, counter_meta = derived_metrics.forecast_input_frame(
+            frame, metric,
+            max_gap_seconds=max(float(settings.max_rate_gap_seconds),
+                                (raw_interval or 0) * 1.5))
         usable = frame.dropna(subset=["value"])
         if len(usable) < 40:
             st.info("Need at least 40 usable samples to backtest this series.")
+            if counter_meta.get("counter"):
+                st.caption(
+                    f"Counter metric: only {counter_meta['n_usable_intervals']} "
+                    f"defensible {counter_meta['rate_metric']} interval(s) were "
+                    "derived; reset/wrap and oversized-gap intervals are "
+                    "omitted, never turned into rates.")
         else:
             series = pd.Series(usable["value"].to_numpy(dtype=float),
                                index=pd.DatetimeIndex(usable["collected_at"]))
@@ -576,14 +592,32 @@ with st.expander("📐 Rolling-origin backtest - which baseline would have "
                     "RMSE": round(v["rmse"], 4),
                     "MAPE %": (round(v["mape"], 2)
                                if v["mape"] is not None else None),
-                    "skill vs naive": (round(v["skill_vs_naive"], 3)
-                                       if v["skill_vs_naive"] is not None else None),
+                    "MAE / naive MAE": (round(v["skill_vs_naive"], 3)
+                                        if v["skill_vs_naive"] is not None
+                                        else None),
+                    "vs naive": v["wins_vs_naive"],
+                    "naive perfect": v["naive_perfect"],
+                    "skill points": v["skill_eval_points"],
                     "points": v["n_points"],
                 } for m, v in bt["models"].items()]
                 st.dataframe(pd.DataFrame(bt_rows), hide_index=True,
                              width="stretch")
                 st.success(f"Best baseline over {bt['origins_used']} origins: "
                            f"**{bt['best_model']}** (lowest MAE).")
+                if counter_meta.get("counter"):
+                    st.caption(
+                        f"Counter metric: forecasting the per-interval "
+                        f"**{counter_meta['rate_metric']}** rate, not the "
+                        f"cumulative value. {counter_meta['n_usable_intervals']} "
+                        f"usable interval(s); {counter_meta['n_reset_intervals']} "
+                        "reset/wrap and "
+                        f"{counter_meta['n_gap_intervals']} oversized-gap "
+                        "interval(s) omitted.")
+                st.caption("MAE / naive MAE is the ratio on the exact points "
+                           "both models scored (lower is better); < 0.95 is "
+                           "clearly better, 0.95-1.05 is a tie, > 1.05 is "
+                           "worse. When the naive baseline has zero error the "
+                           "ratio is undefined (naive perfect).")
                 if bt["skipped"]:
                     st.caption("Skipped: " + ", ".join(
                         f"{k} ({val})" for k, val in bt["skipped"].items()))
@@ -629,9 +663,24 @@ with st.expander("🚀 Strong models - SARIMA + gradient boosting + mean ensembl
             s, device_name, metric, interface_name=interface,
             data_source=data_source, since=since,
             device_level_only=(interface is None))))
+        raw_times = pd.to_datetime(strong_frame["collected_at"])
+        raw_deltas = (raw_times.sort_values().diff().dropna()
+                      .dt.total_seconds())
+        raw_interval = (float(raw_deltas.median())
+                        if not raw_deltas.empty else None)
+        strong_frame, counter_meta = derived_metrics.forecast_input_frame(
+            strong_frame, metric,
+            max_gap_seconds=max(float(settings.max_rate_gap_seconds),
+                                (raw_interval or 0) * 1.5))
         if strong_frame.empty or strong_frame["value"].notna().sum() == 0:
             st.info("No raw observations in the selected window for the "
                     "strong-model path.")
+            if counter_meta.get("counter"):
+                st.caption(
+                    f"Counter metric: no defensible "
+                    f"{counter_meta['rate_metric']} interval could be derived "
+                    "from the stored counters (resets/wraps and oversized gaps "
+                    "are omitted, never turned into rates).")
         else:
             prepared = series_prep.prepare_regular_series(
                 strong_frame, interval_seconds=float(strong_interval),
@@ -662,6 +711,7 @@ with st.expander("🚀 Strong models - SARIMA + gradient boosting + mean ensembl
                 "series_hash": prepared["series_hash"],
                 "interval_seconds": float(strong_interval),
                 "elapsed_seconds": elapsed,
+                "counter": counter_meta,
             }
             st.session_state["_strong_at"] = db_utcnow()
 
@@ -684,13 +734,26 @@ with st.expander("🚀 Strong models - SARIMA + gradient boosting + mean ensembl
             f"{ctx.get('n_long_gaps')} · series hash "
             f"`{str(ctx.get('series_hash'))[:12]}` · "
             f"computed in **{ctx.get('elapsed_seconds', 0):.2f} s**.")
+        counter_ctx = ctx.get("counter") or {}
+        if counter_ctx.get("counter"):
+            st.caption(
+                f"Counter metric: the forecast target is the per-interval "
+                f"**{counter_ctx['rate_metric']}** rate, not the cumulative "
+                f"value. {counter_ctx['n_usable_intervals']} usable interval(s); "
+                f"{counter_ctx['n_reset_intervals']} reset/wrap and "
+                f"{counter_ctx['n_gap_intervals']} oversized-gap interval(s) "
+                "omitted.")
         if strong_result.get("status") != "ok":
             st.error(strong_result.get("message")
                      or "The strong backtest did not produce a result.",
                      icon="📉")
         else:
             table = pd.DataFrame(
-                forecast_service.strong_comparison_rows(strong_result))
+                forecast_service.strong_comparison_rows(strong_result)).rename(
+                    columns={"skill_vs_naive": "MAE / naive MAE",
+                             "wins_vs_naive": "vs naive",
+                             "naive_perfect": "naive perfect",
+                             "skill_eval_points": "skill points"})
             st.markdown("**Backtest comparison** (rolling origins, expanding "
                         "window, identical scoring points per fold)")
             st.dataframe(table, hide_index=True, width="stretch")
@@ -698,8 +761,14 @@ with st.expander("🚀 Strong models - SARIMA + gradient boosting + mean ensembl
                        "for the final fit. **eval_points** = points that model "
                        "actually scored across the rolling-origin folds (it can "
                        "exceed series_len because every fold is scored). "
-                       "MASE is computed against the naive one-step scale of "
-                       "each fold's training window; MAPE skips near-zero "
+                       "**MAE / naive MAE** is the ratio on the exact points "
+                       "both models scored (**skill points**; lower is better): "
+                       "< 0.95 clearly better, 0.95-1.05 tie, > 1.05 worse. "
+                       "When the naive "
+                       "baseline has zero error the ratio is undefined "
+                       "(naive perfect). MASE < 1 is better than the in-sample "
+                       "one-step naive error of each fold's training window - "
+                       "not a live naive forecast. MAPE skips near-zero "
                        "actuals instead of reporting an exploded ratio. "
                        "Intervals are empirical residual quantiles from the "
                        "same backtest.")

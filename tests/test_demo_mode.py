@@ -3,7 +3,64 @@ separate database, and cannot run outside demo mode (spec: demo data must
 never masquerade as real measurements)."""
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# Run the fixture in a genuinely fresh interpreter. The digest covers only
+# stored values/provenance, not wall-clock timestamps, so it is stable across
+# runs while still exposing a per-process hash() leak.
+_DEMO_DIGEST_SCRIPT = r"""
+import hashlib
+import json
+
+from network import containerlab_manager
+containerlab_manager.inspect_nodes = lambda *a, **k: []
+
+from database.connection import get_session, init_db
+from database.models import ConnectivityTest, MetricSample
+from services.demo_data import seed_demo_data
+
+init_db()
+seed_demo_data(hours=1, interval_minutes=5)
+session = get_session()
+try:
+    samples = session.query(MetricSample).order_by(MetricSample.id).all()
+    tests = session.query(ConnectivityTest).order_by(ConnectivityTest.id).all()
+    payload = [
+        [r.device_name, r.metric, r.interface_name, r.value, r.unit,
+         r.data_source]
+        for r in samples
+    ]
+    payload += [
+        ["test", t.source, t.destination, t.test_type, t.success,
+         t.avg_latency_ms, t.packet_loss_pct, t.data_source]
+        for t in tests
+    ]
+finally:
+    session.close()
+print(hashlib.sha256(json.dumps(payload, sort_keys=True,
+                                default=str).encode()).hexdigest())
+"""
+
+
+def _seed_digest(db_path: Path, hash_seed: str) -> str:
+    env = os.environ.copy()
+    env.update({
+        "NETPILOT_DEMO_MODE": "true",
+        "DATABASE_URL": f"sqlite:///{db_path.as_posix()}",
+        "PYTHONHASHSEED": hash_seed,
+    })
+    proc = subprocess.run(
+        [sys.executable, "-c", _DEMO_DIGEST_SCRIPT],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=180,
+        check=True)
+    return proc.stdout.strip()
 
 
 @pytest.fixture()
@@ -103,3 +160,17 @@ def test_demo_and_live_stores_are_separate(tmp_path, monkeypatch):
     with connection.session_scope() as s:
         sources = {row.data_source for row in s.query(MetricSample).all()}
     assert sources == {"demo"}
+
+
+def test_two_fresh_processes_produce_the_same_demo_data(tmp_path):
+    """PYTHONHASHSEED must not change the fixture.
+
+    Two separate interpreters with different hash seeds seed separate demo
+    databases; the value/provenance digest must be identical. Before the
+    stable-hash fix, ``hash(node.name)`` made base RTTs (and therefore every
+    value in the series) differ between processes.
+    """
+    first = _seed_digest(tmp_path / "demo_a.db", "1")
+    second = _seed_digest(tmp_path / "demo_b.db", "987654")
+    assert first == second
+    assert len(first) == 64

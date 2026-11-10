@@ -39,7 +39,13 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from analytics import data_quality, evaluation, series_prep, time_series
+from analytics import (
+    data_quality,
+    derived_metrics,
+    evaluation,
+    series_prep,
+    time_series,
+)
 from analytics.backtest import (
     MEAN_ENSEMBLE_NAME,
     STRONG_DEFAULT_MODELS,
@@ -461,6 +467,10 @@ def run_strong_forecast(
         purpose=data_quality.FORECAST, since=since,
         device_level_only=device_level_only, include_rollups=False,
         cadence="raw")
+    frame, counter_meta = derived_metrics.forecast_input_frame(
+        frame, metric,
+        max_gap_seconds=max(float(settings.max_rate_gap_seconds),
+                            (quality.observed_interval_seconds or 0) * 1.5))
     interval = (float(interval_seconds) if interval_seconds
                 else (quality.observed_interval_seconds
                       or series_prep.DEFAULT_INTERVAL_SECONDS))
@@ -476,6 +486,7 @@ def run_strong_forecast(
         "device_name": device_name, "metric": metric,
         "interface_name": interface_name, "data_source": data_source,
         "unit": prepared.get("unit"),
+        "counter": counter_meta,
         "interval_seconds": interval,
         "n_grid_points": prepared["n_points"],
         "prep": {key: prepared[key] for key in (
@@ -495,7 +506,9 @@ def strong_comparison_rows(result: dict) -> list[dict]:
     ``series_len`` is the number of usable points in the contiguous run used
     for the final fit; ``eval_points`` is how many points that model actually
     scored across the rolling-origin folds (per model, and it may exceed
-    ``series_len`` because every fold is scored).
+    ``series_len`` because every fold is scored). ``skill_vs_naive`` is the
+    MAE ratio on the points that model and naive both scored; a perfect naive
+    baseline leaves it undefined (None) with ``naive_perfect=True``.
     """
     rows = []
     for name, stats in (result.get("backtest") or {}).get("models", {}).items():
@@ -510,6 +523,10 @@ def strong_comparison_rows(result: dict) -> list[dict]:
             "RMSE": stats.get("rmse"),
             "MAPE": stats.get("mape"),
             "MASE": stats.get("mase"),
+            "skill_vs_naive": stats.get("skill_vs_naive"),
+            "wins_vs_naive": stats.get("wins_vs_naive"),
+            "naive_perfect": stats.get("naive_perfect"),
+            "skill_eval_points": stats.get("skill_eval_points"),
         })
     return rows
 
@@ -561,6 +578,14 @@ def run_forecast_comparison(
         return {"status": "insufficient_data",
                 "reasons": reasons, "runs": [], "cadence": cadence,
                 "history_provenance": provenance}
+
+    # A cumulative counter is modelled as its per-interval rate, never as the
+    # running total; reset/wrap and oversized-gap intervals are omitted by the
+    # same Phase-2 rules the data-analysis page uses.
+    frame, counter_meta = derived_metrics.forecast_input_frame(
+        frame, metric,
+        max_gap_seconds=max(float(settings.max_rate_gap_seconds),
+                            (quality.observed_interval_seconds or 0) * 1.5))
 
     # Time-indexed series for chronological integrity (index = timestamps).
     valid = frame.dropna(subset=["value"]).copy()
@@ -801,7 +826,7 @@ def run_forecast_comparison(
     return {"status": "ok", "comparison_group": comparison_group,
             "cadence": cadence,
             "runs": runs, "split": split, "quality": quality,
-            "unit": unit,
+            "unit": unit, "counter": counter_meta,
             "history_provenance": provenance,
             "best_model": best_model, "best_criterion": "holdout MAE",
             "ensemble": ensemble_result,

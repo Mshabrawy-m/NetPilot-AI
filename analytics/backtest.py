@@ -32,6 +32,27 @@ STRONG_DEFAULT_MODELS = (
 #: Name of the in-memory mean ensemble (never persisted as its own run).
 MEAN_ENSEMBLE_NAME = "mean_ensemble"
 
+#: ``skill_vs_naive`` is the MAE ratio MAE(model) / MAE(naive), measured on
+#: exactly the points both models scored. Lower is better. These are the two
+#: documented decision boundaries: below 0.95 is clearly better, above 1.05 is
+#: worse, and the band in between is a tie.
+SKILL_CLEARLY_BETTER = 0.95
+SKILL_WORSE = 1.05
+WINS_CLEARLY_BETTER = "clearly better"
+WINS_TIE = "tie"
+WINS_WORSE = "worse"
+
+
+def classify_wins_vs_naive(skill: float | None) -> str | None:
+    """Turn the MAE ratio into the documented better/tie/worse verdict."""
+    if skill is None:
+        return None
+    if skill < SKILL_CLEARLY_BETTER:
+        return WINS_CLEARLY_BETTER
+    if skill <= SKILL_WORSE:
+        return WINS_TIE
+    return WINS_WORSE
+
 
 def _mape(actuals, preds, eps: float = 1e-9):
     """Mean absolute percentage error, skipping near-zero actuals so the
@@ -92,12 +113,12 @@ def rolling_origin_backtest(
     starts = list(range(min_train, last_start + 1, max(1, step)))[:max_origins]
     arrays: dict[str, dict] = {
         name: {"abs": [], "sq": [], "pct": [], "step_err": [[] for _ in range(horizon)],
-               "points": 0}
+               "points": 0, "pairs": {}}
         for name in models
     }
     skipped: dict[str, str] = {}
 
-    for i in starts:
+    for origin_idx, i in enumerate(starts):
         train = values.iloc[:i]
         test = values.iloc[i:i + horizon]
         test_actuals = test.to_numpy(dtype=float)
@@ -129,6 +150,9 @@ def rolling_origin_backtest(
                 if s < horizon:
                     bucket["step_err"][s].append(abs(err))
                 bucket["points"] += 1
+                # Keep the (actual, prediction) pair keyed by fold+step so the
+                # naive comparison can use the exact same points later.
+                bucket["pairs"][(origin_idx, s)] = (float(a), float(p))
 
     ranking = {}
     for name, bucket in arrays.items():
@@ -151,11 +175,29 @@ def rolling_origin_backtest(
             "per_step_mae": per_step,
         }
 
-    naive_mae = ranking.get("naive", {}).get("mae")
-    for stats in ranking.values():
-        stats["skill_vs_naive"] = (
-            (1.0 - stats["mae"] / naive_mae) if naive_mae else None
-        )
+    # Compare each model with naive on the exact points BOTH scored: models
+    # with a shorter valid window (e.g. a direct-horizon learner) must not be
+    # credited or blamed for points the baseline never had to predict.
+    naive_pairs = arrays.get("naive", {}).get("pairs", {})
+    for name, stats in ranking.items():
+        pairs = arrays[name].get("pairs", {})
+        common = sorted(set(pairs) & set(naive_pairs))
+        if not common:
+            stats.update({"skill_vs_naive": None, "wins_vs_naive": None,
+                          "naive_perfect": False, "skill_eval_points": 0})
+            continue
+        model_mae = sum(abs(pairs[k][0] - pairs[k][1])
+                        for k in common) / len(common)
+        naive_mae = sum(abs(naive_pairs[k][0] - naive_pairs[k][1])
+                        for k in common) / len(common)
+        naive_perfect = naive_mae <= 1e-12
+        skill = None if naive_perfect else model_mae / naive_mae
+        stats.update({
+            "skill_vs_naive": skill,
+            "wins_vs_naive": classify_wins_vs_naive(skill),
+            "naive_perfect": bool(naive_perfect),
+            "skill_eval_points": len(common),
+        })
 
     best = None
     if ranking:
@@ -168,6 +210,8 @@ def rolling_origin_backtest(
         "models": ranking,
         "skipped": skipped,
         "best_model": best,
+        "naive_perfect": bool(ranking.get("naive", {}).get("naive_perfect",
+                                                          False)),
     }
 
 
@@ -234,6 +278,49 @@ def _finalize_bucket(bucket: dict, coverage: float) -> dict | None:
         "interval_half_widths": widths,
         "pooled_half_width": float(pooled_width),
     }
+
+
+def _paired_skill_vs_naive(
+    fold_actuals: list[list[float]],
+    fold_predictions: list[dict[str, list[float]]],
+    model_name: str,
+    naive_predictions: list[dict[str, list[float]]] | None = None,
+    naive_name: str = "naive",
+) -> tuple[float | None, bool, int]:
+    """MAE ratio on the points BOTH this model and naive actually scored.
+
+    ``fold_predictions`` supplies the model's predictions; ``naive_predictions``
+    supplies the baseline's (defaults to the same mapping, which is correct for
+    a regular model but not for the ensemble, whose per-fold dict holds only
+    its own blend). Returns ``(skill, naive_perfect, n_points)``. ``skill`` is
+    ``MAE(model) / MAE(naive)`` on the intersection, so a model with a shorter
+    valid window is compared only where the baseline also had a prediction.
+    When the naive baseline made no error on those points the ratio is
+    undefined: ``skill`` is None and ``naive_perfect`` is True.
+    """
+    naive_predictions = (fold_predictions if naive_predictions is None
+                         else naive_predictions)
+    model_abs: list[float] = []
+    naive_abs: list[float] = []
+    for actuals, predictions, naive_fold in zip(fold_actuals, fold_predictions,
+                                                naive_predictions):
+        model_pred = predictions.get(model_name)
+        naive_pred = naive_fold.get(naive_name)
+        if model_pred is None or naive_pred is None:
+            continue
+        for actual, model_value, naive_value in zip(actuals, model_pred,
+                                                    naive_pred):
+            if (math.isfinite(actual) and math.isfinite(model_value)
+                    and math.isfinite(naive_value)):
+                model_abs.append(abs(actual - model_value))
+                naive_abs.append(abs(actual - naive_value))
+    if not model_abs:
+        return None, False, 0
+    naive_mae = sum(naive_abs) / len(naive_abs)
+    if naive_mae <= 1e-12:
+        return None, True, len(model_abs)
+    model_mae = sum(model_abs) / len(model_abs)
+    return model_mae / naive_mae, False, len(model_abs)
 
 
 def _fold_scale(train: pd.Series) -> float | None:
@@ -324,6 +411,7 @@ def strong_rolling_origin_backtest(
     fold_actuals: list[list[float]] = []
     fold_scales: list[float | None] = []
     fold_origins: list[str] = []
+    ensemble_fold_predictions: list[dict[str, list[float]]] = []
 
     for start, pos, _end in folds:
         train = pd.Series(values[start:pos], index=index[start:pos])
@@ -388,15 +476,20 @@ def strong_rolling_origin_backtest(
         ensemble_bucket = _new_bucket(horizon)
         for predictions, actuals, scale in zip(fold_predictions, fold_actuals,
                                                fold_scales):
+            fold_blend: list[float] = []
             for step, actual in enumerate(actuals):
                 available = [predictions[m][step] for m in members
                              if m in predictions
                              and step < len(predictions[m])
                              and math.isfinite(predictions[m][step])]
                 if not available:
+                    fold_blend.append(float("nan"))
                     continue
-                _add_point(ensemble_bucket, actual,
-                           sum(available) / len(available), step, scale)
+                blended = sum(available) / len(available)
+                fold_blend.append(blended)
+                _add_point(ensemble_bucket, actual, blended, step, scale)
+            ensemble_fold_predictions.append(
+                {MEAN_ENSEMBLE_NAME: fold_blend})
         stats = _finalize_bucket(ensemble_bucket, coverage)
         if stats is not None:
             ranking[MEAN_ENSEMBLE_NAME] = stats
@@ -407,6 +500,22 @@ def strong_rolling_origin_backtest(
                 "method": "unweighted mean of the best models by backtest MAE",
                 "mae": stats["mae"],
             }
+
+    # Skill against naive, always on the points BOTH models scored. The
+    # ensemble's per-fold blend is kept above so it is measured the same way.
+    for name, stats in ranking.items():
+        predictions_by_fold = (ensemble_fold_predictions
+                               if name == MEAN_ENSEMBLE_NAME
+                               else fold_predictions)
+        skill, naive_perfect, n_common = _paired_skill_vs_naive(
+            fold_actuals, predictions_by_fold, name,
+            naive_predictions=fold_predictions)
+        stats.update({
+            "skill_vs_naive": skill,
+            "wins_vs_naive": classify_wins_vs_naive(skill),
+            "naive_perfect": bool(naive_perfect),
+            "skill_eval_points": n_common,
+        })
 
     best = min(ranking, key=lambda name: (ranking[name]["mae"], name))
     return {
@@ -424,4 +533,6 @@ def strong_rolling_origin_backtest(
         "n_segments": len(segments),
         "min_train": min_train,
         "models_requested": list(models),
+        "naive_perfect": bool(ranking.get("naive", {}).get("naive_perfect",
+                                                          False)),
     }

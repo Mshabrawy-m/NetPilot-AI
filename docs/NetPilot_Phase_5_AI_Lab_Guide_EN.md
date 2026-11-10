@@ -196,8 +196,8 @@ Forecast accuracy (`analytics/evaluation.py`, all computed on the holdout):
 | `r2` | Coefficient of determination vs the holdout mean; `None` when the holdout has no variance. |
 | `mape` | Mean absolute **percentage** error. Points whose actual value is (near) zero are **skipped**, not clipped; `None` only when nothing survives the guard. Always read next to `n_eval`. |
 | `smape` | Symmetric MAPE (0–200 %); bounded so a near-zero prediction cannot inflate it. |
-| `mase` | Mean absolute scaled error, scaled by the training series' mean one-step difference. `<1` beats naive in-sample, `>1` is worse. |
-| `skill_vs_naive` | `1 − MAE(model)/MAE(naive)` on the same timestamps; `None` if naive error is zero. |
+| `mase` | Mean absolute scaled error, scaled by the training series' mean one-step difference. `<1` is better than the in-sample one-step naive error, `>1` is worse (not a comparison with a live naive forecast). |
+| holdout `skill_vs_naive` | Skill score `1 − MAE(model)/MAE(naive)` on the same timestamps; `None` if naive error is zero. |
 | `n_test` / `n_train` / `n_eval` | How many points the number is actually based on. |
 | band coverage | Nominal coverage target (`NETPILOT_BAND_COVERAGE`) reported next to the **measured** coverage, never as a guarantee. |
 
@@ -207,6 +207,14 @@ class, confusion matrix (`rows = true class, columns = predicted class`),
 constant predictor reaches — a model that does not beat it is not a finding),
 `imbalance_ratio`, and `best_criterion = balanced accuracy (macro-F1
 tie-break)`.
+
+The rolling-origin backtest's `skill_vs_naive` is instead the MAE ratio
+`MAE_model / MAE_naive`, measured only on the points both models scored.
+`wins_vs_naive` classifies ratios below 0.95 as clearly better, 0.95-1.05 as a
+tie, and above 1.05 as worse. A zero naive MAE yields `None` for the ratio and
+verdict with `naive_perfect=true`; `skill_eval_points` reports the shared
+comparison count. MASE < 1 means better than the in-sample one-step naive
+error, not that a model beats a live naive forecast.
 
 Data picture: `n_rows`, `n_values`, `n_null_values`, `n_duplicates`,
 `gap_count`, `n_stale_series`, `n_constant_series`, `observed_interval_seconds`.
