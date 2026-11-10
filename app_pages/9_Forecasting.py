@@ -636,12 +636,17 @@ with st.expander("🚀 Strong models - SARIMA + gradient boosting + mean ensembl
     )
     strong_cols = st.columns(3)
     with strong_cols[0]:
-        default_interval = round(
-            readiness.get("observed_interval_seconds")
-            or series_prep.DEFAULT_INTERVAL_SECONDS)
+        observed_interval = readiness.get("observed_interval_seconds")
+        default_interval = max(
+            5, round(observed_interval
+                     or series_prep.DEFAULT_INTERVAL_SECONDS))
         strong_interval = st.number_input(
-            "Fixed grid interval (seconds)", min_value=5, max_value=3600,
-            value=max(5, default_interval), step=5, key="strong_interval")
+            "Fixed grid interval (seconds)", min_value=5,
+            max_value=max(3600, default_interval),
+            value=default_interval, step=5, key="strong_interval",
+            help="Defaults to the observed sampling interval. The upper bound "
+                 "grows when this series is sampled less often than hourly, "
+                 "so a sparse series can never make the default invalid.")
         strong_gap = st.number_input(
             "Interpolate gaps up to (steps)", min_value=0, max_value=10,
             value=series_prep.DEFAULT_MAX_GAP_STEPS, step=1, key="strong_gap")
