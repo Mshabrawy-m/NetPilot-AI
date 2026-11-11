@@ -234,6 +234,36 @@ def sidebar_status() -> None:
         # Demo history is seeded data (services/demo_data.py); running the
         # collector would probe real lab hardware from a demo screen.
         st.sidebar.caption("🧪 Demo mode: collector disabled — no live probes.")
+    elif not connection.app_collection_allowed() or not lab_running:
+        # Two independent reasons the in-app collector cannot write here:
+        #   * the app role is SELECT-only (netpilot_app under role separation),
+        #     so INSERT into collection_runs would fail with InsufficientPrivilege;
+        #   * there is no reachable Containerlab lab to probe.
+        # In both cases the external native collector owns collection; this app
+        # only reads what it stored. Never start the scheduler or offer a button
+        # that would produce a failing write.
+        if scheduler.is_running():
+            scheduler.stop()
+        st.sidebar.info(
+            "Live data is collected by the external native collector "
+            "(tools/live_collector.py); this app is read-only.")
+        try:
+            last_run = read(lambda s: repository.get_last_successful_run(
+                s, data_source=settings.data_source))
+            n_samples = read(lambda s: repository.count_metric_samples(
+                s, data_source=settings.data_source))
+        except Exception as exc:  # noqa: BLE001 - status must never break a page
+            st.sidebar.caption(f"Collection status unavailable: {type(exc).__name__}")
+        else:
+            if last_run is not None and last_run.finished_at is not None:
+                st.sidebar.caption(
+                    "Last successful collection: "
+                    f"{last_run.finished_at:%Y-%m-%d %H:%M} UTC · "
+                    f"{n_samples:,} sample(s) stored")
+            else:
+                st.sidebar.caption(
+                    f"No successful collection recorded yet · "
+                    f"{n_samples:,} sample(s) stored")
     else:
         col_a, col_b = st.sidebar.columns(2)
         if col_a.button("▶️ Start collector", width="stretch"):

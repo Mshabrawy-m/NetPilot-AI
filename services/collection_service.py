@@ -51,6 +51,9 @@ class CollectionScheduler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._status = SchedulerStatus(interval_seconds=self._interval)
+        # One WARNING per distinct failure, reset by the next success: a
+        # persistent permission/lab error must not fill the log every cycle.
+        self._logged_error: str | None = None
 
     @property
     def interval(self) -> int:
@@ -129,14 +132,22 @@ class CollectionScheduler:
                     self._status.last_error = "; ".join(errs)[:300] or None
                 else:
                     self._status.last_error = None
+                self._logged_error = None
             return result
         except Exception as exc:  # noqa: BLE001 - scheduler must survive
             # Log only type + short message; never secrets, never full
-            # command output (the collector itself already sanitises).
-            logger.exception("collection job failed")
+            # command output (the collector itself already sanitises) and
+            # never a traceback. A repeating failure is logged once until a
+            # cycle succeeds, so a SELECT-only role or a missing lab cannot
+            # spam the hosted app's log.
+            summary = f"{type(exc).__name__}: {str(exc)[:200]}"
             with self._state_lock:
                 self._status.last_cycle_status = "error"
-                self._status.last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
+                self._status.last_error = summary
+                repeat = summary == self._logged_error
+                self._logged_error = summary
+            if not repeat:
+                logger.warning("collection job failed: %s", summary)
             return None
 
 

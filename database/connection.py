@@ -121,6 +121,22 @@ def admin_actions_available() -> bool:
     return not _runtime_role_locked()
 
 
+def app_collection_allowed() -> bool:
+    """Whether the in-app collector may write collection rows right now.
+
+    The hosted Streamlit app runs as the SELECT-only ``netpilot_app`` role once
+    role separation is enabled (see :mod:`database.roles`). Starting the in-app
+    collector there can only fail with ``InsufficientPrivilege`` on
+    ``collection_runs``, so the UI must not offer it. Demo mode keeps its
+    disposable SQLite sandbox writable; a legacy single-connection deployment
+    (role separation inactive) preserves the previous behaviour.
+    """
+    if get_settings().demo_mode:
+        return True
+    return not (roles.role_separation_enabled()
+                and active_role() == roles.ROLE_APP)
+
+
 # ---- Stage A6b-1 M1: PostgreSQL TLS groundwork ----------------------------
 #: libpq sslmode values accepted by psycopg2, ordered weakest -> strongest.
 #: The rank lets the engine builder refuse to *downgrade* an operator-supplied

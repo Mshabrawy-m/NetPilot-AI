@@ -4,6 +4,7 @@ These run the real threading machinery with short intervals - no lab and
 no network involved (the job is a stub)."""
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -57,6 +58,44 @@ def test_job_exception_is_captured_not_raised():
     status = sched.status()
     assert status.last_cycle_status == "error"
     assert "RuntimeError" in status.last_error
+
+
+def test_repeated_failure_logs_once_without_traceback(caplog):
+    """A persistent SELECT-only/lab failure must not spam the hosted log."""
+    def bad_job():
+        raise PermissionError(
+            "permission denied for table collection_runs")
+
+    sched = CollectionScheduler(bad_job, interval_seconds=999)
+    with caplog.at_level(logging.WARNING, logger="netpilot.scheduler"):
+        for _ in range(3):
+            assert sched.run_now() is None
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "collection job failed" in warnings[0].getMessage()
+    assert warnings[0].exc_info is None
+    assert "Traceback" not in caplog.text
+
+
+def test_failure_logging_resets_after_a_success(caplog):
+    """One success clears the dedupe, so a later failure is visible again."""
+    outcomes = [RuntimeError("boom"), None, RuntimeError("boom")]
+
+    def job():
+        item = outcomes.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return type("R", (), {"status": "ok", "errors": []})()
+
+    sched = CollectionScheduler(job, interval_seconds=999)
+    with caplog.at_level(logging.WARNING, logger="netpilot.scheduler"):
+        sched.run_now()
+        sched.run_now()
+        sched.run_now()
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2
 
 
 def test_background_loop_runs_and_stops_cleanly():

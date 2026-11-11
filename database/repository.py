@@ -105,6 +105,11 @@ def _is_placeholder_device_name(name: str | None) -> bool:
             or text.startswith(("target-", "unresponsive-path:")))
 
 
+def is_placeholder_device_name(name: str | None) -> bool:
+    """Public form of :func:`_is_placeholder_device_name` for UI ranking."""
+    return _is_placeholder_device_name(name)
+
+
 def _pick_hop_device(matches: Sequence[Device], *, hop_ip: str | None,
                      preferred_name: str) -> Device | None:
     """Choose the single best same-IP row without ever creating a second one.
@@ -547,6 +552,23 @@ def get_series_inventory(
         }
         for row in session.execute(stmt).all()
     ]
+
+
+def count_metric_samples(
+    session: Session, *, data_source: str | None = None,
+) -> int:
+    """How many non-null observations are stored for one provenance.
+
+    Read-only companion for the sidebar: the hosted app is a SELECT-only
+    reader, so it reports what the external collector has stored instead of
+    writing a collection run of its own. NULL values are not observations and
+    are excluded, matching :func:`get_series_inventory`.
+    """
+    stmt = (select(func.count(MetricSample.id))
+            .where(MetricSample.value.is_not(None)))
+    if data_source is not None:
+        stmt = stmt.where(MetricSample.data_source == data_source)
+    return int(session.scalar(stmt) or 0)
 
 
 def get_rollup_series_inventory(

@@ -154,6 +154,51 @@ def list_forecast_series(
     return out
 
 
+def rank_forecast_series(
+    inventory: list[dict], *, data_source: str | None = None,
+) -> list[dict]:
+    """Order forecast candidates so the first load lands on real data.
+
+    The page used to take the alphabetically first device/metric, which on a
+    live deployment can be a placeholder (raw IP, ``target-*``,
+    ``unresponsive-path:*``) or a two-sample series. This ranks the inventory
+    that :func:`list_forecast_series` already produced:
+
+    * placeholders are dropped entirely - they are not measured entities;
+    * the series with the most usable points (raw samples + daily rollups)
+      comes first, so a usable history wins over a thin one;
+    * a ``ping.*`` series breaks ties ahead of ``traceroute.hop_*`` because a
+      hop RTT is a derived path internal, not a device health metric;
+    * the remaining order is deterministic (device, metric, scope).
+
+    Only stored counts are used - this is a read-only ranking, no query and no
+    forecast is run.
+    """
+    rows = [row for row in inventory
+            if (data_source is None or row.get("data_source") == data_source)
+            and not repository.is_placeholder_device_name(
+                row.get("device_name"))]
+
+    def _metric_rank(metric: str) -> int:
+        metric = str(metric or "")
+        if metric.startswith("ping."):
+            return 0
+        if metric.startswith("traceroute.hop_"):
+            return 2
+        return 1
+
+    def _key(row: dict) -> tuple:
+        return (
+            -int(row.get("total_points") or 0),
+            _metric_rank(row.get("metric")),
+            str(row.get("device_name") or ""),
+            str(row.get("metric") or ""),
+            str(row.get("interface_name") or ""),
+        )
+
+    return sorted(rows, key=_key)
+
+
 def check_series_forecastability(
     session: Session, *, device_name: str, metric: str,
     interface_name: str | None, data_source: str,

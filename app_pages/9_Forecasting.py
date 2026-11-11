@@ -63,6 +63,13 @@ BAND_MODES = {
 }
 
 
+def _pick_series(device: str, metric: str, scope) -> None:
+    """Suggestion callback: switch the three selectors before the rerun."""
+    st.session_state["np_forecast_device"] = device
+    st.session_state["np_forecast_metric"] = metric
+    st.session_state["np_forecast_scope"] = scope
+
+
 @st.cache_data(show_spinner=False, max_entries=24)
 def _cached_strong_forecast(series_hash: str, index_ns: tuple,
                             values: tuple, interval_seconds: float,
@@ -117,30 +124,51 @@ sources = sorted({row["data_source"] for row in inventory
                   if row["data_source"]})
 data_source = source_controls.selector(
     sources, key="np_forecast_source", demo_mode=get_settings().demo_mode)
-devices = sorted({row["device_name"] for row in inventory
-                  if row["data_source"] == data_source})
-device_name = st.selectbox("Device", devices)
-metrics = sorted({row["metric"] for row in inventory
-                  if row["data_source"] == data_source
-                  and row["device_name"] == device_name and row["metric"]})
+
+# Rank the real inventory so first load lands on the richest usable series,
+# never a placeholder and never an alphabetically-first two-sample series.
+ranked = forecast_service.rank_forecast_series(inventory,
+                                               data_source=data_source)
+if not ranked:
+    st.warning("Only placeholder series (raw IPs / target labels) are stored "
+               "for this source - nothing measured to forecast.", icon="📭")
+    st.stop()
+devices = list(dict.fromkeys(row["device_name"] for row in ranked))
+_previous = st.session_state.get("np_forecast_device")
+st.session_state["np_forecast_device"] = (
+    _previous if _previous in devices else devices[0])
+device_name = st.selectbox("Device", devices, key="np_forecast_device")
+
+metrics = list(dict.fromkeys(
+    row["metric"] for row in ranked
+    if row["device_name"] == device_name and row["metric"]))
 if not metrics:
     st.warning(f"No stored metric values for **{device_name}** "
                f"({data_source}).", icon="📭")
     st.stop()
-metric = st.selectbox("Target metric", metrics)
+_previous = st.session_state.get("np_forecast_metric")
+st.session_state["np_forecast_metric"] = (
+    _previous if _previous in metrics else metrics[0])
+metric = st.selectbox("Target metric", metrics, key="np_forecast_metric")
 
 # Series scope comes from the merged inventory, so an interface that survives
 # only in rollups is offered just like a raw-only one.
-sel_rows = [row for row in inventory if row["data_source"] == data_source
+sel_rows = [row for row in ranked if row["data_source"] == data_source
             and row["device_name"] == device_name and row["metric"] == metric]
-ifaces = sorted({row["interface_name"] for row in sel_rows
-                 if row["interface_name"]})
+ifaces = list(dict.fromkeys(row["interface_name"] for row in sel_rows
+                            if row["interface_name"]))
 has_dev = any(row["interface_name"] is None for row in sel_rows)
 scope_options = ([None] if has_dev else []) + ifaces
 if not scope_options:
     st.info("This metric has no stored rows under this source.")
     st.stop()
-interface = st.selectbox("Series scope", scope_options,
+# Default to the scope of the best-ranked row for this selection.
+_best_scope = sel_rows[0]["interface_name"]
+_previous = st.session_state.get("np_forecast_scope", _best_scope)
+if _previous not in scope_options:
+    _previous = _best_scope if _best_scope in scope_options else scope_options[0]
+st.session_state["np_forecast_scope"] = _previous
+interface = st.selectbox("Series scope", scope_options, key="np_forecast_scope",
                          format_func=lambda v: v or "(device-level)")
 _scope_row = next((row for row in sel_rows
                    if row["interface_name"] == interface), None)
@@ -210,6 +238,32 @@ if readiness["ready"]:
 else:
     st.warning("Not forecastable yet: "
                + "; ".join(readiness["reasons"]), icon="📉")
+    st.caption(
+        f"This selection has **{readiness['n_observations']}** usable "
+        f"observation(s); a forecast needs at least "
+        f"{forecast_service.STRONG_MIN_POINTS}.")
+    _alternatives = [
+        row for row in ranked
+        if (row["device_name"], row["metric"], row["interface_name"])
+        != (device_name, metric, interface)
+    ][:3]
+    if _alternatives:
+        st.caption("Best available series by stored usable points "
+                   "(click to switch):")
+        _cols = st.columns(len(_alternatives))
+        for _col, _row in zip(_cols, _alternatives):
+            _scope = _row["interface_name"]
+            _label = f"{_row['device_name']} · {_row['metric']}"
+            if _scope:
+                _label += f" · {_scope}"
+            _label += f" — {_row['total_points']} pt(s)"
+            _col.button(
+                _label,
+                key=(f"np_fc_suggest_{_row['device_name']}_"
+                     f"{_row['metric']}_{_scope or 'device'}"),
+                on_click=_pick_series,
+                args=(_row["device_name"], _row["metric"], _scope),
+                width="stretch")
 
 # ------------------------------------------------- explicit run (not on rerun)
 run_btn = st.button("🚀 Run forecast comparison", width="stretch",
