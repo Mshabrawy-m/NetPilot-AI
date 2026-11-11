@@ -97,12 +97,17 @@ def list_forecast_series(
 
     Each row carries ``coverage`` (``'raw'`` / ``'rollup'`` / ``'both'``), the
     separate ``n_raw_samples`` and ``n_rollup_days`` counts, and forecast
-    hints: ``forecastable_raw`` (enough non-null raw for the native cadence)
-    and ``forecastable_daily`` (enough combined daily buckets for the A6-4
-    daily cadence). These are cheap count-based hints; the authoritative check
-    is :func:`check_series_forecastability`, which runs the real data-quality
-    gate. Demo/Live isolation is preserved because both source queries take
-    the same ``data_source`` filter and rollups are live-only.
+    hints. ``usable_points`` is ``max(n_raw_samples, n_rollup_days)`` - the
+    number of points the *exact* series can offer on one cadence. Raw samples
+    and daily rollup buckets are alternative representations of the same
+    history, so adding them together would double-count and could make a thin
+    series look forecastable. ``forecastable_raw`` / ``forecastable_daily``
+    require that cadence alone to reach the floor, and ``forecastable`` is
+    true only when ``usable_points`` does. These are cheap count-based hints;
+    the authoritative check is :func:`check_series_forecastability`, which runs
+    the real data-quality gate. Demo/Live isolation is preserved because both
+    source queries take the same ``data_source`` filter and rollups are
+    live-only.
     """
     settings = get_settings()
     floor = (settings.min_points_forecast if min_samples is None
@@ -143,13 +148,19 @@ def list_forecast_series(
 
     out: list[dict] = []
     for row in merged.values():
-        total = row["n_raw_samples"] + row["n_rollup_days"]
-        row["total_points"] = total
+        # Raw samples and rollup days describe the same history at two
+        # cadences; summing them would double-count overlapping days and let
+        # rollups inflate a thin series past the forecast floor.
+        usable = max(row["n_raw_samples"], row["n_rollup_days"])
+        row["usable_points"] = usable
+        # Kept for callers that display the raw+rollup totals; never used for
+        # ranking or forecastability.
+        row["total_points"] = row["n_raw_samples"] + row["n_rollup_days"]
         row["forecastable_raw"] = row["n_raw_samples"] >= floor
-        row["forecastable_daily"] = total >= floor
-        row["forecastable"] = row["forecastable_raw"] or row["forecastable_daily"]
+        row["forecastable_daily"] = row["n_rollup_days"] >= floor
+        row["forecastable"] = usable >= floor
         out.append(row)
-    out.sort(key=lambda row: (-row["total_points"], row["device_name"],
+    out.sort(key=lambda row: (-row["usable_points"], row["device_name"],
                               row["metric"], row["interface_name"] or ""))
     return out
 
@@ -165,10 +176,15 @@ def rank_forecast_series(
     that :func:`list_forecast_series` already produced:
 
     * placeholders are dropped entirely - they are not measured entities;
-    * the series with the most usable points (raw samples + daily rollups)
-      comes first, so a usable history wins over a thin one;
-    * a ``ping.*`` series breaks ties ahead of ``traceroute.hop_*`` because a
-      hop RTT is a derived path internal, not a device health metric;
+    * a series the inventory marks forecastable comes first, so a default is
+      never a series that cannot reach the point floor;
+    * a ``ping.*`` series comes ahead of other metrics, and
+      ``traceroute.hop_*`` comes last, because a hop RTT is a derived path
+      internal rather than a device health metric;
+    * within the same forecastability/metric group the series with the most
+      ``usable_points`` wins. ``usable_points`` is ``max(raw, rollup)``, not
+      their sum: the two representations cover the same history, so adding
+      them would let rollups inflate a thin series;
     * the remaining order is deterministic (device, metric, scope).
 
     Only stored counts are used - this is a read-only ranking, no query and no
@@ -187,10 +203,24 @@ def rank_forecast_series(
             return 2
         return 1
 
+    floor = int(get_settings().min_points_forecast)
+
+    def _usable(row: dict) -> int:
+        # ``usable_points`` is the authoritative field. Fall back to the old
+        # total only for hand-built inventories that predate it.
+        if "usable_points" in row:
+            return int(row.get("usable_points") or 0)
+        return int(row.get("total_points") or 0)
+
     def _key(row: dict) -> tuple:
+        usable = _usable(row)
+        forecastable = row.get("forecastable")
+        if forecastable is None:
+            forecastable = usable >= floor
         return (
-            -int(row.get("total_points") or 0),
+            0 if forecastable else 1,
             _metric_rank(row.get("metric")),
+            -usable,
             str(row.get("device_name") or ""),
             str(row.get("metric") or ""),
             str(row.get("interface_name") or ""),

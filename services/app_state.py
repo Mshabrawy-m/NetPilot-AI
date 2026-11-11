@@ -14,6 +14,7 @@ import streamlit as st
 from config import demo_isolation_violation, get_settings
 from database import connection, repository, roles
 from database.connection import get_session, init_db, require_schema
+from database.models import db_utcnow
 from services import auth, collection_service, demo_data
 from ui import theme
 
@@ -248,22 +249,43 @@ def sidebar_status() -> None:
             "Live data is collected by the external native collector "
             "(tools/live_collector.py); this app is read-only.")
         try:
-            last_run = read(lambda s: repository.get_last_successful_run(
+            latest_sample = read(lambda s: repository.get_latest_sample_time(
                 s, data_source=settings.data_source))
             n_samples = read(lambda s: repository.count_metric_samples(
+                s, data_source=settings.data_source))
+            last_run = read(lambda s: repository.get_last_successful_run(
                 s, data_source=settings.data_source))
         except Exception as exc:  # noqa: BLE001 - status must never break a page
             st.sidebar.caption(f"Collection status unavailable: {type(exc).__name__}")
         else:
-            if last_run is not None and last_run.finished_at is not None:
+            # Freshness comes from the data itself, never from collection_runs:
+            # a later run row must not make old samples look current.
+            if latest_sample is not None:
+                age_seconds = max(
+                    0.0, (db_utcnow() - latest_sample).total_seconds())
+                age_minutes = int(age_seconds // 60)
                 st.sidebar.caption(
-                    "Last successful collection: "
-                    f"{last_run.finished_at:%Y-%m-%d %H:%M} UTC · "
+                    "Latest live sample: "
+                    f"{latest_sample:%Y-%m-%d %H:%M} UTC "
+                    f"({age_minutes:,} min ago) · "
                     f"{n_samples:,} sample(s) stored")
+                if age_seconds > 15 * 60:
+                    st.sidebar.warning(
+                        "Live data is stale: the newest stored sample is "
+                        f"{age_minutes:,} min old (warning after 15 min).")
             else:
                 st.sidebar.caption(
-                    f"No successful collection recorded yet · "
+                    f"No live sample stored yet · "
                     f"{n_samples:,} sample(s) stored")
+            # The run table is kept as a secondary audit line only - it says
+            # what the collector recorded, not how fresh the telemetry is.
+            if last_run is not None and last_run.finished_at is not None:
+                st.sidebar.caption(
+                    "Last recorded run: "
+                    f"{last_run.finished_at:%Y-%m-%d %H:%M} UTC "
+                    f"(status {last_run.status})")
+            else:
+                st.sidebar.caption("No collection run recorded yet")
     else:
         col_a, col_b = st.sidebar.columns(2)
         if col_a.button("▶️ Start collector", width="stretch"):

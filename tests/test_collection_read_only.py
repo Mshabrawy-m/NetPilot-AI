@@ -14,12 +14,14 @@ service logic:
 
 The page must render without an exception, must not offer "Start collector"
 or "Collect now", must say that collection is external and read-only, and
-must report the last successful run plus the stored sample count from
-read-only queries.
+must report freshness from ``MAX(metric_samples.collected_at)`` plus the stored
+sample count from read-only queries. ``collection_runs`` stays a secondary
+"last recorded run" line, never the freshness source.
 """
 from __future__ import annotations
 
 import datetime as dt
+import re
 from pathlib import Path
 
 from database import connection, roles
@@ -42,7 +44,10 @@ def _texts(at) -> list[str]:
     return values
 
 
-def _seed_and_block_writes(db_url: str) -> int:
+def _seed_and_block_writes(
+    db_url: str, *, latest_sample_minutes_ago: int = 0,
+    run_finished_minutes_ago: int = 4,
+) -> int:
     """Seed a successful run + samples, then make INSERT fail like the grant."""
     from database.connection import session_scope
     from database.models import CollectionRun, MetricSample, db_utcnow
@@ -50,14 +55,17 @@ def _seed_and_block_writes(db_url: str) -> int:
     now = db_utcnow()
     with session_scope() as session:
         session.add(CollectionRun(
-            started_at=now - dt.timedelta(minutes=5),
-            finished_at=now - dt.timedelta(minutes=4),
+            started_at=now - dt.timedelta(
+                minutes=run_finished_minutes_ago + 1),
+            finished_at=now - dt.timedelta(
+                minutes=run_finished_minutes_ago),
             status="ok", devices_total=3, devices_up=3,
             data_source="live"))
         session.add_all([
             MetricSample(device_name="R1", metric="ping.avg_rtt_ms",
                          value=1.0 + i, unit="ms", data_source="live",
-                         collected_at=now - dt.timedelta(minutes=i))
+                         collected_at=now - dt.timedelta(
+                             minutes=latest_sample_minutes_ago + i))
             for i in range(5)
         ])
 
@@ -103,9 +111,51 @@ def test_select_only_live_mode_never_starts_collection(db_url, monkeypatch):
 
     joined = "\n".join(_texts(at))
     assert READ_ONLY_MESSAGE in joined
-    assert "Last successful collection:" in joined
+    assert "Latest live sample:" in joined
+    assert "0 min ago" in joined
     assert f"{n_samples} sample(s) stored" in joined
+    assert "Last recorded run:" in joined
+    assert "Last successful collection:" not in joined
+    assert "Live data is stale" not in joined
 
     scheduler = at.session_state["_scheduler"]
     assert scheduler.is_running() is False
     assert scheduler.status().cycles_completed == 0
+
+
+def test_sidebar_freshness_comes_from_samples_not_the_run_row(
+        db_url, monkeypatch):
+    """A run that finished later must not disguise 40-minute-old telemetry.
+
+    This is the reported shape: the collector wrote samples, then a run row was
+    recorded later (or the run table is simply fresher than the data). The
+    sidebar must say 40 min ago and warn, not repeat the run timestamp as if it
+    were the data freshness.
+    """
+    monkeypatch.setenv("NETPILOT_DEMO_MODE", "false")
+    monkeypatch.setenv("NETPILOT_CHANGE_LOOP_ENABLED", "false")
+    monkeypatch.setenv("NETPILOT_LAB_EXECUTION_ENABLED", "false")
+    monkeypatch.setenv("NETPILOT_DB_URL_APP", db_url)
+
+    from network import containerlab_manager
+    monkeypatch.setattr(containerlab_manager, "availability",
+                        lambda: {"docker": True, "containerlab": True})
+
+    n_samples = _seed_and_block_writes(
+        db_url, latest_sample_minutes_ago=40,
+        run_finished_minutes_ago=2)
+
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=180)
+    at.run()
+
+    exceptions = [str(e.value) for e in at.exception]
+    assert not exceptions, exceptions[0][:500]
+
+    joined = "\n".join(_texts(at))
+    assert "Latest live sample:" in joined
+    assert re.search(r"\(4\d min ago\)", joined), joined
+    assert f"{n_samples} sample(s) stored" in joined
+    assert "Last recorded run:" in joined
+    assert "Live data is stale" in joined
+    assert "Last successful collection:" not in joined

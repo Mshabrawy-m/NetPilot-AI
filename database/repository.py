@@ -554,6 +554,23 @@ def get_series_inventory(
     ]
 
 
+def get_latest_sample_time(
+    session: Session, *, data_source: str | None = None,
+) -> dt.datetime | None:
+    """Newest stored observation time (``MAX(collected_at)``), if any.
+
+    This is the data-side freshness signal: unlike ``collection_runs`` it
+    reflects what the external collector actually wrote, so a run row that
+    finished later (or a stale run table) cannot make old telemetry look fresh.
+    Read-only and provenance-filtered. A stored NULL value still has a real
+    collection timestamp, so it is counted here; only the timestamp is used.
+    """
+    stmt = select(func.max(MetricSample.collected_at))
+    if data_source is not None:
+        stmt = stmt.where(MetricSample.data_source == data_source)
+    return session.scalar(stmt)
+
+
 def count_metric_samples(
     session: Session, *, data_source: str | None = None,
 ) -> int:

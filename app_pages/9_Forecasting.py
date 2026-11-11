@@ -62,6 +62,86 @@ BAND_MODES = {
     "Normal approximation (model's own)": "normal_sqrt_h",
 }
 
+CADENCE_OPTIONS = (
+    "Native sampling (raw interval)",
+    "Daily (rollup-aware, uniform UTC-day)",
+)
+
+#: Display order for the window selector. "All stored history" is the final
+#: fallback; "6 hours" stays selectable because a recent dense burst can be the
+#: only genuinely regular window on a bursty live collector.
+RANGE_OPTIONS = {
+    "24 hours": 24,
+    "72 hours": 72,
+    "7 days": 168,
+    "30 days": 720,
+    "All stored history": None,
+    "6 hours": 6,
+}
+
+#: Probe order for the default. Keep the historical 24 h first, but check the
+#: recent 6 h burst early: on bursty live data it is often the only window whose
+#: sampling is regular enough for the real readiness gate. The UI order above
+#: stays conventional; only the default search is reordered.
+_DEFAULT_PROBE_ORDER = (
+    "24 hours", "6 hours", "72 hours", "7 days", "30 days",
+    "All stored history",
+)
+
+
+def _cadence_from_label(label: str) -> str:
+    return "raw" if label.startswith("Native") else "daily"
+
+
+def _history_since(hours: int | None):
+    return None if hours is None else db_utcnow() - timedelta(hours=hours)
+
+
+def _choose_history_default(device_name: str, metric: str, interface,
+                            data_source: str) -> tuple[str, str]:
+    """Pick a window/cadence this exact series can actually be forecast on.
+
+    The inventory counts are all-time; the page's readiness gate is evaluated
+    inside the selected window. A live series with 200+ stored points can still
+    have only 10 inside 24 h, which is exactly how the page used to open on a
+    "10 point" selection.
+
+    Preference order:
+
+    1. the first window/cadence that passes the real readiness gate;
+    2. otherwise the first that reaches the point floor (still honest: the
+       data-quality reason is shown above the run button);
+    3. otherwise the richest window found, so a thin series is at least shown
+       through the widest slice of its own history.
+    """
+    floor = int(forecast_service.STRONG_MIN_POINTS)
+    best: tuple[str, str, int] | None = None
+    first_at_floor: tuple[str, str, int] | None = None
+    for range_label in _DEFAULT_PROBE_ORDER:
+        hours = RANGE_OPTIONS[range_label]
+        for cadence_label in CADENCE_OPTIONS:
+            probe = read(
+                lambda s, _hours=hours, _cadence_label=cadence_label:
+                forecast_service.check_series_forecastability(
+                    s, device_name=device_name, metric=metric,
+                    interface_name=interface, data_source=data_source,
+                    since=_history_since(_hours),
+                    device_level_only=(interface is None),
+                    cadence=_cadence_from_label(_cadence_label)))
+            n_observations = int(probe["n_observations"])
+            candidate = (range_label, cadence_label, n_observations)
+            if best is None or n_observations > best[2]:
+                best = candidate
+            if probe["ready"]:
+                return range_label, cadence_label
+            if n_observations >= floor and first_at_floor is None:
+                first_at_floor = candidate
+    if first_at_floor is not None:
+        return first_at_floor[0], first_at_floor[1]
+    if best is None:                                  # no candidates at all
+        return next(iter(RANGE_OPTIONS)), CADENCE_OPTIONS[0]
+    return best[0], best[1]
+
 
 def _pick_series(device: str, metric: str, scope) -> None:
     """Suggestion callback: switch the three selectors before the rerun."""
@@ -176,15 +256,32 @@ if _scope_row is not None:
     st.caption(
         f"History coverage: **{_scope_row['coverage']}** - "
         f"{_scope_row['n_raw_samples']} raw sample(s), "
-        f"{_scope_row['n_rollup_days']} daily rollup bucket(s).")
+        f"{_scope_row['n_rollup_days']} daily rollup bucket(s); "
+        f"**{_scope_row['usable_points']}** usable point(s) on one cadence "
+        "(raw and rollup are alternatives, never added together).")
+
+# The window/cadence default is recomputed when the selection changes, and
+# left alone afterwards so a manual override survives reruns.
+_selection_key = (data_source, device_name, metric, interface)
+if st.session_state.get("_np_forecast_history_selection") != _selection_key:
+    _default_range, _default_cadence = _choose_history_default(
+        device_name, metric, interface, data_source)
+    st.session_state["np_forecast_range"] = _default_range
+    st.session_state["np_forecast_cadence"] = _default_cadence
+    st.session_state["_np_forecast_history_selection"] = _selection_key
+else:
+    if st.session_state.get("np_forecast_range") not in RANGE_OPTIONS:
+        st.session_state["np_forecast_range"] = next(iter(RANGE_OPTIONS))
+    if st.session_state.get("np_forecast_cadence") not in CADENCE_OPTIONS:
+        st.session_state["np_forecast_cadence"] = CADENCE_OPTIONS[0]
 
 settings = get_settings()
 mcol1, mcol2 = st.columns([1, 1])
 with mcol1:
     cadence_label = st.radio(
         "History cadence",
-        ("Native sampling (raw interval)",
-         "Daily (rollup-aware, uniform UTC-day)"),
+        CADENCE_OPTIONS,
+        key="np_forecast_cadence",
         help="Daily cadence reconciles raw samples and daily rollups onto one "
              "UTC-day grid, so long mixed-granularity history can be forecast "
              "without ever silently blending sampling levels: a day with a "
@@ -219,10 +316,9 @@ with mcol2:
                                 help="In-memory comparison only: a blend is "
                                      "not stored as a forecast run.")
 
-range_options = {"6 hours": 6, "24 hours": 24, "7 days": 168}
 range_label = st.selectbox("History window for the run",
-                           list(range_options), index=1)
-since = db_utcnow() - timedelta(hours=range_options[range_label])
+                           list(RANGE_OPTIONS), key="np_forecast_range")
+since = _history_since(RANGE_OPTIONS[range_label])
 
 # Stage A6-4: gate the action on the real data-quality check, so forecasting
 # is only enabled on a genuinely forecastable window (not a count estimate).
@@ -238,10 +334,16 @@ if readiness["ready"]:
 else:
     st.warning("Not forecastable yet: "
                + "; ".join(readiness["reasons"]), icon="📉")
-    st.caption(
-        f"This selection has **{readiness['n_observations']}** usable "
-        f"observation(s); a forecast needs at least "
-        f"{forecast_service.STRONG_MIN_POINTS}.")
+    if readiness["n_observations"] < forecast_service.STRONG_MIN_POINTS:
+        st.caption(
+            f"This selection has **{readiness['n_observations']}** usable "
+            f"observation(s); a forecast needs at least "
+            f"{forecast_service.STRONG_MIN_POINTS}.")
+    else:
+        st.caption(
+            f"This window has **{readiness['n_observations']}** usable "
+            "observation(s), so the count is sufficient; the data-quality "
+            "reason above is what still blocks the run.")
     _alternatives = [
         row for row in ranked
         if (row["device_name"], row["metric"], row["interface_name"])
@@ -256,7 +358,7 @@ else:
             _label = f"{_row['device_name']} · {_row['metric']}"
             if _scope:
                 _label += f" · {_scope}"
-            _label += f" — {_row['total_points']} pt(s)"
+            _label += f" — {_row['usable_points']} pt(s)"
             _col.button(
                 _label,
                 key=(f"np_fc_suggest_{_row['device_name']}_"
