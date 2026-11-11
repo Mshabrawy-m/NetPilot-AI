@@ -70,7 +70,15 @@ CADENCE_OPTIONS = (
 #: Display order for the window selector. "All stored history" is the final
 #: fallback; "6 hours" stays selectable because a recent dense burst can be the
 #: only genuinely regular window on a bursty live collector.
+#:
+#: "Most recent regular run" is not a time span: it bounds the window to the
+#: newest gap-free contiguous run (start AND end), which is the shape the models
+#: actually fit. A live collector that samples one burst and then idles produces
+#: a window that is genuinely irregular; this option forecasts the burst itself
+#: instead of weakening the data-quality gate.
+LATEST_RUN_LABEL = "Most recent regular run"
 RANGE_OPTIONS = {
+    LATEST_RUN_LABEL: None,
     "24 hours": 24,
     "72 hours": 72,
     "7 days": 168,
@@ -79,13 +87,13 @@ RANGE_OPTIONS = {
     "6 hours": 6,
 }
 
-#: Probe order for the default. Keep the historical 24 h first, but check the
-#: recent 6 h burst early: on bursty live data it is often the only window whose
-#: sampling is regular enough for the real readiness gate. The UI order above
-#: stays conventional; only the default search is reordered.
+#: Probe order for the default. Conventional windows are tried first, so a
+#: regular series still opens on "24 hours". The gap-free run is the last
+#: fallback: it is the honest choice when every time span spans a collection
+#: gap, and it is skipped whenever an earlier window already passes the gate.
 _DEFAULT_PROBE_ORDER = (
     "24 hours", "6 hours", "72 hours", "7 days", "30 days",
-    "All stored history",
+    "All stored history", LATEST_RUN_LABEL,
 )
 
 
@@ -95,6 +103,26 @@ def _cadence_from_label(label: str) -> str:
 
 def _history_since(hours: int | None):
     return None if hours is None else db_utcnow() - timedelta(hours=hours)
+
+
+def _resolve_bounds(range_label: str, cadence: str, device_name: str,
+                    metric: str, interface, data_source: str) -> tuple:
+    """Turn a window label into an explicit ``(since, until, run)`` window.
+
+    Time spans only bound the start. "Most recent regular run" bounds both
+    ends to the newest gap-free run with at least the forecast floor, so the
+    readiness gate evaluates exactly the contiguous segment the models fit.
+    ``run`` is that run's bounds (or ``None`` when the label is a time span).
+    """
+    if range_label != LATEST_RUN_LABEL:
+        return _history_since(RANGE_OPTIONS[range_label]), None, None
+    run = read(lambda s: forecast_service.latest_regular_run_window(
+        s, device_name=device_name, metric=metric, interface_name=interface,
+        data_source=data_source, cadence=cadence,
+        device_level_only=(interface is None)))
+    if run is None:
+        return None, None, None
+    return run["start"], run["end"], run
 
 
 def _choose_history_default(device_name: str, metric: str, interface,
@@ -113,21 +141,31 @@ def _choose_history_default(device_name: str, metric: str, interface,
        data-quality reason is shown above the run button);
     3. otherwise the richest window found, so a thin series is at least shown
        through the widest slice of its own history.
+
+    "Most recent regular run" is probed last. On a bursty collector every time
+    span contains a collection gap and fails the interval-CV gate; the gap-free
+    run is then the only window that is genuinely regular, and it is selected
+    without touching the gate.
     """
     floor = int(forecast_service.STRONG_MIN_POINTS)
     best: tuple[str, str, int] | None = None
     first_at_floor: tuple[str, str, int] | None = None
     for range_label in _DEFAULT_PROBE_ORDER:
-        hours = RANGE_OPTIONS[range_label]
         for cadence_label in CADENCE_OPTIONS:
+            cadence = _cadence_from_label(cadence_label)
+            since, until, run = _resolve_bounds(
+                range_label, cadence, device_name, metric, interface,
+                data_source)
+            if range_label == LATEST_RUN_LABEL and run is None:
+                continue
             probe = read(
-                lambda s, _hours=hours, _cadence_label=cadence_label:
+                lambda s, _since=since, _until=until, _cadence=cadence:
                 forecast_service.check_series_forecastability(
                     s, device_name=device_name, metric=metric,
                     interface_name=interface, data_source=data_source,
-                    since=_history_since(_hours),
+                    since=_since, until=_until,
                     device_level_only=(interface is None),
-                    cadence=_cadence_from_label(_cadence_label)))
+                    cadence=_cadence))
             n_observations = int(probe["n_observations"])
             candidate = (range_label, cadence_label, n_observations)
             if best is None or n_observations > best[2]:
@@ -139,7 +177,7 @@ def _choose_history_default(device_name: str, metric: str, interface,
     if first_at_floor is not None:
         return first_at_floor[0], first_at_floor[1]
     if best is None:                                  # no candidates at all
-        return next(iter(RANGE_OPTIONS)), CADENCE_OPTIONS[0]
+        return "24 hours", CADENCE_OPTIONS[0]
     return best[0], best[1]
 
 
@@ -180,6 +218,8 @@ def _fmt(value, digits=3, suffix=""):
 def _fmt_eta(seconds) -> str:
     if seconds is None:
         return "interval unknown"
+    if seconds < 60:
+        return f"~{round(seconds)} s"
     minutes = int(round(seconds / 60.0))
     if minutes < 60:
         return f"~{minutes} min"
@@ -261,8 +301,12 @@ if _scope_row is not None:
         "(raw and rollup are alternatives, never added together).")
 
 # The window/cadence default is recomputed when the selection changes, and
-# left alone afterwards so a manual override survives reruns.
-_selection_key = (data_source, device_name, metric, interface)
+# left alone afterwards so a manual override survives reruns. The version tag
+# makes an existing browser session recompute once after a default-rule change,
+# instead of keeping a stale window that the new rules would not choose.
+_DEFAULT_RULES_VERSION = 2
+_selection_key = (_DEFAULT_RULES_VERSION, data_source, device_name, metric,
+                  interface)
 if st.session_state.get("_np_forecast_history_selection") != _selection_key:
     _default_range, _default_cadence = _choose_history_default(
         device_name, metric, interface, data_source)
@@ -271,7 +315,7 @@ if st.session_state.get("_np_forecast_history_selection") != _selection_key:
     st.session_state["_np_forecast_history_selection"] = _selection_key
 else:
     if st.session_state.get("np_forecast_range") not in RANGE_OPTIONS:
-        st.session_state["np_forecast_range"] = next(iter(RANGE_OPTIONS))
+        st.session_state["np_forecast_range"] = "24 hours"
     if st.session_state.get("np_forecast_cadence") not in CADENCE_OPTIONS:
         st.session_state["np_forecast_cadence"] = CADENCE_OPTIONS[0]
 
@@ -317,15 +361,42 @@ with mcol2:
                                      "not stored as a forecast run.")
 
 range_label = st.selectbox("History window for the run",
-                           list(RANGE_OPTIONS), key="np_forecast_range")
-since = _history_since(RANGE_OPTIONS[range_label])
+                           list(RANGE_OPTIONS), key="np_forecast_range",
+                           help="'Most recent regular run' bounds the window to "
+                                "the newest gap-free contiguous run - the shape "
+                                "the models actually fit. A time span can span "
+                                "a collection gap and is then refused by the "
+                                "data-quality gate.")
+since, until, _run = _resolve_bounds(
+    range_label, cadence, device_name, metric, interface, data_source)
 
 # Stage A6-4: gate the action on the real data-quality check, so forecasting
 # is only enabled on a genuinely forecastable window (not a count estimate).
-readiness = read(lambda s: forecast_service.check_series_forecastability(
-    s, device_name=device_name, metric=metric, interface_name=interface,
-    data_source=data_source, since=since,
-    device_level_only=(interface is None), cadence=cadence))
+# The check itself is unchanged; "Most recent regular run" only changes which
+# observations are in the window (both ends), never the readiness rules.
+if range_label == LATEST_RUN_LABEL and _run is None:
+    readiness = {
+        "ready": False,
+        "n_observations": 0,
+        "observed_interval_seconds": None,
+        "reasons": [
+            ("forecast: no gap-free contiguous run with at least "
+             f"{forecast_service.STRONG_MIN_POINTS} samples was found. The "
+             "collector has not yet produced a long enough regular burst.")],
+    }
+else:
+    readiness = read(lambda s: forecast_service.check_series_forecastability(
+        s, device_name=device_name, metric=metric, interface_name=interface,
+        data_source=data_source, since=since, until=until,
+        device_level_only=(interface is None), cadence=cadence))
+
+if _run is not None:
+    st.caption(
+        f"Window: **{_run['start']:%Y-%m-%d %H:%M:%S} → "
+        f"{_run['end']:%Y-%m-%d %H:%M:%S} UTC** — {_run['n_points']} "
+        f"gap-free sample(s) at {_fmt_eta(_run['interval_seconds'])} "
+        "spacing. Earlier runs and a later collection gap are excluded.")
+
 if readiness["ready"]:
     st.success(
         f"Forecastable: {readiness['n_observations']} usable observation(s) "
@@ -344,6 +415,10 @@ else:
             f"This window has **{readiness['n_observations']}** usable "
             "observation(s), so the count is sufficient; the data-quality "
             "reason above is what still blocks the run.")
+    if range_label != LATEST_RUN_LABEL:
+        st.caption("Tip: choose **Most recent regular run** to forecast the "
+                   "newest gap-free segment when this time span includes a "
+                   "collection gap.")
     _alternatives = [
         row for row in ranked
         if (row["device_name"], row["metric"], row["interface_name"])
@@ -376,7 +451,7 @@ if run_btn:
             s, device_name=device_name, metric=metric,
             interface_name=interface, data_source=data_source,
             horizon=horizon, models=tuple(model_names),
-            device_level_only=(interface is None), since=since,
+            device_level_only=(interface is None), since=since, until=until,
             cadence=cadence,
             band_mode=BAND_MODES[band_label], band_coverage=coverage,
             ensemble=want_ensemble))
@@ -491,7 +566,9 @@ elif result:
     frame = dedupe_frame(read(lambda s: history_loader(
         s, device_name, metric, interface_name=interface,
         device_level_only=(interface is None),
-        data_source=data_source)))
+        data_source=data_source,
+        since=result.get("history_since"),
+        until=result.get("history_until"))))
     hist = frame.dropna(subset=["value"])
     fig = go.Figure()
     fig.add_trace(go.Scatter(

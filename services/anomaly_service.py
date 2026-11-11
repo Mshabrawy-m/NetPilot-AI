@@ -68,6 +68,7 @@ def load_ready_series(
     interface_name: str | None, data_source: str,
     purpose: str = data_quality.DETECTION,
     since: dt.datetime | None = None,
+    until: dt.datetime | None = None,
     device_level_only: bool = False,
     include_rollups: bool = False,
     cadence: str = "raw",
@@ -84,6 +85,10 @@ def load_ready_series(
     window on one uniform UTC-day grid that safely combines raw samples and
     daily rollups (see :func:`load_metric_frame_daily`); it implies rollups are
     included, so it is forecasting-only and detection never passes it.
+
+    ``until`` optionally closes the window. The forecasting page uses it to
+    evaluate/forecast one gap-free run instead of a window that also contains a
+    later collection gap; the data-quality gate itself is unchanged.
     """
     if cadence == "daily":
         loader = load_metric_frame_daily
@@ -93,7 +98,7 @@ def load_ready_series(
         loader = load_metric_frame
     frame = loader(
         session, device_name, metric, interface_name=interface_name,
-        data_source=data_source, since=since,
+        data_source=data_source, since=since, until=until,
         max_points=DETECTION_LOOKBACK_LIMIT,
         device_level_only=device_level_only)
     frame = dedupe_frame(frame)

@@ -229,10 +229,89 @@ def rank_forecast_series(
     return sorted(rows, key=_key)
 
 
+def latest_regular_run(
+    frame: pd.DataFrame, interval_seconds: float | None, *,
+    min_points: int = 1, gap_factor: float | None = None,
+) -> dict | None:
+    """Most recent contiguous, gap-free run of observations.
+
+    A live collector can sample one burst densely and then stop for hours. A
+    window that spans the burst *and* a later collection gap is genuinely
+    irregular, and the data-quality gate rightly refuses it. The models,
+    however, are only ever fit inside one contiguous run. This helper finds the
+    run the pipeline can actually use: consecutive observations no further
+    apart than ``gap_factor * interval_seconds`` (the same threshold the
+    quality report uses for ``gap_count``), taking the newest run that reaches
+    ``min_points``.
+
+    Returns ``{"start", "end", "n_points"}`` or ``None`` when no run is long
+    enough. Pure function: no DB, no Streamlit, and it never alters the frame.
+    """
+    if frame is None or frame.empty or "collected_at" not in frame:
+        return None
+    if not interval_seconds or float(interval_seconds) <= 0:
+        return None
+    stamps = (pd.to_datetime(frame["collected_at"]).dropna()
+              .sort_values().drop_duplicates())
+    floor = max(1, int(min_points))
+    if len(stamps) < floor:
+        return None
+    factor = float(data_quality.GAP_FACTOR if gap_factor is None
+                   else gap_factor)
+    threshold = pd.Timedelta(seconds=factor * float(interval_seconds))
+    runs: list[tuple] = []
+    start = prev = stamps.iloc[0]
+    count = 1
+    for stamp in stamps.iloc[1:]:
+        if (stamp - prev) > threshold:
+            runs.append((start, prev, count))
+            start = stamp
+            count = 1
+        else:
+            count += 1
+        prev = stamp
+    runs.append((start, prev, count))
+    for run_start, run_end, run_count in reversed(runs):
+        if run_count >= floor:
+            return {"start": _to_dt(run_start), "end": _to_dt(run_end),
+                    "n_points": int(run_count)}
+    return None
+
+
+def latest_regular_run_window(
+    session: Session, *, device_name: str, metric: str,
+    interface_name: str | None, data_source: str, cadence: str = "raw",
+    device_level_only: bool = False, min_points: int | None = None,
+    gap_factor: float | None = None,
+) -> dict | None:
+    """Read-only: the newest gap-free run long enough to forecast.
+
+    Loads the stored history through the same pipeline a forecast uses, then
+    delegates to :func:`latest_regular_run`. The page turns the returned bounds
+    into an explicit ``[start, end]`` window, so the readiness gate runs on a
+    genuinely regular grid instead of being weakened.
+    """
+    frame, quality = load_ready_series(
+        session, device_name, metric, interface_name, data_source,
+        purpose=data_quality.FORECAST, since=None, until=None,
+        device_level_only=device_level_only, include_rollups=True,
+        cadence=cadence)
+    run = latest_regular_run(
+        frame, quality.observed_interval_seconds,
+        min_points=(STRONG_MIN_POINTS if min_points is None else min_points),
+        gap_factor=gap_factor)
+    if run is None:
+        return None
+    run["cadence"] = cadence
+    run["interval_seconds"] = quality.observed_interval_seconds
+    return run
+
+
 def check_series_forecastability(
     session: Session, *, device_name: str, metric: str,
     interface_name: str | None, data_source: str,
-    since: dt.datetime | None = None, cadence: str = "raw",
+    since: dt.datetime | None = None, until: dt.datetime | None = None,
+    cadence: str = "raw",
     device_level_only: bool = False,
 ) -> dict:
     """Authoritative 'can this exact selection be forecast right now?' check.
@@ -244,10 +323,13 @@ def check_series_forecastability(
     the readiness flag, human-readable reasons, the usable-observation count,
     the observed interval, and the raw/rollup provenance split. No forecast is
     computed and nothing is persisted - this is a read-only probe.
+
+    ``until`` closes the window when the caller is evaluating one gap-free run
+    (see :func:`latest_regular_run_window`); the readiness rules are unchanged.
     """
     frame, quality = load_ready_series(
         session, device_name, metric, interface_name, data_source,
-        purpose=data_quality.FORECAST, since=since,
+        purpose=data_quality.FORECAST, since=since, until=until,
         device_level_only=device_level_only, include_rollups=True,
         cadence=cadence)
     provenance = time_series.frame_provenance(frame)
@@ -615,6 +697,7 @@ def run_forecast_comparison(
     persist: bool = True,
     device_level_only: bool = False,
     since: dt.datetime | None = None,
+    until: dt.datetime | None = None,
     include_rollups: bool = True,
     cadence: str = "raw",
     band_mode: str = BAND_MODE,
@@ -626,7 +709,8 @@ def run_forecast_comparison(
     frame, quality = load_ready_series(
         session, device_name, metric, interface_name, data_source,
         purpose=data_quality.FORECAST, device_level_only=device_level_only,
-        since=since, include_rollups=include_rollups, cadence=cadence)
+        since=since, until=until, include_rollups=include_rollups,
+        cadence=cadence)
     # Stage A6-3/A6-4 provenance: how much of this history is raw vs daily
     # rollups. The daily cadence always reads rollups, so it reports provenance
     # even when include_rollups was left at its default.
@@ -652,7 +736,8 @@ def run_forecast_comparison(
                  "aggregation levels.")]
         return {"status": "insufficient_data",
                 "reasons": reasons, "runs": [], "cadence": cadence,
-                "history_provenance": provenance}
+                "history_provenance": provenance,
+                "history_since": since, "history_until": until}
 
     # A cumulative counter is modelled as its per-interval rate, never as the
     # running total; reset/wrap and oversized-gap intervals are omitted by the
@@ -676,7 +761,8 @@ def run_forecast_comparison(
                 "reasons": [f"forecast: holdout test segment needs >= 5 "
                             f"samples, split produced {len(split.test)}. "
                             f"Series has {len(series)} usable samples."],
-                "runs": [], "cadence": cadence, "history_provenance": provenance}
+                "runs": [], "cadence": cadence, "history_provenance": provenance,
+                "history_since": since, "history_until": until}
 
     interval = quality.observed_interval_seconds
     origin = series.index.max()
@@ -903,6 +989,7 @@ def run_forecast_comparison(
             "runs": runs, "split": split, "quality": quality,
             "unit": unit, "counter": counter_meta,
             "history_provenance": provenance,
+            "history_since": since, "history_until": until,
             "best_model": best_model, "best_criterion": "holdout MAE",
             "ensemble": ensemble_result,
             "identical_holdout": bool(ok_runs) and len({
