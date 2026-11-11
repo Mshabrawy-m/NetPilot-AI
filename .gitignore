@@ -7,7 +7,10 @@ venv/
 .pytest_cache/
 
 # NetPilot local data (disposable lab measurements)
-data/
+data/*
+# Exception: small, synthetic, versioned evaluation fixtures (no lab data)
+!data/eval/
+!data/eval/**
 *.db
 *.db-wal
 *.db-shm
