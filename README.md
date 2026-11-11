@@ -1,64 +1,201 @@
 # NetPilot AI — Network Monitoring, Analytics & Agentic Operations
 
-A working virtual network lab (Containerlab + FRRouting), real periodic
-network-data collection, a replaceable storage layer (SQLite by default,
-PostgreSQL optional), a Streamlit dashboard for inspecting topology,
-device/interface status, connectivity tests, and metric history — Phase 2
-analytics: data-quality reporting, derived throughput from cumulative
-counters, EDA (Data Analysis), explainable anomaly detection (rolling MAD /
-z-score, EWMA, CUSUM, seasonal residual) and chronological forecast
-evaluation with holdout-calibrated uncertainty bands, scale-free accuracy
-metrics and a model comparison — and Phase 3: an evidence-grounded,
-Arabic/English **AI Network Assistant** (Groq + LangGraph multi-agent
-workflow) that investigates, diagnoses, plans and *proposes* configuration
-for **human review**, gated by an independent deterministic verifier. Phase 4
-adds a **gated, lab-only change loop** (apply → post-change verify → rollback,
-both execution flags off by default), and Phase 5 an **AI Lab** that runs the
-same anomaly / forecast / classification / statistics pipeline on simulated,
-stored, uploaded or allowlisted telemetry. Its Agentic Operations workspace
-plans and invokes registered read-only statistics, anomaly and forecasting
-tools over the active validated dataset and persists the execution evidence.
+NetPilot AI is a graduation-project network operations lab: it collects
+telemetry, stores it in SQLite or PostgreSQL, explains anomalies, evaluates
+forecasts with a rolling-origin backtest, and runs an LLM-assisted change
+workflow whose proposals are gated by an independent deterministic verifier and
+a read-only digital twin before a human can approve them. It is a working
+lab/demo system, not a production NMS.
 
-> **Safety boundary.** The assistant **only proposes**. It never connects to a
-> production network and never deploys a configuration by itself. The Phase 4
-> apply/verify/rollback path is present but **disabled by default** (`change_loop`
-> and `lab_execution` both off), lab-only, and requires an authenticated,
-> non-self human approval. It has **no live-lab evidence** on this host
-> (no Docker/Containerlab); see §14 and `NETPILOT_GATE3_ISOLATED_LAB_RUNBOOK.md`.
+> **What this repository is not.** It is not a physical-network deployment and
+> it is not a production benchmark. The live collector measures ICMP
+> reachability and local host interface counters only; it does not speak SNMP
+> or collect router telemetry. The digital twin checks structural reachability,
+> not routing or traffic. Numbers in this section come from commands run on the
+> delivery tree; anything not verified is marked **NOT VERIFIED**.
 
-## Current project workflow
+## Architecture
 
-NetPilot AI collects and stores network telemetry, then helps an operator
-inspect topology, review anomalies, compare forecasts, and investigate with
-bounded AI tools. The Streamlit UI is organized as **Overview**, **Network
-operations**, **AI lab**, **Agentic Operations**, and **System status**.
+```mermaid
+flowchart LR
+    subgraph SRC["Telemetry sources"]
+        LIVE["Live collector<br/>ICMP + local NIC counters"]
+        SIM["Simulated dataset<br/>deterministic generator"]
+        DEMO["Demo fixtures<br/>synthetic, labelled"]
+        FILE["Uploaded CSV / allowlisted files"]
+    end
 
-The AI Lab is the unified path for simulated data, stored project measurements,
-uploaded CSV files, allowlisted historical files, and an optional read-only
-Prometheus source. Each dataset carries its source and provenance into the
-statistics, anomaly, forecasting, history, and export workflow. Simulated data
-is clearly marked and is not evidence from a live network.
+    DB[("SQLite or PostgreSQL<br/>measurements, runs, incidents")]
 
-The Network Assistant can run a separate evidence-grounded investigation and
-has an Agentic Operations tab that asks the configured provider to select from
-registered, bounded application tools. The tools execute existing analytics
-and read-only topology services; their actual results are shown and saved. A
-provider timeout is a failed run. The Digital Twin in the Ops Center is a
-read-only structural reachability analysis, not a routing or traffic
-simulator. Any supported change remains subject to human review and disabled
-execution flags.
+    subgraph ANA["Analytics (no UI, no writes)"]
+        QUAL["Data quality + EDA"]
+        ANOM["Anomaly detection"]
+        FC["Forecast + rolling-origin backtest"]
+    end
 
-For the quickest local demonstration, start in demo mode as described in §5,
-open **AI lab → AI Lab · data & forecasting**, build a simulated dataset, and
-run a supported experiment. Then use the Network Assistant's deterministic
-**Knowledge & Ask** tab for an offline evidence query. Demonstrating the
-provider-planned agent tools additionally requires a reachable Groq provider;
-see [`docs/PROJECT_STATUS_AND_HANDOVER.md`](docs/PROJECT_STATUS_AND_HANDOVER.md)
-for the current verification limits and [`docs/DEMO_RUNBOOK.md`](docs/DEMO_RUNBOOK.md)
-for the recording sequence.
+    UI["Streamlit app<br/>13 navigation pages"]
 
-The detailed phase documents below preserve the project history. For current
-status and verified limitations, use the owner handover linked above.
+    subgraph AGENT["Agentic operations"]
+        WF["LangGraph workflow"]
+        LLM["LLM provider<br/>Groq / OpenAI-compatible"]
+        VER["Deterministic verifier"]
+        TWIN["Digital twin<br/>reachability only"]
+        HUMAN["Human approval"]
+        LOOP["Lab-only change loop<br/>both flags off by default"]
+    end
+
+    LIVE --> DB
+    SIM --> DB
+    DEMO --> DB
+    FILE --> ANA
+    DB --> QUAL
+    DB --> ANOM
+    DB --> FC
+    QUAL --> UI
+    ANOM --> UI
+    FC --> UI
+    UI --> WF
+    WF --> LLM
+    LLM --> VER
+    VER --> TWIN
+    TWIN --> HUMAN
+    HUMAN -. "disabled by default" .-> LOOP
+```
+
+The Evaluation page (`app_pages/13_Evaluation.py`) is deliberately outside this
+data path: it reads three committed files under `docs/` and makes no database,
+network or LLM call.
+
+## Safety model
+
+1. **The assistant proposes; it never applies.** The LLM output is parsed into a
+   typed change proposal. There is no deploy node in the graph.
+2. **An independent verifier gates every proposal.** It checks target scope,
+   prohibited commands, configuration schema and the expected change. It is
+   deterministic and separate from the LLM.
+3. **The digital twin is a second, structural gate.** It is read-only and models
+   interface reachability. It does not simulate routing or traffic, and a pass is
+   not proof of real-world safety.
+4. **The change loop is off by default.** `NETPILOT_CHANGE_LOOP_ENABLED` and
+   `NETPILOT_LAB_EXECUTION_ENABLED` must both be enabled, the target is lab-only,
+   and an authenticated non-self human must approve. This repository has no
+   live-lab evidence for the apply/verify/rollback path on the delivery host
+   (Docker and Containerlab were not available).
+5. **Secrets stay out of the repository.** `.env` is git-ignored; only
+   `.env.example` is tracked; `tools/secret_scan_check.py` is the CI check.
+
+## Data sources, labelled honestly
+
+| Source | What it is | Evidence level |
+| --- | --- | --- |
+| **Live** | Rows written by `tools/live_collector.py` with `data_source="live"`: real ICMP probes to a gateway and public DNS resolvers, plus local NIC counters. | Real measurements from this host's network; **ICMP/host counters only**, not router telemetry. |
+| **Simulated** | Rows written by `tools/seed_simulated.py` from `analytics/lab_simulator.py`; deterministic and labelled `data_source="simulated"`. | Synthetic; useful for UI/analytics tests, **not** network evidence. |
+| **Demo** | Isolated SQLite fixtures seeded by `services/demo_data.py` in demo mode. | Synthetic, clearly labelled; **not** live data. |
+| **Uploaded / allowlisted** | CSV or historical files in the AI Lab. | Whatever the file contains; provenance is carried into the analysis. |
+| **Offline evaluation** | `docs/agent_eval_results.csv`, `docs/agent_eval_summary.md`, `docs/forecast_backtest_results.csv`. | Point-in-time committed results; the Evaluation page only reads them. |
+
+## Run locally in demo mode (3 commands)
+
+PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+$env:NETPILOT_DEMO_MODE="true"; .\.venv\Scripts\streamlit run app.py
+```
+
+bash/macOS:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+NETPILOT_DEMO_MODE=true .venv/bin/streamlit run app.py
+```
+
+Demo mode uses an isolated SQLite file, seeds synthetic fixtures, and needs no
+Docker, Containerlab, network access or API key. Open **AI lab → AI Lab · data &
+forecasting** for a guided experiment, or **Agentic Operations → Evaluation** to
+see the committed safety and backtest evidence.
+
+## Run the live collector
+
+The collector is a standalone Windows-friendly process; it does not require
+Containerlab:
+
+```powershell
+# one cycle (writes to the configured database)
+.\.venv\Scripts\python tools\live_collector.py --once
+
+# continuous, every 30 s, until Ctrl+C
+.\.venv\Scripts\python tools\live_collector.py --interval 30
+```
+
+Use `--targets "gateway,1.1.1.1,8.8.8.8"` to choose destinations and
+`--no-interfaces` to skip local NIC counters. The collector writes
+`data_source="live"`; it does not write simulated or demo rows.
+
+## Reproduce the evaluations
+
+**Agent change-request evaluation (offline, cached).** No key, network or
+provider call is needed:
+
+```powershell
+.\.venv\Scripts\python tools\agent_eval.py --mode offline --no-write
+```
+
+On the delivery tree this printed `intents: 80 | rows: 240` and the A/B/C
+metrics shown on the Evaluation page (A: 25.0% false accept, B: 20.0%, C: 10.0%;
+A: 17.5% false reject, B/C: 30.0%). Drop `--no-write` to regenerate
+`docs/agent_eval_results.csv` and `docs/agent_eval_summary.md`.
+
+**Forecast backtest.** The algorithm is
+`analytics.backtest.strong_rolling_origin_backtest`, used by the Forecasting
+page's **Run strong backtest & forecast** button. The committed
+`docs/forecast_backtest_results.csv` is a point-in-time export over 14 stored
+series (9 live, 5 demo); **exact reproduction from this repository is NOT
+VERIFIED** because the source database snapshot and the export script are not
+committed. The Evaluation page recomputes its summary from the committed CSV.
+To run the same method on data you collect, start the app, open **AI lab →
+Forecasting**, select a series and run the strong backtest.
+
+## Tests
+
+On the delivery tree (Python 3.12.10, Streamlit 1.65.0, 2026-11-11):
+
+```powershell
+.\.venv\Scripts\python -m pytest -q
+```
+
+Result: **1638 passed, 0 failed, 0 errors, 0 skipped, exit code 0** (230.7 s).
+This includes headless AppTest coverage for every page in the Live, Simulated
+and empty database states, plus the Evaluation page in Demo mode. The full
+Demo/Simulated/Live page matrix is recorded in the status report.
+
+## Known limitations
+
+- **Live data is ICMP-only.** The collector measures ping reachability and local
+  host interface counters; it does not collect SNMP, syslog, NetFlow or router
+  configuration state. "Live" means "measured from this host", not "full network
+  telemetry".
+- **The digital twin models reachability only.** It can reject a change that
+  isolates a host or link, but it does not model routing protocols, traffic
+  volume, QoS or loops. A twin pass is not a safety proof.
+- **No physical lab.** The repository contains a Containerlab topology, but
+  Docker and Containerlab were not available on the delivery host, so there is
+  no live-lab evidence for the gated apply/verify/rollback path.
+- **The agent evaluation is synthetic.** It is 80 curated intents replayed from
+  one cached recording, not a production benchmark; a different model or prompt
+  can move every number.
+- **The forecast backtest export is not reproducible from the repo.** The
+  method is in-tree and the summary is recomputed from the committed CSV, but
+  the original live database snapshot is not committed.
+- **Streamlit Community Cloud is documented, not re-verified here.** See
+  `docs/PROJECT_STATUS_REPORT.md` for the declared Python version, requirements,
+  Secrets keys and reboot procedure, and for what was actually measured.
+
+The detailed phase documents below preserve the project history. For the
+delivery status, per-page AppTest matrix and known issues, read
+[`docs/PROJECT_STATUS_REPORT.md`](docs/PROJECT_STATUS_REPORT.md).
 
 ---
 

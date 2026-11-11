@@ -31,7 +31,7 @@ PAGES = ["app.py"] + [
         "4_Connectivity_Tests.py", "5_Metrics_History.py",
         "6_System_Status.py", "7_Data_Analysis.py", "8_Anomalies.py",
         "9_Forecasting.py", "10_AI_Network_Assistant.py",
-        "11_Ops_Center.py", "12_AI_Lab.py",
+        "11_Ops_Center.py", "12_AI_Lab.py", "13_Evaluation.py",
     )
 ]
 

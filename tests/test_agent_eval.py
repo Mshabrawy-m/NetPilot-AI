@@ -229,7 +229,8 @@ def test_summary_contains_five_honest_lines_and_scope_notes(subset, cache,
     assert "## Honest interpretation (five lines)" in text
     for number in ("1. ", "2. ", "3. ", "4. ", "5. "):
         assert f"\n{number}" in text
-    assert "No Streamlit evaluation page exists" in text
+    assert "read-only Evaluation page" in text
+    assert "does not run the evaluation" in text
     assert "Twin extra failures" in text
 
 

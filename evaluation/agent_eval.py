@@ -632,8 +632,10 @@ def build_summary(dataset: dict, cache: dict, rows: list[dict],
     lines.append("")
     lines.append("## Scope notes")
     lines.append("")
-    lines.append("- No Streamlit evaluation page exists in this repository, "
-                 "so no UI section was added (per the task rule).")
+    lines.append("- The read-only Evaluation page "
+                 "(`app_pages/13_Evaluation.py`) renders this summary and the "
+                 "committed CSVs; it does not run the evaluation or call a "
+                 "provider, database or network.")
     lines.append("- The production workflow also has a pre-LLM config-agent "
                  "gate (known + FRR-configurable target). That gate is not part "
                  "of the A/B/C ablation; host-target false accepts such as PC1 "

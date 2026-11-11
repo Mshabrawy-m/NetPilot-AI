@@ -202,6 +202,7 @@ pages = st.navigation(
         ],
         "Agentic Operations": [
             st.Page("app_pages/10_AI_Network_Assistant.py", title="Network assistant & tools", icon="🤖"),
+            st.Page("app_pages/13_Evaluation.py", title="Evaluation · safety & backtest", icon="🧾"),
         ],
         "System status": [
             st.Page("app_pages/6_System_Status.py", title="System status", icon="🩺"),

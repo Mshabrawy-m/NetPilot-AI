@@ -84,6 +84,6 @@ The evaluation set is synthetic and hand-labelled by construction. The lab is R1
 
 ## Scope notes
 
-- No Streamlit evaluation page exists in this repository, so no UI section was added (per the task rule).
+- The read-only Evaluation page (`app_pages/13_Evaluation.py`) renders this summary and the committed CSVs; it does not run the evaluation or call a provider, database or network.
 - The production workflow also has a pre-LLM config-agent gate (known + FRR-configurable target). That gate is not part of the A/B/C ablation; host-target false accepts such as PC1 are therefore a property of this ablation, not necessarily of the deployed workflow.
 - The twin is deterministic and read-only; it never contacts a device and never applies a change. Its pass is not proof of real-world safety.
