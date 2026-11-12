@@ -198,10 +198,88 @@ def _render_detail(uuid: str, key_prefix: str) -> None:
     else:
         st.info("No verifier report (informational request or safe stop).")
 
-    st.subheader("7 · Digital Twin")
+    st.subheader("7 · Digital Twin (read-only structural simulation)")
     dt = detail["digital_twin"] or {}
-    st.write(f"Status: **{dt.get('status', 'not_run')}** — no isolated "
-             "simulator ran in Phase 3, so this is honestly `not_run`.")
+    if not dt:
+        st.info("No Digital Twin report (the run stopped before simulation).")
+    else:
+        status = dt.get("status", "not_run")
+        st.write(
+            f"Status: **{status}** · simulator "
+            f"`{dt.get('simulator_version') or '-'}` · topology ref "
+            f"`{dt.get('topology_ref') or '-'}`")
+        if status == "not_run":
+            st.caption(
+                "No isolated simulator ran for this request. Reporting "
+                "`not_run` is honest: nothing is fabricated.")
+        else:
+            st.caption(
+                "The simulator models documented link/interface reachability "
+                "only. It never contacts a device, sends a packet, approves or "
+                "applies a change. A result is **not proof of safety**.")
+            reasons = dt.get("reasons") or []
+            if reasons:
+                st.markdown("**Status reasons**")
+                for reason in reasons:
+                    st.markdown(f"- {reason}")
+            checks = dt.get("checks") or []
+            if checks:
+                st.dataframe(
+                    pd.DataFrame([{
+                        "check": c.get("name"),
+                        "passed": c.get("passed"),
+                        "detail": c.get("detail"),
+                    } for c in checks]),
+                    hide_index=True, width="stretch")
+            affected = dt.get("affected_components") or {}
+            before = dt.get("before") or {}
+            after = dt.get("after") or {}
+            cols = st.columns(4)
+            cols[0].metric(
+                "Available links", f"{before.get('available_edge_count', 0)} → "
+                f"{after.get('available_edge_count', 0)}")
+            cols[1].metric("Lost reachability",
+                           len(affected.get("lost_reachability_from_target") or []))
+            cols[2].metric(
+                "Newly isolated",
+                len(affected.get("newly_isolated_devices") or []))
+            cols[3].metric("Unavailable links",
+                           len(affected.get("unavailable_links") or []))
+            lost = affected.get("lost_reachability_from_target") or []
+            isolated = affected.get("newly_isolated_devices") or []
+            if lost:
+                st.warning("Devices that lose documented reachability: "
+                           + ", ".join(lost))
+            if isolated:
+                st.warning("Devices newly isolated in the simulation: "
+                           + ", ".join(isolated))
+            if affected.get("unavailable_links"):
+                st.dataframe(pd.DataFrame(
+                    affected["unavailable_links"]), hide_index=True,
+                    width="stretch")
+            invariant_checks = dt.get("details", {}).get(
+                "invariant_checks") or []
+            if invariant_checks:
+                st.dataframe(pd.DataFrame([{
+                    "invariant": c.get("invariant"),
+                    "status": c.get("status"),
+                    "detail": c.get("detail"),
+                } for c in invariant_checks]), hide_index=True,
+                    width="stretch")
+            if dt.get("conflicts"):
+                with st.expander(f"Conflicts / uncertainty "
+                                 f"({len(dt['conflicts'])})"):
+                    st.dataframe(pd.DataFrame(dt["conflicts"]),
+                                 hide_index=True, width="stretch")
+            with st.expander("Assumptions & limitations"):
+                for item in dt.get("assumptions") or []:
+                    st.markdown(f"- {item}")
+                for item in dt.get("limitations") or []:
+                    st.markdown(f"- _{item}_")
+            st.caption(
+                "Phase 3 stops at the proposal and human review. This "
+                "simulation is evidence for a reviewer, not approval or "
+                "execution.")
 
     st.subheader("Final answer")
     st.markdown(run.final_answer or "(none)")

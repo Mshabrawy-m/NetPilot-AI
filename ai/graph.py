@@ -21,10 +21,10 @@ from ai.agents import (config_agent, diagnosis_agent, intent_agent,
                        investigation_agent, planner_agent)
 from ai.groq_client import (GroqAssistant, GroqError, MissingGroqKey,
                             GroqRateLimit, GroqSchemaError, GroqTimeout)
-from ai.simulation import UnavailableDigitalTwin
 from ai.state import WorkflowState
 from ai.tools import evidence_tools
 from ai.verification import verifier as verifier_mod
+from services.digital_twin import TopologyDigitalTwin
 
 
 class WorkflowRunner:
@@ -40,7 +40,20 @@ class WorkflowRunner:
         self.configurable_devices = {
             d.name for d in repository.get_devices(session)
             if (d.type or "").lower() == "router"}
-        self.twin = UnavailableDigitalTwin()
+        # Bind the real, read-only simulation engine to a snapshot of the
+        # stored topology. Synthetic traceroute placeholders are filtered at
+        # the reporting layer; the database rows themselves are untouched.
+        try:
+            devices = repository.filter_reporting_devices(
+                repository.get_devices(session))
+            links = repository.filter_reporting_links(
+                repository.get_links(session))
+        except Exception:  # a snapshot read failure must not crash the run
+            devices, links = [], []
+        self.twin = TopologyDigitalTwin(
+            devices=devices, links=links,
+            topology_ref=f"{data_source}:workflow",
+            topology_source=data_source)
 
     # -- helpers ----------------------------------------------------------
     def _log(self, status: str, detail: str = "") -> dict:
@@ -166,11 +179,14 @@ class WorkflowRunner:
         return upd
 
     def digital_twin(self, state: WorkflowState) -> dict:
+        # The adapter is already bound to the stored-topology snapshot, so it
+        # owns the reference; passing the data-source label here would report a
+        # snapshot the engine did not use.
         result = self.twin.simulate(
-            topology_ref=self.data_source,
+            topology_ref=None,
             proposed_change=state.get("config_proposal"),
-            invariants=["preserve_lab_routing"], scenario=None)
-        upd = self._log("simulation_not_run", result.status)
+            invariants=["preserve_reachability"], scenario=None)
+        upd = self._log(f"simulation_{result.status}", result.status)
         upd["digital_twin"] = result.as_dict()
         upd["step_count"] = state.get("step_count", 0) + 1
         return upd
@@ -274,7 +290,15 @@ def _compose_final_answer(state: WorkflowState, twin) -> str:
     if vrep:
         parts.append(f"Independent verifier: {vrep.get('status')} "
                      "(deterministic; a static pass is not live behaviour).")
-    parts.append(f"Digital Twin: {dt.get('status', 'not_run')}.")
+    dt_status = dt.get("status", "not_run")
+    if dt_status == "not_run":
+        parts.append("Digital Twin: not_run (no isolated simulator ran).")
+    else:
+        dt_reason = "; ".join((dt.get("reasons") or [])[:2])
+        parts.append(
+            "Digital Twin: " + str(dt_status)
+            + " (read-only structural simulation; not proof of safety"
+            + (f"; {dt_reason}" if dt_reason else "") + ").")
     parts.append("Phase 3 stops at proposal + human review; no changes were made.")
     return "\n".join(parts)
 

@@ -16,6 +16,8 @@ interpretation. Nothing is hard-coded from a previous run.
 from __future__ import annotations
 
 import csv
+import hashlib
+import io
 import math
 from pathlib import Path
 
@@ -103,6 +105,19 @@ def _pct(successes: int, total: int) -> float:
 
 def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _as_float(value: object) -> float | None:
+    """Parse a numeric CSV cell; blank/nan/invalid cells stay unavailable."""
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(number) or math.isinf(number) else number
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _median(values: list[float]) -> float:
@@ -202,6 +217,25 @@ st.caption(
     "committed markdown summary can differ by 0.1 pp from rounding."
 )
 
+with st.expander("🧾 Evidence provenance & integrity", expanded=False):
+    st.caption(
+        "Every number on this page is derived from these committed files. "
+        "Hashes let a reviewer confirm the exact evidence revision; the page "
+        "reads them from disk and makes no network request.")
+    provenance_rows = []
+    for path in (RESULTS_CSV, SUMMARY_MD, BACKTEST_CSV):
+        provenance_rows.append({
+            "Artefact": f"docs/{path.name}",
+            "Rows": str(len(results) if path == RESULTS_CSV
+                        else len(backtest) if path == BACKTEST_CSV else "—"),
+            "Bytes": path.stat().st_size,
+            "SHA-256 (first 16)": _sha256(path)[:16],
+        })
+    st.dataframe(provenance_rows, hide_index=True, width="stretch")
+    st.caption(
+        "A mismatch with the committed summary means the artefacts were "
+        "regenerated; recompute rather than trusting a stale narrative.")
+
 # ---------------------------------------------------------------------------
 # Per-category false accepts
 # ---------------------------------------------------------------------------
@@ -258,6 +292,75 @@ else:
     st.info("No unsafe categories are present in the results file.")
 
 # ---------------------------------------------------------------------------
+# Intent-level drill-down (read-only; explains every A/B/C verdict)
+# ---------------------------------------------------------------------------
+st.subheader("Intent-level drill-down")
+st.caption(
+    "Inspect one curated intent across A/B/C. The table is built directly "
+    "from the committed CSV; no LLM, database or network call happens."
+)
+selected_intent = st.selectbox(
+    "Intent", intent_ids, key="eval_intent_drilldown",
+    format_func=lambda value: f"{value} · "
+    f"{next((r['request'] for r in results if r['intent_id'] == value), '')[:70]}")
+selected_rows = [row for row in results
+                 if row.get("intent_id") == selected_intent]
+if selected_rows:
+    sample = selected_rows[0]
+    st.markdown(
+        f"**Request:** {sample.get('request', '')}")
+    st.caption(
+        f"safe={sample.get('safe')} · category="
+        f"{sample.get('unsafe_category') or 'safe'} · should_accept="
+        f"{sample.get('should_accept')} · expected change="
+        f"{sample.get('expected_change') or 'none'}")
+    drill_rows = [{
+        "Configuration": CONFIG_LABELS.get(row.get("config", ""),
+                                           row.get("config", "")),
+        "Proposal": row.get("proposal_status") or "none",
+        "Verifier": row.get("verifier_status") or "not run",
+        "Twin": row.get("twin_status") or "not run",
+        "Twin rejected": _flag(row.get("twin_rejected")),
+        "Accepted": _flag(row.get("accepted")),
+        "Correct": _flag(row.get("correct")),
+        "Twin reason": row.get("twin_reason") or "",
+    } for row in selected_rows]
+    st.dataframe(drill_rows, hide_index=True, width="stretch")
+    reasons = sorted({row.get("twin_reason") for row in selected_rows
+                      if row.get("twin_reason")})
+    if reasons:
+        st.caption("Recorded twin reason(s): " + " | ".join(reasons))
+
+# ---------------------------------------------------------------------------
+# Latency and provider-call accounting (recorded, not re-measured)
+# ---------------------------------------------------------------------------
+st.subheader("Recorded latency & call accounting")
+latency_rows: list[dict[str, object]] = []
+for cfg in CONFIGS:
+    rows = by_config[cfg]
+    if not rows:
+        continue
+    decision = [_as_float(row.get("decision_latency_ms")) for row in rows]
+    llm = [_as_float(row.get("llm_latency_ms")) for row in rows]
+    decision = [value for value in decision if value is not None]
+    llm = [value for value in llm if value is not None]
+    latency_rows.append({
+        "Configuration": CONFIG_LABELS[cfg],
+        "Rows": len(rows),
+        "Mean decision ms": f"{_mean(decision):.2f}",
+        "Median decision ms": f"{_median(decision):.2f}",
+        "Mean recorded LLM ms": f"{_mean(llm):.2f}" if llm else "n/a",
+        "Network calls": sum(int(row["llm_calls_network"]) for row in rows),
+        "Cached calls": sum(int(row["llm_calls_cached"]) for row in rows),
+    })
+if latency_rows:
+    st.dataframe(latency_rows, hide_index=True, width="stretch")
+    st.caption(
+        "Latencies are the values recorded with the cached proposals. In "
+        "offline replay the LLM time is not a new measurement, and the call "
+        "counts show that the evaluation page itself makes no provider call.")
+
+# ---------------------------------------------------------------------------
 # Failure cases (verbatim from the committed summary)
 # ---------------------------------------------------------------------------
 st.subheader("Failure cases")
@@ -309,15 +412,50 @@ else:
         ("Naive-perfect series", perfect, "naive beat by no model", "warn"),
     ])
 
+    filter_cols = st.columns([1, 2])
+    source_filter = filter_cols[0].selectbox(
+        "Source filter", ["All"] + sorted({row.get("source") or "unknown"
+                                           for row in backtest}),
+        key="eval_bt_source")
+    model_filter = filter_cols[1].multiselect(
+        "Model filter", models, default=models, key="eval_bt_models")
+    if not model_filter:
+        model_filter = models
+    filtered_backtest = [
+        row for row in backtest
+        if (source_filter == "All" or (row.get("source") or "unknown")
+            == source_filter)
+        and row.get("model") in model_filter]
+    if not filtered_backtest:
+        st.info("No backtest rows match the selected filters.")
+    st.caption(
+        f"Showing {len(filtered_backtest)} of {len(backtest)} rows. The "
+        "summary KPIs above describe the complete committed file; the tables "
+        "below respect the filters.")
+
+    missing_mase = len([row for row in filtered_backtest
+                        if _as_float(row.get("MASE")) is None])
+    missing_skill = len([row for row in filtered_backtest
+                         if _as_float(row.get("skill_vs_naive")) is None])
+    theme.kpi_row([
+        ("Filtered rows", len(filtered_backtest), "model x series"),
+        ("MASE unavailable", missing_mase,
+         "short series / zero seasonal naive", "warn"),
+        ("Skill unavailable", missing_skill, "naive-perfect or n/a", "warn"),
+        ("Selected models", len(model_filter), ", ".join(model_filter)),
+    ])
+
     model_rows: list[dict[str, object]] = []
-    for model in models:
-        rows = [row for row in backtest if row.get("model") == model]
-        mases = [float(row["MASE"]) for row in rows
-                 if row.get("MASE") not in ("", "nan", None)]
-        skills = [float(row["skill_vs_naive"]) for row in rows
-                  if row.get("skill_vs_naive") not in ("", "nan", None)]
-        maes = [float(row["MAE"]) for row in rows
-                if row.get("MAE") not in ("", "nan", None)]
+    for model in model_filter:
+        rows = [row for row in filtered_backtest if row.get("model") == model]
+        if not rows:
+            continue
+        mases = [value for value in (_as_float(row.get("MASE"))
+                                     for row in rows) if value is not None]
+        skills = [value for value in (_as_float(row.get("skill_vs_naive"))
+                                      for row in rows) if value is not None]
+        maes = [value for value in (_as_float(row.get("MAE"))
+                                    for row in rows) if value is not None]
         model_rows.append({
             "Model": model,
             "Rows": len(rows),
@@ -331,8 +469,8 @@ else:
     st.dataframe(model_rows, hide_index=True, width="stretch")
 
     source_rows: list[dict[str, object]] = []
-    for source in sorted({row.get("source", "") for row in backtest}):
-        rows = [row for row in backtest if row.get("source") == source]
+    for source in sorted({row.get("source", "") for row in filtered_backtest}):
+        rows = [row for row in filtered_backtest if row.get("source") == source]
         source_rows.append({
             "Source": source,
             "Series": len({(row.get("device"), row.get("metric")) for row in rows}),
@@ -341,6 +479,54 @@ else:
             "Naive perfect": len([row for row in rows if _flag(row.get("naive_perfect"))]),
         })
     st.dataframe(source_rows, hide_index=True, width="stretch")
+
+    # Best evaluated model per series, using MASE when available and MAE as a
+    # fallback. This is a re-ranking of committed rows, not a new backtest.
+    best_by_series: dict[tuple, dict[str, object]] = {}
+    for row in filtered_backtest:
+        key = (row.get("source"), row.get("device"), row.get("metric"))
+        mase = _as_float(row.get("MASE"))
+        mae = _as_float(row.get("MAE"))
+        if mae is None:
+            continue
+        score = (mase if mase is not None else float("inf"), mae)
+        candidate = best_by_series.get(key)
+        if candidate is None or score < candidate["_score"]:  # type: ignore[operator]
+            best_by_series[key] = {
+                "_score": score,
+                "Source": key[0],
+                "Device": key[1],
+                "Metric": key[2],
+                "Best model": row.get("model"),
+                "Best MAE": f"{mae:.4f}",
+                "Best MASE": f"{mase:.4f}" if mase is not None else "n/a",
+                "Naive perfect": _flag(row.get("naive_perfect")),
+            }
+    best_rows = [
+        {key: value for key, value in row.items() if key != "_score"}
+        for row in sorted(best_by_series.values(),
+                          key=lambda item: (str(item["Source"]),
+                                            str(item["Device"]),
+                                            str(item["Metric"])))
+    ]
+    if best_rows:
+        st.markdown("**Best evaluated model per series**")
+        st.dataframe(best_rows, hide_index=True, width="stretch")
+        st.caption(
+            "MASE is preferred where defined; MAE breaks ties and fills short "
+            "series where MASE is unavailable. Naive-perfect series make skill "
+            "ratios uninformative, so they are flagged rather than hidden.")
+
+    download_buffer = io.StringIO()
+    writer = csv.DictWriter(download_buffer, fieldnames=list(backtest[0]))
+    writer.writeheader()
+    writer.writerows(filtered_backtest)
+    st.download_button(
+        "⬇️ Download filtered backtest rows (CSV)",
+        data=download_buffer.getvalue(),
+        file_name="forecast_backtest_filtered.csv",
+        mime="text/csv", key="eval_bt_download")
+
     st.caption(
         "Computed from `docs/forecast_backtest_results.csv`. `live` rows are the "
         "series the collector stored with source `live`; `demo` rows are the "

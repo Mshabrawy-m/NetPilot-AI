@@ -666,8 +666,11 @@ def hgb_lag_forecast(train: pd.Series, horizon: int,
                      random_state: int = 42) -> ForecastResult:
     """Recursive multi-step HistGradientBoosting on lag/rolling/time-of-day.
 
-    One model learns ``y[t]`` from the previous ``max_lags`` values, their
-    rolling mean/std and the time-of-day. Future steps are produced
+    One model learns ``y[t]`` from the previous lags, their rolling mean/std and
+    the time-of-day. ``max_lags`` is an upper bound: the actual design uses
+    about a quarter of the available history (at least 2 lags, at most
+    ``max_lags``), so a short burst can still be modelled instead of being
+    refused for a fixed 24-lag requirement. Future steps are produced
     recursively: each prediction is appended to the history before the next
     feature row is built. Holdout predictions use only values before the
     forecast origin, so no held-out observation feeds back into a later step.
@@ -686,18 +689,25 @@ def hgb_lag_forecast(train: pd.Series, horizon: int,
     raw = series.to_numpy(dtype=float)
     first, last = _longest_finite_run(raw)
     y = raw[first:last]
-    if len(y) < max_lags + 20:
-        return _result("hgb_lag", "1.0", {"lags": max_lags}, False,
-                       f"need >= {max_lags + 20} finite training samples in "
-                       f"one contiguous run for a {max_lags}-lag design, has "
-                       f"{len(y)}")
+    # Adapt the design to the history actually available: a fixed 24-lag
+    # design used to refuse a 32-point series outright ("need >= 44"), which
+    # left only naive/holt as usable models on short live bursts. The lag count
+    # shrinks with the series (about a quarter of it, never below 2), while the
+    # 12-row training floor below keeps the refusal honest for truly tiny runs.
+    min_rows = 12
+    if len(y) < min_rows + 2:
+        return _result("hgb_lag", "1.0", {"lags": None}, False,
+                       f"need >= {min_rows + 2} finite training samples in "
+                       f"one contiguous run for a lag design, has {len(y)}")
+    lags = min(int(max_lags), max(2, len(y) // 4), len(y) - min_rows)
+    lags = max(2, int(lags))
     index = series.index[first:last]
-    roll_window = min(max_lags, 8)
-    rows = len(y) - max_lags
-    X = np.empty((rows, max_lags + 4), dtype=float)
+    roll_window = min(lags, 8)
+    rows = len(y) - lags
+    X = np.empty((rows, lags + 4), dtype=float)
     target = np.empty(rows, dtype=float)
-    for j, t in enumerate(range(max_lags, len(y))):
-        X[j] = _hgb_row(y[:t], index[t], max_lags, roll_window)
+    for j, t in enumerate(range(lags, len(y))):
+        X[j] = _hgb_row(y[:t], index[t], lags, roll_window)
         target[j] = y[t]
     model = HistGradientBoostingRegressor(
         max_iter=200, learning_rate=0.08, max_depth=6,
@@ -708,7 +718,8 @@ def hgb_lag_forecast(train: pd.Series, horizon: int,
     residuals = in_sample - target
     residuals = residuals[np.isfinite(residuals)]
     sigma = float(np.std(residuals, ddof=1)) if len(residuals) >= 2 else 0.0
-    cfg = {"lags": max_lags, "rolling_window": roll_window,
+    cfg = {"lags": lags, "rolling_window": roll_window,
+           "requested_max_lags": int(max_lags),
            "features": "lags + rolling mean/std + time-of-day sin/cos",
            "recursive": True, "random_state": random_state}
     res = _result("hgb_lag", "1.0", cfg, True)
@@ -729,7 +740,7 @@ def hgb_lag_forecast(train: pd.Series, horizon: int,
         preds: list[float] = []
         for step in range(1, steps + 1):
             row = _hgb_row(np.asarray(history, dtype=float),
-                           _stamp_for(step), max_lags, roll_window)
+                           _stamp_for(step), lags, roll_window)
             value = float(model.predict(row.reshape(1, -1))[0])
             preds.append(value)
             history.append(value)

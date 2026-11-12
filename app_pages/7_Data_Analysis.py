@@ -8,8 +8,6 @@ appear when the data is statistically meaningful.
 """
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -30,7 +28,7 @@ from analytics.time_series import dedupe_frame, load_metric_frame
 from config import get_settings
 from database import repository
 from database.models import db_utcnow
-from ui import source_controls
+from ui import source_controls, time_controls
 
 st.caption(
     "All timestamps are UTC. Units and the observed sampling interval are "
@@ -69,9 +67,12 @@ idx = st.selectbox("Metric", range(len(opts)),
                    format_func=lambda i: labels[i])
 metric, unit = opts[idx]
 
-# Interface scope: only offer what actually exists for this selection.
+# Interface scope: only offer what actually exists for this selection. The
+# full stored history is read once here so the scope list and the smart
+# default range are based on what is actually stored, not a guess.
 iface_rows = read(lambda s: repository.get_metric_series(
-    s, device_name, metric, data_source=data_source))
+    s, device_name, metric, data_source=data_source,
+    unit=unit, unit_is_null=unit is None))
 iface_names = sorted({r.interface_name for r in iface_rows
                       if r.interface_name})
 has_device_level = any(r.interface_name is None for r in iface_rows)
@@ -82,32 +83,48 @@ scope_options.extend(iface_names)
 scope = st.selectbox("Interface scope", scope_options or ["(none)"],
                      format_func=lambda v: v) if scope_options else None
 
-range_options = {"1 hour": 1, "6 hours": 6, "24 hours": 24, "7 days": 168}
-range_label = st.selectbox("Time range", list(range_options), index=1)
-since = db_utcnow() - timedelta(hours=range_options[range_label])
-
 if scope is None:
     st.info("Stored samples for this metric exist but carry no interface "
             "scope - nothing to select.")
     st.stop()
 
+scope_iface = None if scope == "(device-level)" else scope
+scope_rows = [r for r in iface_rows if r.interface_name == scope_iface]
+earliest = min((r.collected_at for r in scope_rows
+                if r.collected_at is not None), default=None)
+latest = max((r.collected_at for r in scope_rows
+              if r.collected_at is not None), default=None)
+
+# Default to a window that actually contains the newest stored observation.
+# A fixed 6-hour default used to hide series whose last sample was older,
+# producing "0 non-null of 0 stored samples" even though data existed.
+default_label = time_controls.smart_range_label(latest=latest)
+time_controls.ensure_default(
+    st.session_state, "np_analysis_range",
+    (data_source, device_name, metric, unit, scope), default_label)
+range_label = st.selectbox(
+    "Time range", list(time_controls.RANGE_OPTIONS), key="np_analysis_range")
+since = time_controls.since_for(range_label)
+
 frame = read(lambda s: load_metric_frame(
     s, device_name, metric,
-    interface_name=None if scope == "(device-level)" else scope,
+    interface_name=scope_iface,
     device_level_only=(scope == "(device-level)"),
     data_source=data_source, since=since))
 frame = dedupe_frame(frame)
 quality = data_quality.summarize_quality(
     frame, device_name, metric,
-    interface_name=None if scope == "(device-level)" else scope,
+    interface_name=scope_iface,
     expected_interval_seconds=float(get_settings().collect_interval_seconds),
     now=db_utcnow())
 
 st.caption(
-    f"Source: **{data_source}** · range: last **{range_label}** · "
+    f"Source: **{data_source}** · range: **{range_label.lower()}** · "
     f"unit: **{unit or 'unknown'}** · observed median interval: "
     f"**{quality.observed_interval_seconds or 'n/a'} s** · "
     f"{quality.n_non_null} non-null of {quality.n_rows} stored samples"
+    + (f" · {time_controls.describe_bounds(earliest, latest)}"
+       if earliest is not None else "")
 )
 
 # ------------------------------------------------------------ raw time series
@@ -116,6 +133,14 @@ st.subheader(f"{device_name} · {scope} · {metric}"
 if frame.empty:
     st.info("No samples in the selected range/source - widen the time range "
             "or wait for the next collection cycle. Nothing is invented.")
+    if earliest is not None:
+        st.caption("Stored history for this selection: "
+                   + time_controls.describe_bounds(earliest, latest)
+                   + f" · newest sample {latest:%Y-%m-%d %H:%M:%S} UTC.")
+    if range_label != time_controls.ALL_HISTORY:
+        if st.button("Show all stored history", key="np_analysis_all_history"):
+            st.session_state["np_analysis_range"] = time_controls.ALL_HISTORY
+            st.rerun()
 elif quality.n_non_null == 0:
     st.info("Stored samples exist but every value is NULL (metric was not "
             "available at collection time). A missing value is not a zero, "
@@ -147,18 +172,42 @@ else:
         st.caption(f"Unit: **{stats['unit']}**")
 
 c1, c2 = st.columns(2)
+hist = eda.histogram(frame)
+prof = eda.time_of_day_profile(frame)
+dist_frame, dist_note = frame, None
+# A narrow window can be legitimate but too sparse for a distribution or a
+# diurnal profile. Fall back to the full stored history for THIS selection
+# (clearly labelled) instead of reporting "skipped" merely because the
+# default window was short. No value is invented or extended.
+if range_label != time_controls.ALL_HISTORY and (
+        not hist["available"] or not prof["available"]):
+    full_frame = dedupe_frame(read(lambda s: load_metric_frame(
+        s, device_name, metric, interface_name=scope_iface,
+        device_level_only=(scope == "(device-level)"),
+        data_source=data_source, since=None)))
+    full_hist = eda.histogram(full_frame)
+    full_prof = eda.time_of_day_profile(full_frame)
+    if ((full_hist["available"] and not hist["available"])
+            or (full_prof["available"] and not prof["available"])):
+        dist_frame, hist, prof = full_frame, full_hist, full_prof
+        dist_note = (
+            f"The selected **{range_label.lower()}** window was too sparse for "
+            "these views; they use all stored history for this selection "
+            + time_controls.describe_bounds(earliest, latest) + ".")
+if dist_note:
+    st.caption(dist_note)
+
 with c1:
-    hist = eda.histogram(frame)
     if hist["available"]:
-        fig = px.histogram(x=frame["value"].dropna(), nbins=20,
+        fig = px.histogram(x=dist_frame["value"].dropna(), nbins=20,
                            labels={"x": f"{metric}{' [' + unit + ']' if unit else ''}"})
         fig.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig, width="stretch")
-        st.caption("Distribution of stored observations only.")
+        st.caption(f"Distribution of {hist['n']} stored observation(s); "
+                   "no values are synthesized.")
     else:
         st.info(f"Distribution skipped: {hist['reason']}.")
 with c2:
-    prof = eda.time_of_day_profile(frame)
     if prof["available"]:
         fig = px.bar(prof["profile"], x="utc_hour", y="mean",
                      labels={"utc_hour": "Hour (UTC)", "mean": "Mean value"},

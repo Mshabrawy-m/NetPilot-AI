@@ -11,6 +11,15 @@ documentation-only corrections. No product feature was added, no infrastructure
 was started, and nothing was staged, committed, pushed, reset, cleaned, deployed,
 or published.
 
+> **Status update (2026-11-12):** the read-only structural Digital Twin is now
+> wired into the AI workflow (`ai/graph.py`). `digital_twin_status` reports the
+> real engine outcome (`simulated`, `partial`, `insufficient_evidence`,
+> `not_simulated`, `invalid`, `error`) and `not_run` only when a run stops before
+> simulation. The original 2026-10-26 audit text below is preserved; statements
+> that the twin is "unwired" or that the status "remains `not_run`" describe the
+> audit snapshot and are superseded by this update. The structural-only caveat
+> still applies in full.
+
 ---
 
 ## 1. Verdict
@@ -84,13 +93,17 @@ documentation that contradicted the implementation.
 | Offline RAG store used by the Knowledge tab | `tests/test_rag.py`, `tests/test_ship_hygiene.py` |
 | Offline AI-quality evaluation (B4) | `tools/ai_quality_eval.py` — 27/27 cases |
 
-### 3.2 Implemented but deliberately **not** wired
+### 3.2 Implemented but not applied to real networks
 
-- **Digital Twin → `ai/graph.py`.** `ai/graph.py` still constructs
-  `UnavailableDigitalTwin`; the workflow reports
-  `digital_twin_status == "not_run"`. The D1–D4 engine and registry are consumed
-  by the read-only Ops Center preview, not by the AI workflow. This is an
-  intentional boundary, not an oversight.
+- **Digital Twin → `ai/graph.py`.** The read-only structural
+  `services.digital_twin.TopologyDigitalTwin` is bound by `WorkflowRunner` and
+  evaluates the proposed change against a filtered stored-topology snapshot
+  (synthetic hop placeholders excluded). The workflow records the engine's
+  honest outcome (`simulated`, `partial`, `insufficient_evidence`,
+  `not_simulated`, `invalid`, `error`); `not_run` remains only when a run stops
+  before simulation. The engine never contacts or applies anything and is not
+  proof of real-world safety. The D4 registry is consumed by both the workflow
+  and the read-only Ops Center preview.
 - **Real-network execution.** `network/lab_executor.py` exists and is gated by
   `NETPILOT_CHANGE_LOOP_ENABLED` **and** `NETPILOT_LAB_EXECUTION_ENABLED`, both
   default `false`. The Streamlit UI never injects an executor. No production
@@ -120,7 +133,7 @@ They were corrected with minimal, additive edits:
 
 | File | Correction |
 |---|---|
-| `README.md` | Added D1–D4 modules to the structure tree; added the v2/Phase 4 config variables; corrected the stale test count (311/441 → 692); clarified that RAG **is** implemented and that the Digital Twin engine/registry exist but are **unwired**; marked live-provider/Cloud/PostgreSQL/live-lab as **not re-verified**; added the Digital Twin/PostgreSQL limitation to the limitations list; replaced the "all 12 pages verified on Cloud" wording with the actually verified scope. |
+| `README.md` | Added D1–D4 modules to the structure tree; added the v2/Phase 4 config variables; corrected the stale test count (311/441 → 692); clarified that RAG **is** implemented and that the Digital Twin engine/registry exist but are **unwired** (later superseded by the 2026-11-12 wiring update); marked live-provider/Cloud/PostgreSQL/live-lab as **not re-verified**; added the Digital Twin/PostgreSQL limitation to the limitations list; replaced the "all 12 pages verified on Cloud" wording with the actually verified scope. |
 | `.env.example` | Added the previously undocumented `NETPILOT_CHANGE_REQUEST_TTL_MINUTES` and `NETPILOT_DIGITAL_TWIN_MAX_AGE_SECONDS`. |
 | `docs/FEATURE_ACCEPTANCE_MATRIX.md` | Added an additive status note marking the historical E4 row **superseded** by D1–D4, while preserving the original audit text. |
 | `docs/FEATURE_FREEZE_REPORT.md` | Added an additive status note marking the historical "Digital Twin absent" verdict **superseded**, while preserving the original text. |
@@ -207,7 +220,7 @@ unintended trailing whitespace.
 | Phase 4 change loop (propose → approve → apply → verify → rollback) | Implemented, gated, apply disabled by default | No executor in UI; live lab not run |
 | B1–B4 (impact, Ops Center actions, AI quality evaluation, registry groundwork) | Complete | Tests green |
 | C-series (audit, freeze, acceptance matrix) | Complete | Historical reports preserved with superseded notes |
-| D1–D4 Digital Twin engine/integrity/registry | Complete as a read-only capability | Deliberately **not** wired into `ai/graph.py` |
+| D1–D4 Digital Twin engine/integrity/registry | Complete as a read-only capability | Wired into `ai/graph.py` for structural reachability validation |
 | Real-network execution | Out of scope by design | Not implemented |
 | MCP servers | Out of scope | Not implemented |
 
@@ -253,9 +266,10 @@ left exactly as found.
    offline evaluation uses scripted assistants.
 6. **Streamlit Cloud was not redeployed.** Cloud behaviour is inferred from demo
    mode and the local smoke check, not observed on Cloud during this audit.
-7. **The Digital Twin is structural only and unwired from the AI workflow.**
-   `digital_twin_status` remains `"not_run"`. Do not present it as a validated
-   routing/traffic simulator.
+7. **The Digital Twin is structural only.** It is wired into the AI workflow
+   but models administrative link reachability only — not routing protocols,
+   traffic, or live device state — and is never proof of real-world safety. Do
+   not present it as a validated routing/traffic simulator.
 8. **Dependencies are unpinned.** `requirements.txt` is intentionally unpinned so
    hosted platforms can resolve wheels. A future upstream release could change
    behaviour; pin from a known-good `pip freeze` if exact reproducibility is
@@ -499,9 +513,10 @@ evaluation passes every case and every safety gate.
 
 It is **not** a live-lab-, PostgreSQL-, browser-, or provider-validated release,
 and it must not be described as one. The Digital Twin engine is a real but
-structural read-only capability that is intentionally unwired from the AI
-workflow. The exposed Groq credential must be revoked and rotated before the
-project is treated as security-clean.
+structural read-only capability, wired into the AI workflow; it is not a
+routing/traffic simulator and never applies a change. The exposed Groq
+credential must be revoked and rotated before the project is treated as
+security-clean.
 
 **Next action is the owner's:** commit/tag the frozen state if desired, rotate the
 credential, and schedule the external validations (PostgreSQL, live lab, browser,

@@ -98,16 +98,47 @@ def _prefer_existing_device_name(existing_name: str | None, incoming_name: str) 
     return existing if existing else incoming
 
 
+def is_synthetic_hop_name(name: str | None) -> bool:
+    """True only for synthetic traceroute placeholder labels.
+
+    ``unresponsive hops (N)`` rows and ``unresponsive-path:*`` / ``target-*``
+    aliases are bookkeeping for missing hops, not measured network entities.
+    A raw-IP label is deliberately **not** synthetic: a hop that answered with
+    its address is a real node and stays in the graph and device reports.
+    """
+    text = str(name or "").strip().lower()
+    return (text.startswith("unresponsive hops (")
+            or text.startswith(("target-", "unresponsive-path:")))
+
+
 def _is_placeholder_device_name(name: str | None) -> bool:
-    """True for raw-IP, ``target-*`` and synthetic ``unresponsive-path:*`` labels."""
+    """True for raw-IP, ``target-*`` and synthetic placeholder labels."""
     text = str(name or "")
     return (not text or _looks_like_ip(text)
-            or text.startswith(("target-", "unresponsive-path:")))
+            or is_synthetic_hop_name(text))
 
 
 def is_placeholder_device_name(name: str | None) -> bool:
     """Public form of :func:`_is_placeholder_device_name` for UI ranking."""
     return _is_placeholder_device_name(name)
+
+
+def filter_reporting_devices(devices: Iterable) -> list:
+    """Drop synthetic hop placeholders from a device sequence for reporting.
+
+    Database rows are intentionally left untouched: storage keeps the
+    placeholders so path reconstruction remains traceable. Only graph, SPOF,
+    inventory and UI reporting use this filter.
+    """
+    return [d for d in devices
+            if not is_synthetic_hop_name(getattr(d, "name", None))]
+
+
+def filter_reporting_links(links: Iterable) -> list:
+    """Drop links whose endpoint is a synthetic hop placeholder."""
+    return [link for link in links
+            if not is_synthetic_hop_name(getattr(link, "device_a", None))
+            and not is_synthetic_hop_name(getattr(link, "device_b", None))]
 
 
 def _pick_hop_device(matches: Sequence[Device], *, hop_ip: str | None,

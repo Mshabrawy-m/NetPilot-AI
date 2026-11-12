@@ -88,11 +88,16 @@ def test_change_request_reaches_verifier_and_digital_twin(session):
     res = ai_svc.run_workflow(session, request_text="Isolate R2 from HR",
                               data_source="demo", assistant=a)
     assert res["status"] == "awaiting_human_review"
-    assert res["digital_twin_status"] == "not_run"
+    # The real twin now runs, but this fixture seeds no links, so it must
+    # report insufficient evidence rather than a fabricated pass.
+    assert res["digital_twin_status"] == "insufficient_evidence"
     detail = ai_svc.get_run_detail(session, res["run_uuid"])
     assert detail["verifier_report"]["status"] in ("passed", "failed",
                                                    "inconclusive")
     assert detail["config_proposal"]["status"] == "ok"
+    twin = detail["digital_twin"]
+    assert twin["not_proof_of_safety"] is True
+    assert twin["details"]["configuration_applied"] is False
 
 
 def test_ambiguous_change_stops_for_clarification(session):

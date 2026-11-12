@@ -1,15 +1,21 @@
 # NetPilot AI — Feature Acceptance Matrix (Phase C)
 
-> **Status update (Phase D1-D4, 2026-10-26):** the E4 row below is the historical
-> Phase C finding and is **superseded**. A deterministic Digital Twin engine
-> (`services/digital_twin.py`), its integrity/freshness layer, and a persistent
-> append-only snapshot registry (`services/digital_twin_registry.py`) now exist
-> and are covered by tests. They are **not wired into `ai/graph.py`**, so the AI
-> workflow still reports `digital_twin_status == "not_run"`. See
-> `docs/D1_Digital_Twin_Implementation_Report.md` through
-> `docs/D4_Persistent_Snapshot_Registry_Report.md` and
-> `docs/FINAL_PROJECT_CLOSURE_REPORT.md` for the current status. The rest of this
-> document remains the historical Phase C audit.
+> **Status update (Phase D1-D4, 2026-10-26, revised):** the E4 row below is the
+> historical Phase C finding and is **superseded**. A deterministic Digital Twin
+> engine (`services/digital_twin.py`), its integrity/freshness layer, and a
+> persistent append-only snapshot registry
+> (`services/digital_twin_registry.py`) exist and are covered by tests. The
+> read-only `TopologyDigitalTwin` adapter is now **wired into `ai/graph.py`**:
+> it is bound to a filtered stored-topology snapshot and evaluates
+> `preserve_reachability` before human review. It models structural
+> link/interface reachability only, never routing protocol semantics, never
+> contacts a device, and never approves or applies a change. The workflow
+> therefore reports the engine's honest status (`simulated`, `partial`,
+> `insufficient_evidence`, `not_simulated`, `invalid` or `error`) instead of a
+> hard-coded `not_run`; `not_run` remains when a run stops before simulation.
+> See `docs/D1_Digital_Twin_Implementation_Report.md` through
+> `docs/D4_Persistent_Snapshot_Registry_Report.md` for the historical build
+> records. The rest of this document remains the historical Phase C audit.
 
 > **Status update (v2 analytics pass, 2026-10-27):** rows B4, B6, B7 and B8
 > below are the historical Phase C audit and keep their original wording and
@@ -173,7 +179,7 @@ complete, and never that a live network/provider/browser was validated.
 | C6 | Independent deterministic verifier; never a false pass (Phase 3 §6) | `ai/verification/verifier.py`, `policy_checks.py`, `config_validation.py` | ARTIFACT: `tests/test_verifier.py` (17); safety scan exit 0 (EXECUTED-NOW). | **COMPLETE** | CORE | — |
 | C7 | Prompt-injection resistance; retrieved text is data (Phase 3 §9) | `ai/tools/_common.py`, `ai/prompts.py`; safety scan | ARTIFACT: `tests/test_prompt_injection.py` (4); `tools/safety_scan.py` OK (EXECUTED-NOW). | **COMPLETE** | CORE | — |
 | C8 | Refusal/abstention/safe failure when provider/data/verifier unavailable (Phase 3 §2, §10) | `ai/groq_client.py`, `ai/graph.py`, `services/ai_workflow_service.py` | ARTIFACT: `tests/test_groq_client.py` (10), `tests/test_ai_evaluation.py`; B4 abstention 15/15, safety 16/16 (EXECUTED-NOW). | **COMPLETE** | CORE | — |
-| C9 | Digital Twin **interface** reports `not_run` honestly (Phase 3 §7) | `ai/simulation/__init__.py` | ARTIFACT: `UnavailableDigitalTwin` returns `not_run`; page 10 renders status. | **COMPLETE** | CORE | This is the Phase 3 boundary, not the real v2 engine (E4). |
+| C9 | Digital Twin **interface** reports the real simulator status honestly (Phase 3 §7) | `ai/simulation/__init__.py`, `services/digital_twin.py`, `ai/graph.py` | ARTIFACT: `TopologyDigitalTwin` is bound to the stored topology and returns `simulated`/`partial`/`insufficient_evidence`/`not_simulated`/`invalid`/`error`; page 10 renders status, reasons, checks and affected components. | **COMPLETE** | CORE | Structural reachability only; a `simulated` result is not proof of real-world safety (see E4). |
 | C10 | Human review outcome recorded without deploying (Phase 3 §11) | `pages/10_AI_Network_Assistant.py`, `services/ai_workflow_service.py` | ARTIFACT: `tests/test_ai_persistence.py` (6); UI smoke page 10 `[OK]`. | **COMPLETE** | CORE | — |
 | C11 | AI run persistence and audit trail; no provider secret stored (Phase 3 §11) | `database/models.py`, `database/repository.py`, `services/ai_workflow_service.py` | ARTIFACT: `tests/test_ai_persistence.py` (6); secret scan clean (EXECUTED-NOW). | **COMPLETE** | CORE | — |
 | C12 | RAG over docs/runbooks with verbatim source provenance (roadmap §2 D; delivery log 5a) | `services/rag.py`, page 10 "Knowledge & Ask" | ARTIFACT: `tests/test_rag.py` (5); UI smoke page 10 `[OK]`. | **COMPLETE** | CORE | TF-IDF retrieval, not Chroma/embeddings; the roadmap AC (citation + provenance) is met. |
@@ -200,8 +206,8 @@ complete, and never that a live network/provider/browser was validated.
 |---|---|---|---|---|---|---|
 | E1 | Change proposal validation with the deterministic FRR validator; diff recorded (roadmap §2 A; delivery log slice 7) | `services/change_service.py::propose/validate_proposal`, `ai/verification/config_validation.py` | ARTIFACT: `tests/test_change_service.py` (27). | **COMPLETE** | CORE | — |
 | E2 | Approval workflow: authenticated requester/approver, no self-approval, reason, expiry, full audit (roadmap §2 A; B1) | `services/change_service.py`, `database/models.py` (`change_audit_events`), page 11 approval panel | ARTIFACT: `tests/test_change_service.py` B1 section (identity separation, reason, expiry, audit); EXECUTED-NOW: UI smoke open-mode fail-closed, expiry, cancellation/audit guards `[OK]`. | **COMPLETE** | CORE | Open mode intentionally fails closed; live authenticated browser is F2. |
-| E3 | Simulation/dry-run before applying (roadmap design principle 1; Phase 4) | CLI dry-run in `tools/phase4_change_loop_validation.py` (prints change/impact/rollback plan, refuses without `--approve-change`); no UI dry-run; no Digital Twin | ARTIFACT: `tests/test_change_loop_harness.py` (8); README §14. | **PARTIAL** | CORE | A real Digital Twin engine (E4) and a UI dry-run are absent. |
-| E4 | Real Digital Twin simulation engine: routing/reachability/config diff behind the ABC (roadmap §2 A; Phase 4 definition) | `ai/simulation/__init__.py` only; `UnavailableDigitalTwin` returns `not_run` | ARTIFACT: no simulator implementation; page 10 displays `not_run`. | **MISSING** | CORE | Implement a real isolated simulation and record evidence; do not claim `simulated` without it. |
+| E3 | Simulation/dry-run before applying (roadmap design principle 1; Phase 4) | CLI dry-run in `tools/phase4_change_loop_validation.py` (prints change/impact/rollback plan, refuses without `--approve-change`); the AI workflow runs a read-only structural Digital Twin; no UI dry-run | ARTIFACT: `tests/test_change_loop_harness.py` (8); `tests/test_digital_twin.py`; README §14. | **PARTIAL** | CORE | A UI dry-run is absent; the twin models structural reachability only, not routing/device state. |
+| E4 | Real Digital Twin simulation engine: routing/reachability/config diff behind the ABC (roadmap §2 A; Phase 4 definition) | `services/digital_twin.py` (`TopologyDigitalTwin`) wired into `ai/graph.py`; `services/digital_twin_registry.py` | ARTIFACT: `tests/test_digital_twin.py`, `tests/test_digital_twin_registry.py`, `tests/test_workflow_routing.py`; page 10 renders the real report. | **PARTIAL** | CORE | Structural reachability/config diff only; no routing protocol or device-state simulation. Live isolated-lab validation remains blocked. A simulated result is never proof of safety. |
 | E5 | Execution gating: both flags, live mode, lab identity, allowlist, injected executor (roadmap §2 A; Phase 4) | `services/change_execution.py` (11 gates), `network/lab_executor.py` (identity/label/static gate), `services/change_service.py::apply` | ARTIFACT: `tests/test_change_execution.py` (29), `tests/test_lab_executor.py` (35), `tests/test_lab_config_ops.py` (25), `tests/test_gate3_safety.py` (12). | **PARTIAL** | CORE | Live execution is BLOCKED (E11). |
 | E6 | Post-change verification: read back the device, compare expected lines, persist verdict (roadmap §2 A; Phase 4) | `network/lab_verifier.py`, `services/change_execution.py` step 10 | ARTIFACT: `tests/test_lab_verifier.py` (9), `tests/test_change_execution.py` (29). | **PARTIAL** | CORE | Service logic COMPLETE; live run BLOCKED; no UI verdict. |
 | E7 | Rollback + restoration verification: real undo, added lines removed, base restored (roadmap §2 A; Phase 4) | `services/change_service.py::rollback`, `services/change_execution.py::_rollback`, `network/lab_config_ops.py`, `network/lab_verifier.py::verify_restored_config` | ARTIFACT: `tests/test_change_service.py`, `tests/test_change_execution.py`, `tests/test_lab_config_ops.py`, `tests/test_lab_verifier.py`. | **PARTIAL** | CORE | Service logic COMPLETE; live run BLOCKED; no UI rollback control. |
@@ -267,8 +273,8 @@ separates a **callable service** from a **fully integrated user workflow** and f
 
 | Capability | Callable service / CLI | UI accessible | Guarded | Tested | Live-validated | Documented | Overall |
 |---|---|---|---|---|---|---|---|
-| **Simulation / dry-run** | **Yes, partial**: `tools/phase4_change_loop_validation.py` dry-run prints the exact change, impact and rollback plan and refuses to execute without `--approve-change`. No Digital Twin engine. | **No** | Yes (refuses without explicit approval; no device I/O in dry-run) | `tests/test_change_loop_harness.py` (8) | **No** | README §14; runbook §7.4 | **PARTIAL** |
-| **Real Digital Twin simulation** | **No**: `ai/simulation/__init__.py` only returns `not_run`. | **No** | N/A | Interface only | **No** | Phase 3 spec §7; roadmap §2 A | **MISSING** |
+| **Simulation / dry-run** | **Yes, partial**: `tools/phase4_change_loop_validation.py` dry-run prints the exact change, impact and rollback plan and refuses to execute without `--approve-change`. The AI workflow also runs the read-only structural Digital Twin. | **No** (no standalone UI dry-run) | Yes (refuses without explicit approval; no device I/O in dry-run) | `tests/test_change_loop_harness.py` (8), workflow/twin tests | **No** | README §14; runbook §7.4 | **PARTIAL** |
+| **Real Digital Twin simulation** | **Yes, structural only**: `services/digital_twin.TopologyDigitalTwin` is wired into `ai/graph.py` and evaluates `preserve_reachability` against a filtered stored-topology snapshot. | **Yes** (page 10 shows status, reasons, checks and affected components) | Yes: read-only, no device I/O, no approval/apply path; unsupported operations are disclosed | `tests/test_digital_twin.py`, `tests/test_digital_twin_registry.py`, `tests/test_workflow_routing.py` | **No** | Phase 3 spec §7; roadmap §2 A; README | **PARTIAL** |
 | **Post-change verification** | **Yes**: `network/lab_verifier.verify_applied_config`, `services/change_execution.execute_change` step 10. | **No** (no verdict/control in page 11) | Yes: unreadable device = failure, missing line = failure, never a false pass | `tests/test_lab_verifier.py` (9), `tests/test_change_execution.py` (29) | **No** | README §14; runbook | **PARTIAL** |
 | **Rollback + restoration** | **Yes**: `services/change_service.rollback`, `services/change_execution._rollback`, `network/lab_verifier.verify_restored_config`; auto-rollback on verification failure. | **No** (no rollback button; UI apply is a no-op) | Yes: real undo, removed-line check, restoration must be proven; refuses without executor/flags/approval | `tests/test_change_service.py` (27), `tests/test_change_execution.py` (29), `tests/test_lab_config_ops.py` (25), `tests/test_lab_verifier.py` (9) | **No** | README §14; runbook | **PARTIAL** |
 | **Full apply → verify → rollback workflow** | **Yes, CLI-only**: Gate D harness with real `LabExecutor`. | **No** | Yes: both flags, live mode, auth-bound non-self approval, verified rollback plan, `--approve-change` | Offline/simulated tests; harness fail-closed | **No** | README §14; runbook §7.4 | **PARTIAL (service) / MISSING (UI) / BLOCKED (live)** |
@@ -279,7 +285,9 @@ chain and the Phase 4 definition. They exist as **callable, guarded, unit-tested
 services** and as a **CLI dry-run/apply harness**, but they are **not integrated
 into the Streamlit user workflow** (page 11 proposes/approves/rejects/cancels and
 refuses apply; it has no apply/verify/rollback controls). They are **not live-
-validated**. The real Digital Twin engine is **not implemented**.
+validated**. The real Digital Twin engine is **not implemented** *(Phase C
+finding; superseded — the structural engine is now wired into the AI workflow,
+see the status note at the top).*
 
 ---
 

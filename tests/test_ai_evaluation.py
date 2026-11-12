@@ -206,8 +206,8 @@ def test_no_case_records_approval_or_digital_twin_execution(report):
         names = {a["name"]: a["passed"] for a in case["assertions"]}
         if "no_approval_recorded" in names:
             assert names["no_approval_recorded"] is True
-        if "digital_twin_not_run" in names:
-            assert names["digital_twin_not_run"] is True
+        if "digital_twin_honest" in names:
+            assert names["digital_twin_honest"] is True
 
 
 # --------------------------------------------------------------------------

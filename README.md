@@ -226,8 +226,8 @@ netpilot-ai/
 │   ├── agents/                 # intent, investigation, diagnosis, planner, config
 │   ├── tools/                  # read-only evidence tools (topology/telemetry/…)
 │   ├── verification/           # independent deterministic verifier + policy checks
-│   └── simulation/             # Digital Twin workflow boundary (reports not_run;
-│                               #   read-only engine is services/digital_twin.py)
+│   └── simulation/             # Digital Twin interface (workflow binds the
+│                               #   read-only engine in services/digital_twin.py)
 ├── analytics/                  # Phase 2 computation core (no UI, no SQL writes)
 │   ├── time_series.py          # frame loading, dedupe, resample, labelled gaps
 │   ├── data_quality.py         # quality report + readiness gates per series
@@ -712,9 +712,9 @@ Phase 3 additions (spec §11; all Groq calls mocked — no key/network required)
 - intent agent: Arabic/English classification, code-side language detection,
   ambiguous change requests force clarification (`test_intent_agent.py`)
 - workflow routing/safety: questions never reach the Config Agent, change
-  requests reach verifier + Digital Twin (`not_run`), ambiguous → clarify,
-  missing key → `failed_safe`, and the runner exposes **no** deploy/apply
-  method (`test_workflow_routing.py`)
+  requests reach verifier + the read-only structural Digital Twin, ambiguous →
+  clarify, missing key → `failed_safe`, and the runner exposes **no**
+  deploy/apply method (`test_workflow_routing.py`)
 - read-only evidence tools: source separation (demo/live never leak),
   stale/missing flagged not invented, connectivity reads stored history only,
   bounded output with stable `ev-N` uids (`test_evidence_tools.py`)
@@ -976,9 +976,10 @@ for new experiments across supported data sources.
    run one dedicated collector (documented; `collect_once` is importable as
    a standalone entry point).
 7. **Digital Twin and PostgreSQL remain partially validated.** The D1-D4
-   engine/registry are covered by offline tests and the read-only Ops Center
-   preview, but they are not wired into `ai/graph.py` and have no live-lab
-   evidence. PostgreSQL is supported by the storage layer and Docker image but
+   engine/registry are covered by offline tests, the AI workflow and the
+   read-only Ops Center preview, but the twin is structural only (no routing or
+   traffic simulation) and has no live-lab evidence. PostgreSQL is supported by
+   the storage layer and Docker image but
    was not exercised in the closure environment (no driver/server); SQLite is
    the verified default. Real-browser E2E, live-provider evaluation,
    Docker/Containerlab and real-device tests were not run.
@@ -1127,13 +1128,15 @@ targets and out-of-scope devices; returns `passed` only when every required
 check conclusively passes, otherwise `failed` or `inconclusive` (it never
 reports a false pass, and a static pass never implies live behaviour).
 
-**Digital Twin (`ai/simulation/`)** — a clean `DigitalTwin` interface with an
-`UnavailableDigitalTwin` that honestly reports `not_run`, so results are never
-misrepresented. A separate read-only structural engine
-(`services/digital_twin.py`, D1-D3) and persistent snapshot registry
-(`services/digital_twin_registry.py`, D4) now exist and are used by the Ops
-Center preview; they are deliberately **not wired into `ai/graph.py`**, so the
-AI workflow still reports `not_run`.
+**Digital Twin (`ai/simulation/`)** — a clean `DigitalTwin` interface. The
+workflow now binds the real read-only structural engine
+(`services/digital_twin.py`, D1-D4) to a filtered snapshot of the stored
+devices/links and asks it to check `preserve_reachability` before human review.
+It models documented link/interface reachability only (no routing protocol
+semantics), never contacts a device, and never approves or applies a change; a
+`simulated` result is explicitly **not proof of safety**. When the snapshot is
+empty or the proposal is unsupported it reports `insufficient_evidence`,
+`partial` or `not_simulated` rather than a fabricated pass.
 
 **Prompt-injection defence** — retrieved logs/configs/user snippets are
 wrapped in `<untrusted_data>` blocks and treated as data everywhere; the
@@ -1150,13 +1153,14 @@ deploying anything.
 and `ai_evidence` are created on next start (`init_db()` → CREATE TABLE IF NOT
 EXISTS). No Phase 1/2 table is altered, and no provider secret is ever stored.
 
-## 14. Current scope boundary (what is not wired or not validated)
+## 14. Current scope boundary (what is not implemented or not validated)
 
 **Not implemented:** live routing/behaviour simulation (the Digital Twin engine
 is structural reachability only), real-network execution, and MCP servers.
-**Implemented but deliberately not wired into `ai/graph.py`:** the D1-D4
-Digital Twin engine and persistent snapshot registry. **Implemented:** the
-offline RAG store (`services/rag.py`) used by the Knowledge tab. The assistant
+**Implemented and wired:** the D1-D4 Digital Twin engine and persistent snapshot
+registry, bound by the AI workflow and surfaced by the Ops Center preview.
+**Implemented:** the offline RAG store (`services/rag.py`) used by the Knowledge
+tab. The assistant
 never connects to a production network and never executes generated config or
 modifies routes/ACLs/firewalls/interfaces. Anomaly events, forecast warnings
 and AI diagnoses remain clearly-labelled probabilistic/statistical statements

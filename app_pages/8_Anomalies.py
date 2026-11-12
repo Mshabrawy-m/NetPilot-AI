@@ -39,7 +39,7 @@ from analytics.time_series import dedupe_frame, load_metric_frame
 from config import get_settings
 from database import repository
 from services import anomaly_service
-from ui import source_controls
+from ui import source_controls, time_controls
 
 st.caption(
     "Anomaly events are explainable statistical deviations, not confirmed "
@@ -108,14 +108,68 @@ if summary["truncated"]:
 st.divider()
 
 # ---------------------------------------------------------- detection controls
+settings = get_settings()
+detection_floor = int(settings.min_points_detection)
+# Rank what is actually stored, richest first, and prefer a device-level series
+# because the batch scan and calibration both operate on that scope. A thin
+# alphabetically-first series used to be selected by default, which made the
+# page open on "not detection-ready" even when richer series existed.
+inventory = read(lambda s: repository.get_series_inventory(
+    s, data_source=data_source))
+ranked_inventory = sorted(
+    inventory,
+    key=lambda r: (r["n_samples"] < detection_floor,
+                   r["interface_name"] is not None,
+                   -r["n_samples"],
+                   r["device_name"], r["metric"]))
+ready_inventory = [r for r in ranked_inventory
+                   if r["n_samples"] >= detection_floor]
+
 fcol1, fcol2 = st.columns([1, 1])
 with fcol1:
+    devices_for_source = sorted({d for (d, _m, _u, s) in avail
+                                if s == data_source})
+    preferred_device = (ranked_inventory[0]["device_name"]
+                        if ranked_inventory else devices_for_source[0])
+    time_controls.ensure_default(
+        st.session_state, "np_anom_device", data_source, preferred_device)
     run_device = st.selectbox(
-        "Device (detection target)",
-        sorted({d for (d, _m, _u, s) in avail if s == data_source}))
+        "Device (detection target)", devices_for_source,
+        key="np_anom_device")
     metrics = sorted({m for (d, m, _u, s) in avail
                       if s == data_source and d == run_device and m})
-    run_metric = st.selectbox("Metric", metrics or ["(none)"])
+    device_inventory = [r for r in ranked_inventory
+                        if r["device_name"] == run_device]
+    preferred_metric = (device_inventory[0]["metric"]
+                        if device_inventory else (metrics[0] if metrics
+                                                  else "(none)"))
+    time_controls.ensure_default(
+        st.session_state, "np_anom_metric", (data_source, run_device),
+        preferred_metric)
+    run_metric = st.selectbox("Metric", metrics or ["(none)"],
+                              key="np_anom_metric")
+
+    selected_series = [r for r in inventory
+                       if r["device_name"] == run_device
+                       and r["metric"] == run_metric]
+    ready_series = [r for r in selected_series
+                    if r["n_samples"] >= detection_floor]
+    richest = max((r["n_samples"] for r in selected_series), default=0)
+    if not selected_series:
+        st.caption("No stored non-null samples for this device/metric.")
+    elif ready_series:
+        scopes = ", ".join(
+            (r["interface_name"] or "(device-level)")
+            for r in sorted(ready_series, key=lambda r: -r["n_samples"]))
+        st.caption(
+            f"✅ Detection-ready: {len(ready_series)} series reach "
+            f"≥ {detection_floor} non-null samples ({scopes}).")
+    else:
+        st.caption(
+            f"📉 No series for this selection reaches the detection floor of "
+            f"≥ {detection_floor} non-null samples; the richest has "
+            f"{richest}. Detection will refuse rather than judge thin data. "
+            "Pick a richer metric above or collect more samples.")
 with fcol2:
     st.markdown("**Detectors**")
     chosen_detectors = st.multiselect(
@@ -140,6 +194,24 @@ with fcol2:
                    "often. Every value used is snapshotted inside the stored "
                    "event, so an old event can always be re-explained.")
 
+with st.expander("📊 Detection readiness ranking (stored non-null samples)"):
+    if not inventory:
+        st.info("No stored non-null series for this source.")
+    else:
+        st.dataframe(pd.DataFrame([{
+            "device": r["device_name"],
+            "metric": r["metric"],
+            "interface": r["interface_name"] or "(device-level)",
+            "non-null samples": r["n_samples"],
+            "detection-ready": r["n_samples"] >= detection_floor,
+            "needed": max(0, detection_floor - r["n_samples"]),
+        } for r in ranked_inventory[:15]]), hide_index=True, width="stretch")
+        st.caption(
+            f"Detection needs ≥ {detection_floor} non-null samples per series "
+            f"(`NETPILOT_MIN_POINTS_DETECTION`). {len(ready_inventory)} of "
+            f"{len(inventory)} stored series are ready; richest-first so the "
+            "default selection can actually be analysed.")
+
 # ------------------------------------------------- explicit detection action
 if st.button("🔍 Run detection on this series", width="stretch"):
     if not run_metric:
@@ -156,17 +228,24 @@ if st.button("🔍 Run detection on this series", width="stretch"):
                        "nothing to detect on.")
         else:
             # ``options`` may legitimately contain ``None`` (the
-            # "(device-level)" scope). Compare the *retrieved* value against
-            # it rather subscripting the key directly: a missing key
-            # makes ``.get()`` return ``None``, and ``None in options`` is
-            # True, so the old form raised KeyError on first render.
-            stored_iface = st.session_state.get("_anom_iface")
-            chosen_default = (options.index(stored_iface)
-                              if stored_iface in options
-                              else 0)
+            # "(device-level)" scope). Prefer the richest stored scope for
+            # this device/metric, so an interface series with enough history
+            # is not silently replaced by a thin device-level one.
+            series_rank = sorted(
+                [r for r in inventory
+                 if r["device_name"] == run_device
+                 and r["metric"] == run_metric],
+                key=lambda r: (r["n_samples"] < detection_floor,
+                               r["interface_name"] is not None,
+                               -r["n_samples"]))
+            preferred_iface = (series_rank[0]["interface_name"]
+                               if series_rank else None)
+            time_controls.ensure_default(
+                st.session_state, "_anom_iface",
+                (data_source, run_device, run_metric), preferred_iface)
             target_iface = st.selectbox(
                 "Interface scope for detection (one series at a time)",
-                options, index=chosen_default, key="_anom_iface",
+                options, key="_anom_iface",
                 format_func=lambda v: v or "(device-level)")
             with st.spinner("Detecting..."):
                 result = read(lambda s: anomaly_service.run_detection(

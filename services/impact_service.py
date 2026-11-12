@@ -940,8 +940,9 @@ def analyze_request(session, request, *, topology_source: str | None = None,
     input_errors = [error for error in (proposed_error, base_error) if error]
 
     try:
-        devices = repository.get_devices(session)
-        links = repository.get_links(session)
+        devices = repository.filter_reporting_devices(
+            repository.get_devices(session))
+        links = repository.filter_reporting_links(repository.get_links(session))
         telemetry_times = repository.get_latest_metric_times(
             session, data_source=data_source)
         return analyze_change(

@@ -49,6 +49,9 @@ class TracerouteResult:
     hops: list[dict] | None = None      # [{ttl, ip, rtt_ms|None}, ...]
     error: str | None = None
     raw_output: str | None = None
+    #: ``traceroute`` / ``tracert`` when the host's native tool ran, or
+    #: ``ping_ttl`` when the bounded ping-TTL fallback produced the path.
+    method: str | None = None
 
 
 _WINDOWS = platform.system() == "Windows"
@@ -232,13 +235,100 @@ def _parse_ping_output(output: str) -> tuple[float | None, int | None, int | Non
 
 
 def traceroute_supported() -> bool:
-    return _traceroute_binary() is not None
+    """True when a native traceroute tool *or* a ping-TTL fallback exists.
+
+    ``traceroute``/``tracert`` is used when present. Slim images often ship
+    only ``ping``; the bounded ping-TTL fallback still produces a real path
+    (one ICMP echo per TTL) instead of refusing the whole feature.
+    """
+    return _traceroute_binary() is not None or _ping_binary() is not None
 
 
 def _traceroute_binary() -> str | None:
     return _which_with_fallbacks(
         ("tracert",) if _WINDOWS else ("traceroute",),
         _TRACEROUTE_FALLBACK_PATHS)
+
+
+_IPV4_PATTERN = r"(\d{1,3}(?:\.\d{1,3}){3})"
+_EXPIRED_PATTERN = re.compile(
+    r"TTL expired in transit|Time to live exceeded|time[\s-]*to[\s-]*live[\s-]*exceeded",
+    re.I)
+
+
+def _parse_ping_ttl_hop(output: str, target: str,
+                        ttl: int) -> tuple[dict | None, bool]:
+    """Parse one ping reply into a traceroute hop. Pure function.
+
+    Understands the Windows ``Reply from <ip>: TTL expired in transit`` form
+    and the Linux ``From <ip> icmp_seq=... Time to live exceeded`` form. The
+    destination is only reported as reached by an ordinary echo reply from
+    ``target``, never by a TTL-expiry notice that merely mentions it.
+    """
+    if not output:
+        return None, False
+    expired = bool(_EXPIRED_PATTERN.search(output))
+    ip_match = re.search(
+        r"(?:Reply from|From)\s+" + _IPV4_PATTERN, output, re.I)
+    ip = ip_match.group(1) if ip_match else None
+    rtt = None
+    rtt_match = re.search(r"(?:time|temps)\s*[=<]\s*([\d.]+)\s*ms", output,
+                          re.I)
+    if rtt_match:
+        try:
+            rtt = float(rtt_match.group(1))
+        except ValueError:
+            rtt = None
+    reached = bool(
+        ip and ip == target and not expired
+        and re.search(r"bytes[=\s]|icmp_seq", output, re.I))
+    if not ip and target in output and not expired:
+        # Some localised builds print the destination without a "Reply from"
+        # prefix; only treat it as a hop when the line is an ordinary reply.
+        if re.search(r"bytes[=\s]|icmp_seq", output, re.I):
+            ip = target
+            reached = True
+    if ip is None and not expired and not output.strip():
+        return None, False
+    return {"ttl": ttl, "ip": ip, "rtt_ms": rtt}, reached
+
+
+def _run_ping_ttl_traceroute(binary: str, target: str, max_hops: int,
+                             timeout: int) -> tuple[list[dict], bool, str]:
+    """Bounded ping-TTL fallback: one echo per TTL, stop at the target.
+
+    This is a real measurement (ICMP echo replies), not a fabricated path.
+    It is only used when the native traceroute binary is unavailable.
+    """
+    hops: list[dict] = []
+    outputs: list[str] = []
+    reached = False
+    per_hop = max(1, min(3, int(timeout)))
+    for ttl in range(1, max(1, int(max_hops)) + 1):
+        if _WINDOWS:
+            argv = [binary, "-n", "1", "-w", str(per_hop * 1000),
+                    "-i", str(ttl), target]
+        else:
+            argv = [binary, "-c", "1", "-W", str(per_hop), "-t", str(ttl),
+                    target]
+        try:
+            proc = subprocess.run(argv, shell=False, capture_output=True,
+                                  text=True, timeout=per_hop + 2)
+        except subprocess.TimeoutExpired:
+            hops.append({"ttl": ttl, "ip": None, "rtt_ms": None})
+            continue
+        output = _truncate((proc.stdout or "") + (proc.stderr or ""))
+        outputs.append(output)
+        hop, hop_reached = _parse_ping_ttl_hop(output, target, ttl)
+        if hop is not None:
+            hops.append(hop)
+        if hop_reached:
+            reached = True
+            break
+        if hop is not None and hop.get("ip") == target:
+            reached = True
+            break
+    return hops, reached, "\n".join(outputs)
 
 
 def _parse_traceroute(output: str) -> list[dict]:
@@ -287,28 +377,62 @@ def run_traceroute(inventory: LabInventory, destination: str,
                                 success=False, error=str(exc))
 
     binary = _traceroute_binary()
-    if binary is None:
-        return TracerouteResult(destination=target, supported=False, success=False,
-                                error="traceroute/tracert not available on this host")
+    if binary is not None:
+        if _WINDOWS:
+            argv = [binary, "-d", "-h", str(max_hops), "-w", "2000", target]
+            method = "tracert"
+        else:
+            argv = [binary, "-n", "-m", str(max_hops), "-w", "2", target]
+            method = "traceroute"
+        try:
+            proc = subprocess.run(argv, shell=False, capture_output=True,
+                                  text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return TracerouteResult(destination=target, supported=True,
+                                    success=False, method=method,
+                                    error=f"traceroute timed out after {timeout}s")
+        except OSError as exc:
+            # The native binary exists but cannot execute here. Fall through
+            # to the ping-TTL path rather than declaring the feature absent.
+            ping_binary = _ping_binary()
+            if ping_binary is None:
+                return TracerouteResult(
+                    destination=target, supported=True, success=False,
+                    method=method, error=f"{type(exc).__name__}")
+            binary = None
+        else:
+            output = _truncate((proc.stdout or "") + (proc.stderr or ""))
+            hops = _parse_traceroute(output)
+            reached = any(h.get("ip") == target for h in hops)
+            return TracerouteResult(destination=target, supported=True,
+                                    success=bool(hops) and reached,
+                                    hops=hops, raw_output=output,
+                                    method=method)
 
-    if _WINDOWS:
-        argv = [binary, "-d", "-h", str(max_hops), "-w", "2000", target]
-    else:
-        argv = [binary, "-n", "-m", str(max_hops), "-w", "2", target]
+    ping_binary = _ping_binary()
+    if ping_binary is None:
+        return TracerouteResult(
+            destination=target, supported=False, success=False,
+            error="traceroute/tracert and ping are both unavailable on this "
+                  "host; neither a traceroute nor the ping-TTL fallback can "
+                  "run")
 
     try:
-        proc = subprocess.run(argv, shell=False, capture_output=True,
-                              text=True, timeout=timeout)
+        hops, reached, output = _run_ping_ttl_traceroute(
+            ping_binary, target, max_hops, timeout)
     except subprocess.TimeoutExpired:
-        return TracerouteResult(destination=target, supported=True, success=False,
-                                error=f"traceroute timed out after {timeout}s")
+        return TracerouteResult(destination=target, supported=True,
+                                success=False, method="ping_ttl",
+                                error=f"ping-TTL traceroute timed out after "
+                                      f"{timeout}s")
     except OSError as exc:
-        return TracerouteResult(destination=target, supported=True, success=False,
-                                error=f"{type(exc).__name__}")
-
-    output = _truncate((proc.stdout or "") + (proc.stderr or ""))
-    hops = _parse_traceroute(output)
-    reached = any(h.get("ip") == target for h in hops)
+        denied = exc.errno in (errno.EACCES, errno.EPERM)
+        return TracerouteResult(
+            destination=target, supported=True, success=False,
+            method="ping_ttl",
+            error=("ping cannot open an ICMP socket in this environment"
+                   if denied else f"cannot execute {ping_binary}") +
+                  f": {exc.strerror or type(exc).__name__}")
     return TracerouteResult(destination=target, supported=True,
                             success=bool(hops) and reached,
-                            hops=hops, raw_output=output)
+                            hops=hops, raw_output=output, method="ping_ttl")

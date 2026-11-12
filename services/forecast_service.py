@@ -62,11 +62,16 @@ from database import repository
 from database.models import db_utcnow
 from services.anomaly_service import load_ready_series
 
-#: Models compared when the caller does not choose. ``seasonal_naive`` and
-#: ``holt_winters`` are listed because both refuse out loud (a recorded skip
-#: with the reason) when the sampling interval or the seasonal history is not
+#: Models compared when the caller does not choose. The short-series default
+#: now includes the advanced lag models (ridge / gradient boosting / SARIMA),
+#: which can fit a few dozen points, instead of opening on the seasonal models
+#: that must refuse until two full seasons exist. ``seasonal_naive`` and
+#: ``holt_winters`` stay registered and selectable and still refuse out loud
+#: (a recorded skip with the reason) when the seasonal history is not
 #: defensible - they never produce a quiet, wrong answer.
-DEFAULT_MODELS = ("naive", "seasonal_naive", "holt_damped", "holt_winters")
+DEFAULT_MODELS = (
+    "naive", "holt_damped", "ridge_lag", "hgb_lag", "sarima",
+)
 
 #: Name under which the in-memory ensemble is reported (never persisted).
 ENSEMBLE_NAME = "ensemble_inverse_mae"
@@ -703,6 +708,7 @@ def run_forecast_comparison(
     band_mode: str = BAND_MODE,
     band_coverage: float | None = None,
     ensemble: bool = True,
+    max_lags: int = 24,
 ) -> dict:
     settings = get_settings()
     horizon = horizon or settings.forecast_horizon_default
@@ -784,6 +790,7 @@ def run_forecast_comparison(
         # a model cannot make an existing call pass an unexpected keyword.
         supplied = {"interval_seconds": interval,
                     "season_hours": settings.season_hours,
+                    "max_lags": max_lags,
                     "val": split.val}
         kwargs = {k: supplied[k] for k in MODEL_KWARGS.get(name, ())
                   if supplied.get(k) is not None}

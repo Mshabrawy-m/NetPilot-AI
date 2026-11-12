@@ -41,8 +41,8 @@ source = source_controls.selector(
     sources, key="np_connectivity_source", demo_mode=settings.demo_mode)
 source_filter = None if source == source_scope.DEMO else source
 
-stored_devices = read(lambda s: source_scope.filter_devices(
-    list(repository.get_devices(s)), source))
+stored_devices = read(lambda s: repository.filter_reporting_devices(
+    source_scope.filter_devices(list(repository.get_devices(s)), source)))
 
 # Build a validated allowlist from stored rows (name -> address).  This is the
 # same allowlist the probe helper validates against; arbitrary addresses are
@@ -91,6 +91,11 @@ if not ping_ready:
         "binary: add a `packages.txt` file containing `iputils-ping` at the "
         "repository root (the Docker image already installs it) and reboot "
         "the app.", icon="🚫")
+elif not connectivity.traceroute_supported():
+    st.warning(
+        "`traceroute`/`tracert` is not installed, and the ping-TTL fallback is "
+        "also unavailable in this runtime. Ping still works; add `traceroute` "
+        "to `packages.txt` to enable native traces.", icon="🧭")
 
 can_probe = bool(allowlist.nodes) and source != source_scope.SIMULATED
 if not allowlist.nodes:
@@ -173,15 +178,28 @@ if run_tr:
     else:
         result = connectivity.run_traceroute(allowlist, destination)
         if not result.supported:
-            st.warning("traceroute is not supported on this host.", icon="🧭")
+            st.warning(
+                "No traceroute tool is available on this host: neither "
+                "`traceroute`/`tracert` nor `ping` could be executed. Add "
+                "`traceroute` (and keep `iputils-ping`) to `packages.txt` for "
+                "Streamlit Cloud, or rebuild the Docker image; the code also "
+                "has a bounded ping-TTL fallback that needs only `ping`.",
+                icon="🧭")
         elif result.success:
-            st.success(f"Traceroute {result.destination}: reached destination")
+            st.success(f"Traceroute {result.destination}: reached destination"
+                       + (f" (method: {result.method})" if result.method else ""))
         else:
             st.error(f"Traceroute {result.destination}: failed - "
                      f"{result.error or 'destination not reached'}")
         if result.hops:
             st.dataframe(pd.DataFrame(result.hops), hide_index=True,
                          width="stretch")
+            st.caption(
+                f"Measured path via **{result.method or 'unknown method'}**. "
+                "A `None` reply is an unanswered probe, not an invented hop."
+                + (" The ping-TTL fallback sends one echo per TTL; it is a "
+                   "real measurement, not a native traceroute trace."
+                   if result.method == "ping_ttl" else ""))
 
         def _store_tr(s):
             repository.add_connectivity_test(

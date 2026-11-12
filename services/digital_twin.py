@@ -37,9 +37,8 @@ Honesty rules
 
 The pure engine is ``simulate_change``. ``simulate_request`` is the read-only
 session wrapper used by the UI. ``TopologyDigitalTwin`` adapts the engine to
-the existing ``ai.simulation.DigitalTwin`` ABC without wiring it into the AI
-workflow (that integration is deliberately deferred; see the module boundary
-note at the bottom).
+the existing ``ai.simulation.DigitalTwin`` ABC and is wired into the Phase 3
+AI workflow (read-only; it never approves or applies anything).
 """
 from __future__ import annotations
 
@@ -1939,8 +1938,8 @@ def capture_request_snapshot(
     if errors:
         raise ValueError("; ".join(errors))
 
-    devices = repository.get_devices(session)
-    links = repository.get_links(session)
+    devices = repository.filter_reporting_devices(repository.get_devices(session))
+    links = repository.filter_reporting_links(repository.get_links(session))
     return capture_snapshot(
         devices=devices,
         links=links,
@@ -1987,8 +1986,9 @@ def simulate_request(session, request, *,
             max_age_seconds = _configured_max_age_seconds()
 
     try:
-        devices = repository.get_devices(session)
-        links = repository.get_links(session)
+        devices = repository.filter_reporting_devices(
+            repository.get_devices(session))
+        links = repository.filter_reporting_links(repository.get_links(session))
         report = simulate_change(
             devices=devices, links=links, device_name=device_name,
             proposed_lines=proposed_lines, base_lines=base_lines,
@@ -2161,13 +2161,12 @@ class TopologyDigitalTwin(DigitalTwin):
 
 
 # ---------------------------------------------------------------------------
-# Integration boundary (deliberately not wired in D1)
+# Integration boundary
 # ---------------------------------------------------------------------------
-# ``ai/graph.py`` still constructs ``UnavailableDigitalTwin``. Wiring this
-# engine into the AI workflow would change Phase 3/B4 safety expectations
-# (``digital_twin_status == "not_run"``) and requires passing a topology
-# snapshot into the graph runner. That integration is a separate, reviewed
-# step; D1 ships the engine, its tests, and the read-only UI preview only.
+# ``ai/graph.py`` binds ``TopologyDigitalTwin`` to a filtered snapshot of the
+# stored devices/links and calls it with ``preserve_reachability``. The engine
+# remains read-only: it never approves, applies, verifies or rolls back a
+# change, and the workflow still stops at human review.
 __all__ = [
     "SIMULATOR", "SIMULATOR_VERSION", "SNAPSHOT_BINDING_VERSION",
     "STATUS_SIMULATED", "STATUS_PARTIAL", "STATUS_INSUFFICIENT",

@@ -15,11 +15,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# python:slim images ship without the ping binary, which the connectivity
-# probes and the demo loopback self-test execute. Streamlit Cloud gets the
-# same package through the root packages.txt file.
+# python:slim images ship without the ping/traceroute binaries, which the
+# connectivity probes and the demo loopback self-test execute. The code also
+# has a bounded ping-TTL traceroute fallback, but installing the native tool
+# gives a proper multi-probe path. Streamlit Cloud gets the same packages
+# through the root packages.txt file.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends iputils-ping \
+ && apt-get install -y --no-install-recommends iputils-ping traceroute \
  && rm -rf /var/lib/apt/lists/*
 
 # Dependencies first so the layer cache survives source edits.

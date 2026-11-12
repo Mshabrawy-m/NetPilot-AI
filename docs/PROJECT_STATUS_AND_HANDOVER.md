@@ -31,9 +31,12 @@ verified, and live-lab acceptance L-1…L-6 is blocked because Docker,
 Containerlab, and a configured Prometheus source are unavailable.
 
 No production-network operation occurred. `change_loop_enabled` and
-`lab_execution_enabled` both read `False`. The Digital Twin remains a
-structural, read-only model; the Phase 3 AI graph correctly reports `not_run`
-for a real isolated routing simulation.
+`lab_execution_enabled` both read `False`. The Digital Twin is a structural,
+read-only model and is now wired into the Phase 3 AI workflow: it evaluates
+`preserve_reachability` against the stored topology and reports its honest
+status (it never contacts a device and never approves or applies a change). It
+does not claim to simulate routing protocols or real device state, and
+`not_run` still appears when a run stops before simulation.
 
 ## Phase and capability status
 
@@ -46,7 +49,7 @@ not imply live infrastructure acceptance.
 | Phase 1 — topology, inventory, collection, history, status | IMPLEMENTED BUT NOT FULLY VERIFIED | `network/`, `database/`, `services/`, pages 1–6; current full offline suite includes collector, scheduler, graph, provenance and repository tests | Deploy isolated Containerlab and collect real live telemetry; not available here |
 | Phase 2 — quality, derived metrics, EDA, anomalies, forecasting | VERIFIED COMPLETE (offline implementation) | `analytics/`, `services/anomaly_service.py`, `services/forecast_service.py`; chronological splits and real computed metrics; AI Lab and legacy stored-data pages | Real-network data and observed forecast accuracy require a live source; not claimed here |
 | Phase 3 — multi-agent assistant and safe operations | IMPLEMENTED BUT NOT FULLY VERIFIED | `ai/graph.py`, agents/tools, provider adapter, verifier, `ai_workflow_service`; phase-specific routing, schema, safety, and persistence tests pass in the full suite | Live Groq evaluation is unverified after connection timeout; live lab L-1…L-6 blocked |
-| Phase 4 — approval, structural twin, gated apply/verify/rollback | IMPLEMENTED BUT NOT FULLY VERIFIED | `services/digital_twin.py`, `digital_twin_registry.py`, change services and executor; D1–D4 reports and deterministic tests; both execution flags are false | Live apply/verify/rollback and routing behavior require an isolated Docker/Containerlab host; AI Phase 3 twin adapter stays `not_run` intentionally |
+| Phase 4 — approval, structural twin, gated apply/verify/rollback | IMPLEMENTED BUT NOT FULLY VERIFIED | `services/digital_twin.py`, `digital_twin_registry.py`, change services and executor; D1–D4 reports and deterministic tests; both execution flags are false | Live apply/verify/rollback and routing behavior require an isolated Docker/Containerlab host; the Phase 3 twin adapter is wired but models structural reachability only |
 | Phase 5 — AI Lab and unified analytics | VERIFIED COMPLETE (offline implementation) | `analytics/lab_dataset.py`, `lab_sources.py`, `lab_simulator.py`, `services/lab_tasks.py` and `lab_experiment.py`; deterministic tests for imported, stored, simulated and validated source contracts | Prometheus is not configured in this environment. A live dataset must be verified from its actual fetch provenance |
 | v2 Ops Center, graph, alerts, auth and API | IMPLEMENTED BUT NOT FULLY VERIFIED | `pages/11_Ops_Center.py`, `analytics/graph.py`, `services/impact_service.py`, alert/auth services and `api/`; corresponding tests pass | Live authenticated browser, PostgreSQL integration and HTTP/WebSocket TestClient checks were not verified on this pass |
 | v2 containerization, CI, telemetry observability | IMPLEMENTED BUT NOT FULLY VERIFIED | Docker/Compose, GitHub Actions workflow, `/metrics` JSON/Prometheus exposition exist | Docker/Containerlab unavailable; current remote CI status was not queried; structured tracing is not implemented |
@@ -61,7 +64,7 @@ not imply live infrastructure acceptance.
 | Investigation and diagnosis | Separate facts, hypotheses, confidence, missing/stale evidence | AI investigation/diagnosis agents and schemas | Grounding, abstention and prompt-injection tests | VERIFIED COMPLETE (offline) | Live groundedness evaluation not run |
 | Change plan/config proposal | Only explicit change requests reach proposal; no active config writes | planner/config agents, validators | Workflow routing, verifier and safety tests | VERIFIED COMPLETE (offline) | Live lab proposal journey blocked |
 | Independent verifier | Deterministic passed/failed/inconclusive checks | `ai/verification/` | Verifier suite and safety scan included in full run | VERIFIED COMPLETE (offline) | Static verification is not live network proof |
-| Digital Twin boundary | Report `not_run` if no isolated simulation evidence | `ai/simulation/UnavailableDigitalTwin`, graph finalization | Workflow test asserts `not_run`; separate structural engine tests exist | VERIFIED COMPLETE (boundary) | No real isolated route simulation available |
+| Digital Twin boundary | Report an honest simulation status; never fabricate a pass or claim execution | `services/digital_twin.TopologyDigitalTwin` wired into `ai/graph.py`; page 10 renders the report | Workflow test asserts `insufficient_evidence` on an empty topology and that the report is not proof of safety; twin engine tests cover every status | VERIFIED COMPLETE (structural, offline) | Structural reachability only; no routing protocol/device-state simulation or live isolated-lab validation |
 | Persistence and human review | Persist requests, evidence, transitions, verifier and review outcome; never store provider key | `AIRun`, `AIEvidence`, transitions and service/repository | Persistence and secret non-storage tests | VERIFIED COMPLETE (offline) | Real authenticated-browser journey remains unverified |
 | Provider error behavior | Missing key, timeout, rate limit, malformed response fail safely | `ai/groq_client.py` | Deterministic fake-client tests pass; safe live attempt returned connection timeout | IMPLEMENTED BUT NOT FULLY VERIFIED | Repeat from a network-enabled host; no credential change was made |
 | Live isolated-lab criteria L-1…L-6 | Real collection, live evidence, source separation, injection safety, no execution, no secret exposure | `tools/phase3_lab_validation.py`, runbook, safety scans | Code/tests only; no live harness executed here | BLOCKED BY EXTERNAL INFRASTRUCTURE | Docker, Containerlab, Linux lab host and real telemetry required |
@@ -74,7 +77,7 @@ not imply live infrastructure acceptance.
 | Topology and graph | VERIFIED COMPLETE for stored graph algorithms; the audit adds a per-hop view | Reachability uses documented links, not a probe or router FIB; link operational state is displayed as evidence |
 | Alerts and Ops Center | VERIFIED COMPLETE by service and offline UI-action tests | Notification transports and scheduled escalation are roadmap menu items, not selected scope |
 | Phase 4 approval/change services | IMPLEMENTED BUT NOT FULLY VERIFIED | Apply/verify/rollback logic is isolated and flag-gated; actual device execution remains disabled and unverified |
-| Digital Twin | PARTIALLY IMPLEMENTED at the product-wide routing-simulation scope | Structural topology what-if engine, integrity checks and append-only snapshot registry exist; no routing daemon simulation and no AI graph integration. The AI workflow's `not_run` is intentional |
+| Digital Twin | PARTIALLY IMPLEMENTED at the product-wide routing-simulation scope | Structural topology what-if engine, integrity checks and append-only snapshot registry exist and are wired into the AI workflow for `preserve_reachability`. No routing daemon simulation, so a `simulated` result is structural evidence only, never proof of real-world safety |
 | Forecasting and analysis | VERIFIED COMPLETE for supported local data and shared task contract | Live measurements are unavailable; forecasts do not establish future accuracy; model errors and insufficient series remain explicit |
 | Agentic Operations | IMPLEMENTED BUT NOT FULLY VERIFIED | Actual registered tools now include dataset inspection, statistics, anomaly, forecast, stored topology context, structural impact, and dataset-scoped experiment history. LLM plan/runtime requires reachable Groq. Operational anomaly-event tables are not directly queried by this agent |
 | AI quality evaluation | VERIFIED COMPLETE for deterministic offline fixtures | Live provider evaluation not run; no score is inferred from mocked providers |

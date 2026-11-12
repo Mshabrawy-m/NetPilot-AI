@@ -226,9 +226,39 @@ def test_selftest_ping_without_binary_measures_nothing(monkeypatch):
 def test_traceroute_missing_binary_reports_unsupported(monkeypatch):
     monkeypatch.setattr(connectivity.shutil, "which", lambda name: None)
     monkeypatch.setattr(connectivity, "_TRACEROUTE_FALLBACK_PATHS", ())
+    monkeypatch.setattr(connectivity, "_PING_FALLBACK_PATHS", ())
     result = connectivity.run_traceroute(LAB, "R1")
     assert result.supported is False
     assert result.success is False
+
+
+def test_traceroute_uses_ping_ttl_fallback_when_native_tool_absent(monkeypatch):
+    """A ping-only host still produces a real path with the TTL fallback."""
+    monkeypatch.setattr(connectivity.shutil, "which",
+                        lambda name: "ping" if name == "ping" else None)
+    monkeypatch.setattr(connectivity, "_TRACEROUTE_FALLBACK_PATHS", ())
+    outputs = {
+        1: "64 bytes from 10.0.12.1: icmp_seq=1 ttl=64 time=1.2 ms",
+        2: "64 bytes from 10.1.1.1: icmp_seq=1 ttl=63 time=2.4 ms",
+    }
+
+    def fake_run(argv, **kwargs):
+        flag = "-t" if "-t" in argv else "-i"
+        ttl = int(argv[argv.index(flag) + 1])
+
+        class _Proc:
+            returncode = 0
+            stdout = outputs.get(ttl, "From 10.1.1.1 icmp_seq=1 "
+                                      "Time to live exceeded")
+            stderr = ""
+        return _Proc()
+
+    monkeypatch.setattr(connectivity.subprocess, "run", fake_run)
+    result = connectivity.run_traceroute(LAB, "R1")
+    assert result.supported is True
+    assert result.method == "ping_ttl"
+    assert result.success is True
+    assert [hop["ip"] for hop in result.hops] == ["10.0.12.1", "10.1.1.1"]
 
 
 # --------------------------------------------------------------------------

@@ -351,11 +351,19 @@ AI_RUN_STATUSES = (
     "received", "investigating", "diagnosed", "planned",
     "configuration_proposed", "verification_passed",
     "verification_failed", "verification_inconclusive",
-    "simulation_not_run", "awaiting_human_review", "completed", "failed_safe",
+    "simulation_not_run", "simulation_simulated", "simulation_partial",
+    "simulation_insufficient_evidence", "simulation_invalid",
+    "simulation_not_simulated", "simulation_error",
+    "awaiting_human_review", "completed", "failed_safe",
 )
 AI_REQUEST_TYPES = ("question", "investigation", "change_request")
-#: Digital-twin outcomes - 'not_run' is the honest Phase 3 default.
-DT_STATUSES = ("not_run", "passed", "failed", "inconclusive")
+#: Digital-twin outcomes. ``not_run`` remains the honest default when the
+#: workflow stops before simulation; the remaining values are the read-only
+#: engine's own statuses (a ``simulated`` result is structural only).
+DT_STATUSES = (
+    "not_run", "simulated", "partial", "insufficient_evidence", "invalid",
+    "not_simulated", "error", "passed", "failed", "inconclusive",
+)
 
 
 class AIRun(Base):
@@ -399,7 +407,7 @@ class AIRun(Base):
     final_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # ---- digital twin (honest) ------------------------------------------
-    digital_twin_status: Mapped[str] = mapped_column(String(16), default="not_run")
+    digital_twin_status: Mapped[str] = mapped_column(String(32), default="not_run")
     digital_twin_report_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # ---- lifecycle / provenance -----------------------------------------

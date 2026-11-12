@@ -15,6 +15,7 @@ with a mocked response (no real API key or network call required).
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any, Callable
 
@@ -103,17 +104,28 @@ class GroqAssistant:
     def _ensure_client(self) -> Any | None:
         if self._client_built:
             return self._client
-        if not self.api_key:
-            return None
         try:
-            from groq import Groq
-            self._client = Groq(
-                api_key=self.api_key,
-                timeout=self.timeout,
-                # The adapter owns retries in complete_json. Disabling the
-                # SDK retry layer prevents multiplicative attempts/timeouts.
-                max_retries=0,
-            )
+            # Support OmniRoute gateway: when OMNIROUTE_BASE_URL is set,
+            # route through the local OmniRoute instance (OpenAI-compatible).
+            # Otherwise fall back to direct Groq SDK.
+            base_url = os.getenv("OMNIROUTE_BASE_URL", "").strip()
+            if base_url:
+                from groq import Groq
+                self._client = Groq(
+                    api_key=self.api_key or "omniroute",
+                    base_url=base_url,
+                    timeout=self.timeout,
+                    max_retries=0,
+                )
+            elif not self.api_key:
+                return None
+            else:
+                from groq import Groq
+                self._client = Groq(
+                    api_key=self.api_key,
+                    timeout=self.timeout,
+                    max_retries=0,
+                )
         except Exception as exc:  # pragma: no cover - import/env dependent
             raise GroqBadResponse(f"Groq SDK unavailable: {type(exc).__name__}")
         self._client_built = True

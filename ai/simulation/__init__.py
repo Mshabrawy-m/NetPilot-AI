@@ -1,9 +1,12 @@
 """Digital-Twin simulation boundary (Phase 3 spec §7).
 
-An interface for *future* simulation only. Phase 3 ships no safe isolated
-simulator, so the default implementation honestly returns ``not_run`` with the
-reason. Reporting a pass/fail here would be fabrication and is forbidden.
-Full simulation, deployment, post-change verification and rollback are Phase 4.
+An interface for simulation, originally an interface for *future* simulation
+only. The Phase 3 default implementation still honestly returns ``not_run`` with
+the reason, and reporting a pass/fail without evidence is forbidden. The workflow
+now binds the read-only structural engine in ``services/digital_twin.py``, which
+returns the honest statuses documented on ``SimulationResult``. Full routing/
+behaviour simulation, deployment, post-change verification and rollback remain
+out of scope.
 """
 from __future__ import annotations
 

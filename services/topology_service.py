@@ -73,8 +73,8 @@ def get_topology(session, *, data_source: str | None = None) -> dict:
     topologies are never rendered together.
     """
     from database import source_scope
-    devices = repository.get_devices(session)
-    links = repository.get_links(session)
+    devices = repository.filter_reporting_devices(repository.get_devices(session))
+    links = repository.filter_reporting_links(repository.get_links(session))
     if data_source is not None:
         devices = source_scope.filter_devices(devices, data_source)
         links = source_scope.filter_links(links, data_source)

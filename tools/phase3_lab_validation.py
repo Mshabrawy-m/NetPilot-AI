@@ -41,7 +41,7 @@ from sqlalchemy import func, select  # noqa: E402
 from config import get_settings  # noqa: E402
 from database.connection import init_db, session_scope  # noqa: E402
 from database.models import (AIEvidence, AIRun, AIStatusTransition,  # noqa: E402
-                             MetricSample)
+                             DT_STATUSES, MetricSample)
 
 ROOT = Path(__file__).resolve().parents[1]
 LAB_CONFIGS = ROOT / "lab" / "configs"
@@ -192,7 +192,8 @@ def main() -> int:
     try:
         res = _run_live_request(EXPLICIT_CHANGE, assistant)
         ok = (res.get("status") == "awaiting_human_review"
-              and res.get("digital_twin_status") == "not_run")
+              and res.get("digital_twin_status") in DT_STATUSES
+              and res.get("digital_twin_status") != "not_run")
         detail = (f"status={res.get('status')} verifier={res.get('verifier_status')} "
                   f"dt={res.get('digital_twin_status')}")
         _record("L-3 explicit-change", "PASS" if ok else "FAIL", detail)

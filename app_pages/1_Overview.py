@@ -20,8 +20,8 @@ settings = get_settings()
 sources = read(lambda s: source_scope.available_sources(s))
 source = source_controls.selector(
     sources, key="np_overview_page_source", demo_mode=settings.demo_mode)
-devices = read(lambda s: source_scope.filter_devices(
-    list(repository.get_devices(s)), source))
+devices = read(lambda s: repository.filter_reporting_devices(
+    source_scope.filter_devices(list(repository.get_devices(s)), source)))
 status = topology_service.compute_network_status(devices)
 # Ensure data_source is properly typed: None for demo mode, string otherwise
 data_source_value = None if source == source_scope.DEMO else str(source)

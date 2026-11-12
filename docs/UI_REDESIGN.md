@@ -54,5 +54,5 @@ In the Network Assistant, suggested prompts are based on the selected source's s
 
 - The interface has no user-editable settings screen; runtime options use environment configuration.
 - Live telemetry depends on the optional lab/integration being configured and reachable. The UI reports unavailable paths instead of substituting mock observations.
-- The Digital Twin is structural, and it is not integrated into the AI graph workflow.
+- The Digital Twin is structural (reachability only); it is wired into the AI graph workflow for read-only pre-change validation and never simulates routing or traffic.
 - A successful-looking Streamlit component render does not establish real-browser accessibility or live-lab correctness. Refer to the project acceptance and closure reports for the verified boundaries.

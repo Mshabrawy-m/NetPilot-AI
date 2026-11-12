@@ -20,7 +20,7 @@ demo_banner_if_active()
 
 from database import repository
 from database.models import db_utcnow
-from ui import source_controls
+from ui import source_controls, time_controls
 
 st.caption(
     "All timestamps are UTC. Only metrics with actual stored values can be "
@@ -52,22 +52,32 @@ choice_idx = st.selectbox("Metric (measured values only)", range(len(options)),
 metric, unit, src = options[choice_idx]
 source_controls.badge(src)
 
-range_options = {"1 hour": 1, "6 hours": 6, "24 hours": 24, "7 days": 168}
-range_label = st.selectbox("Time range", list(range_options), index=1)
-hours = range_options[range_label]
+range_options = time_controls.RANGE_OPTIONS
 
-# Optional interface filter when the metric is per-interface.
-iface_names = read(lambda s: sorted({
-        i.interface_name for i in repository.get_metric_series(
-            s, device_name, metric, data_source=src, unit=unit,
-            unit_is_null=unit is None)
-    if i.interface_name
-}))
+# Full stored history for this exact selection (no lower bound), used both to
+# offer interfaces and to pick a default range that is not empty.
+full_rows = read(lambda s: list(repository.get_metric_series(
+    s, device_name, metric, data_source=src, unit=unit,
+    unit_is_null=unit is None)))
+iface_names = sorted({r.interface_name for r in full_rows
+                      if r.interface_name})
 iface = st.selectbox("Interface", [None] + iface_names,
                      format_func=lambda v: v or "(device-level)") \
     if iface_names else None
 
-since = db_utcnow() - timedelta(hours=hours)
+scope_rows = [r for r in full_rows if r.interface_name == iface]
+earliest = min((r.collected_at for r in scope_rows
+                if r.collected_at is not None), default=None)
+latest = max((r.collected_at for r in scope_rows
+              if r.collected_at is not None), default=None)
+default_label = time_controls.smart_range_label(latest=latest)
+time_controls.ensure_default(
+    st.session_state, "np_metrics_range",
+    (device_name, metric, src, iface), default_label)
+range_label = st.selectbox("Time range", list(range_options),
+                           key="np_metrics_range")
+since = time_controls.since_for(range_label)
+
 samples = read(lambda s: repository.get_metric_series(
     s, device_name, metric, since=since, interface_name=iface,
     data_source=src, unit=unit, unit_is_null=unit is None))
@@ -77,11 +87,21 @@ st.subheader(f"{device_name} · {metric}"
              + (f" · {iface}" if iface else "")
              + (f" [{unit}]" if unit else ""))
 st.caption(f"Data source: **{src}** · collected {len(frame)} samples "
-           f"in the last {range_label}")
+           f"in {range_label.lower()}"
+           + (f" · {time_controls.describe_bounds(earliest, latest)}"
+              if earliest is not None else ""))
 
 if frame.empty:
     st.info("No samples in the selected time range - widen the range or "
             "wait for the next collection cycle.")
+    if earliest is not None:
+        st.caption("Stored history for this selection: "
+                   + time_controls.describe_bounds(earliest, latest)
+                   + f" · newest sample {latest:%Y-%m-%d %H:%M:%S} UTC.")
+    if range_label != time_controls.ALL_HISTORY:
+        if st.button("Show all stored history", key="np_metrics_all_history"):
+            st.session_state["np_metrics_range"] = time_controls.ALL_HISTORY
+            st.rerun()
 elif frame["value"].dropna().empty:
     st.info("Stored samples exist but all values are null (metric was not "
             "available). Nothing is plotted - values are never invented.")

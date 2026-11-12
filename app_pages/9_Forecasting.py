@@ -344,7 +344,9 @@ with mcol1:
                                       "the sampling interval or the seasonal "
                                       "history is not defensible - they never "
                                       "produce a quiet wrong answer. ridge_lag "
-                                      "needs a longer history.")
+                                      "and hgb_lag adapt their lag count to "
+                                      "the available history; SARIMA is the "
+                                      "slowest option.")
 with mcol2:
     band_label = st.selectbox("Uncertainty band method", list(BAND_MODES),
                               index=0,
@@ -454,7 +456,7 @@ if run_btn:
             device_level_only=(interface is None), since=since, until=until,
             cadence=cadence,
             band_mode=BAND_MODES[band_label], band_coverage=coverage,
-            ensemble=want_ensemble))
+            ensemble=want_ensemble, max_lags=24))
     st.session_state["_fc_result"] = result
     st.session_state["_fc_at"] = db_utcnow()
 
@@ -813,8 +815,8 @@ with st.expander("📐 Rolling-origin backtest - which baseline would have "
             bt = backtest.rolling_origin_backtest(
                 series, horizon=6, interval_seconds=interval_s,
                 season_hours=settings.season_hours,
-                models=("naive", "holt_damped", "seasonal_naive",
-                        "holt_winters"))
+                models=("naive", "holt_damped", "ridge_lag", "hgb_lag",
+                        "seasonal_naive", "holt_winters"))
             if bt["status"] != "ok":
                 st.warning("Backtest: " + "; ".join(
                     bt.get("reasons") or [bt["status"]]))

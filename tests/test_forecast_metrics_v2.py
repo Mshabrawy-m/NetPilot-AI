@@ -92,7 +92,7 @@ def test_smape_skips_the_both_zero_case():
 
 
 # --------------------------------------------------------------------- mase
-def test_mase_below_one_means_it_beats_the_in_sample_naive_scale():
+def test_mase_below_one_is_better_than_in_sample_one_step_naive_error():
     train = ts_series([10.0, 12.0, 14.0, 16.0, 18.0, 20.0])   # +2 per step
     good = evaluation.mase([22.0, 24.0], [22.0, 24.0], train)
     bad = evaluation.mase([22.0, 24.0], [10.0, 10.0], train)

@@ -1,10 +1,12 @@
 # NetPilot AI — Feature Freeze Report (Phase C)
 
-> **Status update (Phase D1-D4, 2026-10-26):** the "real Digital Twin engine is
-> absent" finding below is the historical Phase C verdict and is **superseded**.
-> The engine, integrity/freshness layer, and persistent snapshot registry now
-> exist and are covered by tests, but remain **unwired from `ai/graph.py`**
-> (`digital_twin_status == "not_run"`). The live-lab, PostgreSQL, browser and
+> **Status update (Phase D1-D4, 2026-10-26; wiring update 2026-11-12):** the
+> "real Digital Twin engine is absent" finding below is the historical Phase C
+> verdict and is **superseded**. The engine, integrity/freshness layer, and
+> persistent snapshot registry now exist, are covered by tests, and are **wired
+> into `ai/graph.py`** for read-only structural reachability validation.
+> `digital_twin_status` reports the engine outcome and is `not_run` only when a
+> run stops before simulation. The live-lab, PostgreSQL, browser and
 > provider validation gaps called out below are still open. See
 > `docs/FINAL_PROJECT_CLOSURE_REPORT.md` for the final handover verdict.
 

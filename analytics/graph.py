@@ -35,13 +35,25 @@ def build_graph(devices: Sequence, links: Sequence) -> nx.Graph:
     two endpoints of every link (carrying ``if_a``/``if_b``/``status``/
     ``subnet``). A link whose endpoint has no Device row still contributes a
     node, so reachability never silently drops a documented endpoint.
+
+    Synthetic traceroute placeholders (``unresponsive hops (N)``,
+    ``unresponsive-path:*``, ``target-*``) are bookkeeping, not network
+    entities: they are removed here together with links that touch them. A raw
+    IP hop endpoint is a real observed node and is kept.
     """
+    from database.repository import (is_synthetic_hop_name,
+                                     filter_reporting_devices,
+                                     filter_reporting_links)
+    devices = filter_reporting_devices(devices)
+    links = filter_reporting_links(links)
     g = nx.Graph()
     for d in devices:
         g.add_node(d.name, status=getattr(d, "status", "unknown"),
                    type=getattr(d, "type", None))
     for l in links:
         for name in (l.device_a, l.device_b):
+            if is_synthetic_hop_name(name):
+                continue
             if name not in g:
                 g.add_node(name, status="unknown", type=None)
         g.add_edge(l.device_a, l.device_b, if_a=l.if_a, if_b=l.if_b,
