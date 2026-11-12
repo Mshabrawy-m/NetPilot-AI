@@ -82,3 +82,16 @@ def ensure_default(state, key: str, signature, label: str) -> None:
     if state.get(signature_key) != signature or key not in state:
         state[key] = label
         state[signature_key] = signature
+
+
+def select_all_history(key: str) -> None:
+    """Widget callback that switches a range selector to all stored history.
+
+    Streamlit forbids assigning to a widget-backed session key after that
+    widget is instantiated in the current run, so pages must pass this as the
+    button's ``on_click`` (callbacks run before the rerun) instead of assigning
+    inline next to ``st.button``.
+    """
+    import streamlit as st
+
+    st.session_state[key] = ALL_HISTORY

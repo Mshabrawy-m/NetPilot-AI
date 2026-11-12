@@ -99,9 +99,10 @@ if frame.empty:
                    + time_controls.describe_bounds(earliest, latest)
                    + f" · newest sample {latest:%Y-%m-%d %H:%M:%S} UTC.")
     if range_label != time_controls.ALL_HISTORY:
-        if st.button("Show all stored history", key="np_metrics_all_history"):
-            st.session_state["np_metrics_range"] = time_controls.ALL_HISTORY
-            st.rerun()
+        st.button(
+            "Show all stored history", key="np_metrics_all_history",
+            on_click=time_controls.select_all_history,
+            args=("np_metrics_range",))
 elif frame["value"].dropna().empty:
     st.info("Stored samples exist but all values are null (metric was not "
             "available). Nothing is plotted - values are never invented.")
