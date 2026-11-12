@@ -86,6 +86,29 @@ Tracing route to 10.9.9.9 over a maximum of 8 hops
 Trace complete.
 """
 
+# POSIX traceroute puts the address *before* the timings; a single-probe row
+# therefore ends with "ms", which the Windows-shaped parser used to mistake for
+# the host name (yielding ip=None).
+LINUX_TRACEROUTE_OK = """
+traceroute to 10.0.21.21 (10.0.21.21), 8 hops max, 60 byte packets
+ 1  10.0.12.2  0.045 ms  0.031 ms  0.028 ms
+ 2  10.0.21.21  0.402 ms  0.355 ms  0.330 ms
+"""
+
+LINUX_TRACEROUTE_SINGLE_PROBE = """
+traceroute to 192.168.1.1 (192.168.1.1), 8 hops max, 60 byte packets
+ 1  172.31.0.1  0.045 ms
+ 2  * * *
+ 3  * * *
+"""
+
+LINUX_TRACEROUTE_MIXED_REPLIES = """
+traceroute to 10.9.9.9 (10.9.9.9), 8 hops max, 60 byte packets
+ 1  10.0.12.1  1.1 ms  *  1.3 ms
+ 2  * * *
+ 3  10.0.21.21  2.5 ms  2.2 ms  2.1 ms
+"""
+
 
 # --------------------------------------------------------------------------
 # Pure parsers (recorded fixtures - no subprocess needed)
@@ -129,8 +152,32 @@ def test_parse_traceroute_hops():
 def test_parse_traceroute_with_star_hops():
     hops = connectivity._parse_traceroute(TRACERT_TIMEOUT_HOPS)
     assert len(hops) == 3
-    assert hops[1]["ip"] == "*" or hops[1]["ip"] is None
+    assert hops[1]["ip"] is None
     assert hops[1]["rtt_ms"] is None
+
+
+def test_parse_posix_traceroute_keeps_the_address_before_timings():
+    hops = connectivity._parse_traceroute(LINUX_TRACEROUTE_OK)
+    assert [h["ip"] for h in hops] == ["10.0.12.2", "10.0.21.21"]
+    assert hops[0]["rtt_ms"] == pytest.approx(0.0347, abs=1e-3)
+    assert hops[1]["rtt_ms"] == pytest.approx(0.3623, abs=1e-3)
+
+
+def test_parse_posix_traceroute_single_probe_line():
+    """Regression: a line ending in "ms" must not lose its address."""
+    hops = connectivity._parse_traceroute(LINUX_TRACEROUTE_SINGLE_PROBE)
+    assert hops[0]["ip"] == "172.31.0.1"
+    assert hops[0]["rtt_ms"] == pytest.approx(0.045)
+    assert hops[1] == {"ttl": 2, "ip": None, "rtt_ms": None}
+    assert hops[2] == {"ttl": 3, "ip": None, "rtt_ms": None}
+
+
+def test_parse_posix_traceroute_mixed_star_and_replies():
+    hops = connectivity._parse_traceroute(LINUX_TRACEROUTE_MIXED_REPLIES)
+    assert hops[0]["ip"] == "10.0.12.1"
+    assert hops[0]["rtt_ms"] == pytest.approx(1.2)
+    assert hops[1]["ip"] is None and hops[1]["rtt_ms"] is None
+    assert hops[2]["ip"] == "10.0.21.21"
 
 
 # --------------------------------------------------------------------------

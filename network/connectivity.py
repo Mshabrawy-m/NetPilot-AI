@@ -332,29 +332,31 @@ def _run_ping_ttl_traceroute(binary: str, target: str, max_hops: int,
 
 
 def _parse_traceroute(output: str) -> list[dict]:
-    """Parse Windows tracert / POSIX traceroute hop lines. Pure function."""
+    """Parse Windows tracert / POSIX traceroute hop lines. Pure function.
+
+    Windows puts the hop address last (``1  1 ms  1 ms  1 ms  10.0.12.1``);
+    POSIX puts it before the timings (``1  10.0.12.1  0.045 ms ...``). The
+    parser therefore takes the first IPv4 literal in the line rather than the
+    last whitespace token, and reports an unanswered probe as ``ip=None``
+    instead of inventing a ``"*"`` address.
+    """
     hops: list[dict] = []
     for line in output.splitlines():
         line = line.strip()
-        # Windows: "  1    2 ms    2 ms    1 ms  10.0.12.1"
-        m = re.match(r"^(\d+)\s+(.*?)\s+(\S+)\s*$", line)
+        m = re.match(r"^(\d+)\s+(.*)$", line)
         if not m:
             continue
         ttl = int(m.group(1))
-        host = m.group(3)
+        rest = m.group(2)
         if ttl <= 0 or ttl > 30:
             continue
+        ip_match = re.search(_IPV4_PATTERN, rest)
+        ip = ip_match.group(1) if ip_match else None
         rtts: list[float] = []
-        for tm in re.finditer(r"(\d+(?:\.\d+)?)\s*ms", m.group(2), re.I):
+        for tm in re.finditer(r"(\d+(?:\.\d+)?)\s*ms", rest, re.I):
             rtts.append(float(tm.group(1)))
-        if "*" in m.group(2) and not rtts:
-            hops.append({"ttl": ttl, "ip": host, "rtt_ms": None})
-        else:
-            ip_match = re.search(r"\((\d+\.\d+\.\d+\.\d+)\)\s*$", line)
-            ip = ip_match.group(1) if ip_match else (
-                host if re.match(r"^\d+\.\d+\.\d+\.\d+$", host) else None)
-            avg = round(sum(rtts) / len(rtts), 3) if rtts else None
-            hops.append({"ttl": ttl, "ip": ip, "rtt_ms": avg})
+        avg = round(sum(rtts) / len(rtts), 3) if rtts else None
+        hops.append({"ttl": ttl, "ip": ip, "rtt_ms": avg})
     # Deduplicate by TTL keeping the first observation.
     seen: set[int] = set()
     unique = []

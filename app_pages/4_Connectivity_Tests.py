@@ -8,6 +8,7 @@ execution is disabled for that source instead of fabricating a result.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 
 import pandas as pd
@@ -35,6 +36,24 @@ from network.device_inventory import InventoryNode, LabInventory, load_inventory
 from ui import source_controls
 
 settings = get_settings()
+
+
+def _is_private_target(target: str) -> bool:
+    """True when the probed literal is an RFC1918/loopback-style address."""
+    try:
+        return ipaddress.ip_address(target).is_private
+    except ValueError:
+        return False
+
+
+def _private_target_note(target: str) -> None:
+    if _is_private_target(target):
+        st.caption(
+            "This is a private address. A collector running outside that LAN "
+            "(for example Streamlit Community Cloud) cannot route to it; the "
+            "failure describes the collector host's reachability, not the "
+            "device's state. Run the collector inside the lab network for a "
+            "real measurement.")
 
 sources = read(lambda s: source_scope.available_sources(s))
 source = source_controls.selector(
@@ -147,8 +166,18 @@ if run_ping:
                 f"loss {probe_result.loss_pct if probe_result.loss_pct is not None else 'n/a'} %"
             )
         else:
-            st.error(f"Ping {probe_result.destination}: FAILED - "
-                     f"{probe_result.error or 'no reply (see loss below)'}")
+            detail = probe_result.error
+            if not detail:
+                stats = []
+                if (probe_result.packets_received is not None
+                        and probe_result.packets_sent is not None):
+                    stats.append(f"{probe_result.packets_received}/"
+                                 f"{probe_result.packets_sent} replies")
+                if probe_result.loss_pct is not None:
+                    stats.append(f"{probe_result.loss_pct:.0f}% packet loss")
+                detail = ", ".join(stats) or "no reply"
+            st.error(f"Ping {probe_result.destination}: FAILED - {detail}")
+            _private_target_note(probe_result.destination)
         st.dataframe(pd.DataFrame([{
             "destination": probe_result.destination,
             "sent": probe_result.packets_sent, "received": probe_result.packets_received,
@@ -189,8 +218,15 @@ if run_tr:
             st.success(f"Traceroute {result.destination}: reached destination"
                        + (f" (method: {result.method})" if result.method else ""))
         else:
+            last = next((hop for hop in reversed(result.hops or [])
+                         if hop.get("ip")), None)
+            suffix = ""
+            if last is not None:
+                suffix = (f" (last responding hop: {last['ip']}, "
+                          f"ttl {last['ttl']})")
             st.error(f"Traceroute {result.destination}: failed - "
-                     f"{result.error or 'destination not reached'}")
+                     f"{result.error or 'destination not reached'}{suffix}")
+            _private_target_note(result.destination)
         if result.hops:
             st.dataframe(pd.DataFrame(result.hops), hide_index=True,
                          width="stretch")
