@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import statistics
-from datetime import timedelta
 
 import plotly.express as px
 import streamlit as st
 
-from services.app_state import bootstrap, demo_banner_if_active, read, samples_to_frame, sidebar_status
+from services.app_state import (
+    bootstrap,
+    demo_banner_if_active,
+    read,
+    samples_to_frame,
+    sidebar_status,
+)
 from services.metric_summary import summarize_link_state
-
 from ui import theme
 
 bootstrap()
@@ -19,7 +23,6 @@ theme.page_header("Metrics & History",
 demo_banner_if_active()
 
 from database import repository
-from database.models import db_utcnow
 from ui import source_controls, time_controls
 
 st.caption(
@@ -30,13 +33,24 @@ st.caption(
 
 available = read(lambda s: repository.get_available_metrics(s))
 if not available:
-    st.info("No measured values stored yet - collect data first "
-            "(sidebar: 'Collect now') or run "
-            "`python tools/seed_simulated.py`.")
+    st.info("No measurements are stored yet. Collect data or load sample data to view metric history.")
+    with st.expander("Technical details", expanded=False):
+        st.markdown("- **Developer command:** `python tools/seed_simulated.py`")
     st.stop()
 
+from ui import presentation
+
+qp = st.query_params
+pre_device = qp.get("device") or st.session_state.get("np_metrics_preselect_device")
+pre_metric = qp.get("metric") or st.session_state.get("np_metrics_preselect_metric")
+pre_source = qp.get("source") or st.session_state.get("np_metrics_preselect_source")
+
 devices = sorted({dev for (dev, _m, _u, _src) in available})
-device_name = st.selectbox("Device", devices)
+if pre_device and pre_device in devices and st.session_state.get("np_metrics_device") not in devices:
+    st.session_state["np_metrics_device"] = pre_device
+if "np_metrics_device" not in st.session_state and devices:
+    st.session_state["np_metrics_device"] = pre_device if pre_device in devices else devices[0]
+device_name = st.selectbox("Device", devices, key="np_metrics_device")
 # Drop rows for other devices (query is already filtered, keep tuples tidy).
 options = [(m, u, src) for (dev, m, u, src) in available if dev == device_name]
 
@@ -46,10 +60,34 @@ if not options:
         "Nothing is plotted for metrics without real data.", icon="📭")
     st.stop()
 
-labels = [f"{m} ({u or 'unit?'}) [{src}]" for m, u, src in options]
-choice_idx = st.selectbox("Metric (measured values only)", range(len(options)),
-                          format_func=lambda i: labels[i])
+labels = [
+    f"{presentation.metric_label(m)} [{presentation.source_label(src)}]" for m, u, src in options
+]
+# Preselect metric/source if requested
+wanted = None
+for i, (m, _u, src) in enumerate(options):
+    if pre_metric and m == pre_metric and (not pre_source or src == pre_source):
+        wanted = i
+        break
+if wanted is None and pre_metric:
+    for i, (m, _u, _src) in enumerate(options):
+        if m == pre_metric:
+            wanted = i
+            break
+if wanted is not None:
+    st.session_state.setdefault("np_metrics_metric_idx", wanted)
+    if st.session_state.get("np_metrics_metric_idx") not in range(len(options)):
+        st.session_state["np_metrics_metric_idx"] = wanted
+else:
+    st.session_state.setdefault("np_metrics_metric_idx", 0)
+    if st.session_state.get("np_metrics_metric_idx") not in range(len(options)):
+        st.session_state["np_metrics_metric_idx"] = 0
+
+choice_idx = st.selectbox(
+    "Metric (measured values only)", range(len(options)),
+    format_func=lambda i: labels[i], key="np_metrics_metric_idx")
 metric, unit, src = options[choice_idx]
+st.caption(presentation.metric_caption(metric))
 source_controls.badge(src)
 
 range_options = time_controls.RANGE_OPTIONS
@@ -71,6 +109,9 @@ earliest = min((r.collected_at for r in scope_rows
 latest = max((r.collected_at for r in scope_rows
               if r.collected_at is not None), default=None)
 default_label = time_controls.smart_range_label(latest=latest)
+pre_range = qp.get("range") or st.session_state.get("np_metrics_preselect_range")
+if pre_range in range_options:
+    st.session_state.setdefault("np_metrics_range", pre_range)
 time_controls.ensure_default(
     st.session_state, "np_metrics_range",
     (device_name, metric, src, iface), default_label)
@@ -83,10 +124,10 @@ samples = read(lambda s: repository.get_metric_series(
     data_source=src, unit=unit, unit_is_null=unit is None))
 frame = samples_to_frame(samples)
 
-st.subheader(f"{device_name} · {metric}"
-             + (f" · {iface}" if iface else "")
-             + (f" [{unit}]" if unit else ""))
-st.caption(f"Data source: **{src}** · collected {len(frame)} samples "
+st.subheader(f"{device_name} · {presentation.metric_label(metric)}"
+             + (f" · {iface}" if iface else ""))
+st.caption(presentation.metric_caption(metric))
+st.caption(f"Source: {presentation.source_label(src)} · collected {len(frame)} samples "
            f"in {range_label.lower()}"
            + (f" · {time_controls.describe_bounds(earliest, latest)}"
               if earliest is not None else ""))
@@ -178,7 +219,7 @@ else:
     if is_link_state:
         fig.update_yaxes(tickmode="array", tickvals=[0, 1],
                          ticktext=["Down", "Up"], title="Link state")
-    fig.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10))
+    fig.update_layout(height=420, margin={"l": 10, "r": 10, "t": 30, "b": 10})
     st.plotly_chart(fig, width="stretch")
 
 with st.expander("Raw samples"):

@@ -119,10 +119,10 @@ elif not connectivity.traceroute_supported():
 can_probe = bool(allowlist.nodes) and source != source_scope.SIMULATED
 if not allowlist.nodes:
     st.info(
-        "No stored device has a probe address for this source yet. Run the "
-        "native collector (`python tools/live_collector.py --once`) or seed "
-        "the labelled simulated source (`python tools/seed_simulated.py`). "
-        "Containerlab is not required for Live Mode.", icon="📭")
+        "No device address is available for testing yet. Collect data or load sample data, then try again.",
+        icon="📭")
+    with st.expander("Technical details", expanded=False):
+        st.markdown("- **Developer commands:** `python tools/live_collector.py --once` or `python tools/seed_simulated.py`")
 
 if source == source_scope.SIMULATED:
     source_name = "loopback self-test"

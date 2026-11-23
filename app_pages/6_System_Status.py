@@ -35,8 +35,9 @@ source_filter = None if source == source_scope.DEMO else source
 st.subheader("Database")
 db_ok, db_info = check_connection()
 if db_ok:
-    st.success(f"Database reachable. Dialect: `{db_info.split(':///')[0]}` "
-               f"(passwords are never displayed)")
+    st.success("Data store is reachable. Connection details are hidden for security.")
+    with st.expander("Technical details", expanded=False):
+        st.markdown(f"- **Database dialect:** `{db_info.split(':///')[0]}`")
 else:
     st.error(f"Database unreachable: {db_info}", icon="💥")
 

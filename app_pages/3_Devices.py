@@ -5,7 +5,6 @@ import pandas as pd
 import streamlit as st
 
 from services.app_state import bootstrap, demo_banner_if_active, read, sidebar_status
-
 from ui import theme
 
 bootstrap()
@@ -26,8 +25,9 @@ source = source_controls.selector(
 devices = read(lambda s: repository.filter_reporting_devices(
     source_scope.filter_devices(list(repository.get_devices(s)), source)))
 if not devices:
-    st.info("No devices exist for the selected source yet. Run a collection "
-            "cycle or `python tools/seed_simulated.py`.")
+    st.info("No devices are available for this source yet. Run a collection or load sample data, then refresh this page.")
+    with st.expander("Technical details", expanded=False):
+        st.markdown("- **Developer command:** `python tools/seed_simulated.py`")
     st.stop()
 
 st.dataframe(

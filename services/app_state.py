@@ -196,23 +196,26 @@ def demo_banner_if_active() -> None:
 
 
 def sidebar_status() -> None:
-    """Sidebar: mode, lab/db connectivity and collection controls."""
+    """Sidebar: mode, data freshness, and collection controls."""
     settings = get_settings()
+    from ui import presentation
+
     st.sidebar.markdown(
         "<div style='font-weight:750;font-size:1.05rem;color:#e5edf7'>"
         "<span style='color:#55b9e8'>◉</span>&nbsp; NetPilot AI</div>"
         "<div style='font-size:.72rem;color:#9aabc1;margin-top:2px'>"
         "Network operations &amp; analytics</div>",
         unsafe_allow_html=True)
-    mode = "🧪 Demo mode" if settings.demo_mode else "🔌 Live lab mode"
-    st.sidebar.caption(mode)
+
+    mode = "Demo mode" if settings.demo_mode else "Live workspace"
+    st.sidebar.caption(f"Mode: {mode}")
 
     # Signed-in identity + logout (only meaningful when auth is enabled).
     if settings.auth_enabled and current_user():
         user = current_user()
         st.sidebar.caption(
-            f"👤 {user['username']} · role: **{user['role']}**")
-        if st.sidebar.button("🚪 Sign out", width="stretch"):
+            f"Signed in: {user['username']} ({user['role']})")
+        if st.sidebar.button("Sign out", width="stretch"):
             st.session_state.pop("_np_user", None)
             st.rerun()
 
@@ -220,34 +223,19 @@ def sidebar_status() -> None:
     from network import containerlab_manager
     db_ok, db_info = check_connection()
     avail = containerlab_manager.availability()
-    st.sidebar.caption(
-        f"Database: {'🟢' if db_ok else '🔴'} {db_info.split(':///')[0] if db_ok else 'unavailable'}"
-    )
     lab_running = any(avail.values()) and avail.get("containerlab", False)
+    st.sidebar.caption(f"Data store: {'Connected' if db_ok else 'Unavailable'}")
     st.sidebar.caption(
-        "Lab (docker/containerlab): "
-        f"{'🟢' if lab_running else '🔴'} "
-        f"docker={avail['docker']}, containerlab={avail['containerlab']}"
-    )
+        f"Lab connection: {'Available' if lab_running else 'Not available'}")
 
     scheduler: collection_service.CollectionScheduler = st.session_state["_scheduler"]
     if settings.demo_mode:
-        # Demo history is seeded data (services/demo_data.py); running the
-        # collector would probe real lab hardware from a demo screen.
-        st.sidebar.caption("🧪 Demo mode: collector disabled — no live probes.")
+        st.sidebar.caption("Demo data is shown for practice. Live collection is off.")
     elif not connection.app_collection_allowed() or not lab_running:
-        # Two independent reasons the in-app collector cannot write here:
-        #   * the app role is SELECT-only (netpilot_app under role separation),
-        #     so INSERT into collection_runs would fail with InsufficientPrivilege;
-        #   * there is no reachable Containerlab lab to probe.
-        # In both cases the external native collector owns collection; this app
-        # only reads what it stored. Never start the scheduler or offer a button
-        # that would produce a failing write.
         if scheduler.is_running():
             scheduler.stop()
         st.sidebar.info(
-            "Live data is collected by the external native collector "
-            "(tools/live_collector.py); this app is read-only.")
+            "Live data is collected in the background. This app shows the latest stored results.")
         try:
             latest_sample = read(lambda s: repository.get_latest_sample_time(
                 s, data_source=settings.data_source))
@@ -258,42 +246,29 @@ def sidebar_status() -> None:
         except Exception as exc:  # noqa: BLE001 - status must never break a page
             st.sidebar.caption(f"Collection status unavailable: {type(exc).__name__}")
         else:
-            # Freshness comes from the data itself, never from collection_runs:
-            # a later run row must not make old samples look current.
-            if latest_sample is not None:
-                age_seconds = max(
-                    0.0, (db_utcnow() - latest_sample).total_seconds())
-                age_minutes = int(age_seconds // 60)
-                st.sidebar.caption(
-                    "Latest live sample: "
-                    f"{latest_sample:%Y-%m-%d %H:%M} UTC "
-                    f"({age_minutes:,} min ago) · "
-                    f"{n_samples:,} sample(s) stored")
-                if age_seconds > 15 * 60:
-                    st.sidebar.warning(
-                        "Live data is stale: the newest stored sample is "
-                        f"{age_minutes:,} min old (warning after 15 min).")
-            else:
-                st.sidebar.caption(
-                    f"No live sample stored yet · "
-                    f"{n_samples:,} sample(s) stored")
-            # The run table is kept as a secondary audit line only - it says
-            # what the collector recorded, not how fresh the telemetry is.
+            level, msg = presentation.freshness_message(latest_sample, now=db_utcnow())
+            getattr(st.sidebar, level)(msg)
+            st.sidebar.caption(f"Stored samples: {n_samples:,}")
             if last_run is not None and last_run.finished_at is not None:
                 st.sidebar.caption(
-                    "Last recorded run: "
-                    f"{last_run.finished_at:%Y-%m-%d %H:%M} UTC "
-                    f"(status {last_run.status})")
+                    f"Last successful collection: {presentation.format_utc(last_run.finished_at)}")
             else:
-                st.sidebar.caption("No collection run recorded yet")
+                st.sidebar.caption("No collection has been recorded yet.")
+        with st.sidebar.expander("Technical details", expanded=False):
+            st.markdown(
+                f"- **Data store:** `{db_info.split(':///')[0] if db_ok else 'unavailable'}`\n"
+                f"- **Lab tools available:** docker={avail.get('docker', False)}, containerlab={avail.get('containerlab', False)}\n"
+                f"- **Collection mode:** external collector\n"
+                f"- **Command (developer):** `python tools/live_collector.py --once`"
+            )
     else:
         col_a, col_b = st.sidebar.columns(2)
-        if col_a.button("▶️ Start collector", width="stretch"):
+        if col_a.button("Start collector", width="stretch"):
             scheduler.start()
             st.sidebar.caption(f"Collecting every {scheduler.interval}s")
-        if col_b.button("⏹ Stop", width="stretch"):
+        if col_b.button("Stop", width="stretch"):
             scheduler.stop()
-        if st.sidebar.button("🔄 Collect now", width="stretch"):
+        if st.sidebar.button("Collect now", width="stretch"):
             result = scheduler.run_now()
             if isinstance(result, str):
                 st.sidebar.warning(result)

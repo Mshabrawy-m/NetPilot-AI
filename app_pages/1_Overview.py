@@ -65,8 +65,9 @@ else:
     )
 
 if not devices:
-    st.info("No rows exist yet for the selected source. Devices appear after "
-            "a collection cycle or after `python tools/seed_simulated.py`.")
+    st.info("No devices are available for this source yet. Run a collection or load sample data, then refresh this page.")
+    with st.expander("Technical details", expanded=False):
+        st.markdown("- **Developer command:** `python tools/seed_simulated.py`")
 
 if status.total:
     st.subheader("Devices at a glance")

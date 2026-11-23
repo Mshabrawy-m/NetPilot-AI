@@ -308,10 +308,10 @@ def _render_detail(uuid: str, key_prefix: str) -> None:
 with tab_agentic:
     st.subheader("Agentic Operations")
     st.caption(
-        "The planner selects registered, read-only analytics tools over the "
-        "dataset loaded in this session. Runs are recorded in experiment "
-        "history. No network changes, shell, SQL, or generated code are "
-        "available.")
+        "This assistant can run read-only analysis tools on the dataset loaded in this session. "
+        "It cannot make network changes, run commands, or generate code.")
+    with st.expander("Technical details", expanded=False):
+        st.markdown("- **Run history storage:** `agentic_analysis_runs` (internal record)")
     active_dataset = st.session_state.get("np_lab_dataset")
     active_label = st.session_state.get("np_lab_dataset_label", "")
     if active_dataset is None:

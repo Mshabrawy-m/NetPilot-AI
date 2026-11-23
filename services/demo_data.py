@@ -18,14 +18,13 @@ import math
 import random
 from datetime import timedelta
 
-from config import get_settings, utc_now, demo_isolation_violation
+from config import demo_isolation_violation, get_settings, utc_now
 from database import repository
-from database.connection import session_scope, init_db
+from database.connection import init_db, session_scope
 from network.device_inventory import load_inventory
 
 DEMO_BANNER = (
-    "DEMO MODE: the data on this page is synthetic fixture data "
-    "(NETPILOT_DEMO_MODE=true), NOT measurements from a real network."
+    "Demo data: this page is showing sample data for demonstration, not real network measurements."
 )
 
 
@@ -282,7 +281,6 @@ def seed_simulated_fabric(core: int = 2, dist: int = 6, access: int = 12,
     import random
     from datetime import timedelta
 
-    from analytics import lab_simulator
     from config import utc_now
     from database.connection import session_scope
     from network.device_inventory import DeviceRole

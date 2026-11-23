@@ -18,9 +18,16 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from services.app_state import (bootstrap, current_user, demo_banner_if_active,
-                                flash, has_role, read, render_flash,
-                                sidebar_status)
+from services.app_state import (
+    bootstrap,
+    current_user,
+    demo_banner_if_active,
+    flash,
+    has_role,
+    read,
+    render_flash,
+    sidebar_status,
+)
 from ui import theme
 
 bootstrap()
@@ -35,9 +42,7 @@ render_flash()
 from analytics import graph
 from config import get_settings
 from database import repository
-from database.models import ALERT_SEVERITIES
-from database.models import CHANGE_RISK_LEVELS
-from database.models import USER_ROLES
+from database.models import ALERT_SEVERITIES, CHANGE_RISK_LEVELS, USER_ROLES
 from services import digital_twin, impact_service
 from services import ops_center_actions as ops_actions
 from ui import source_controls
@@ -396,6 +401,11 @@ with tab_events:
                 outcome = ops_actions.resolve_alert(by_id[sel].id)
                 flash(outcome.message, level=outcome.level)
                 st.rerun()
+            sel_event = by_id[sel]
+            if st.button("Open affected device in Topology", key=f"alert_topo_{sel}"):
+                st.session_state["np_topology_focus_device"] = sel_event.device_name
+                st.query_params["device"] = sel_event.device_name
+                st.switch_page("app_pages/2_Topology.py")
 
 
 # ------------------------------------------------------------------ graph
@@ -547,30 +557,28 @@ with tab_insights:
 
 # ------------------------------------------------------------------ change loop
 with tab_change:
-    st.caption("Approval-bound, lab-only configuration change workflow. This "
-               "dashboard can PROPOSE and APPROVE changes and show the audit; "
-               "actual application is disabled here (no executor is injected) "
-               "and requires NETPILOT_CHANGE_LOOP_ENABLED plus a virtual-lab "
-               "executor on a host that runs the lab. No production device is "
-               "ever reachable from this path.")
+    st.caption(
+        "Approval-bound, lab-only configuration change workflow. This dashboard can propose "
+        "and approve changes and show the audit trail. Applying changes is only available on "
+        "an approved lab host; no production device is reachable from this path.")
     loop_on = get_settings().change_loop_enabled
-    (st.success if loop_on else st.info)(
-        "Change loop ENABLED on this host (apply still needs a lab executor)."
-        if loop_on else
-        "Change loop is OFF - apply will refuse by design. Set "
-        "NETPILOT_CHANGE_LOOP_ENABLED on a lab host to enable application.")
+    if loop_on:
+        st.success("Change application is enabled on this lab host. A lab executor is still required to apply a change.")
+    else:
+        st.info("Change application is turned off on this host. You can still review proposals and audit history.")
+        with st.expander("Technical details", expanded=False):
+            st.markdown("- **Change loop setting:** `NETPILOT_CHANGE_LOOP_ENABLED=false`")
 
     cu = current_user()
     authenticated = cu is not None
     principal = cu["username"] if cu else None
     if not authenticated:
         st.info(
-            "Open mode: no signed-in identity. A proposal is recorded without "
-            "a requester identity, and approval is fail-closed because the app "
-            "cannot prove the approver is a different person from the "
-            "requester. Enable authentication (NETPILOT_AUTH_ENABLED) and sign "
-            "in as a distinct operator to approve. Rejection and cancellation "
-            "remain available; their actor is recorded only when authenticated.")
+            "You are not signed in. Proposals can be recorded, but approval is blocked because "
+            "the system cannot confirm a different approver. Sign in as a different operator to approve. "
+            "Rejection and cancellation are still available.")
+        with st.expander("Technical details", expanded=False):
+            st.markdown("- **Authentication setting:** `NETPILOT_AUTH_ENABLED`")
 
     reqs = read(lambda s: repository.list_change_requests(
         s, data_source=data_source))

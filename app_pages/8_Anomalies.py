@@ -21,8 +21,14 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from services.app_state import (bootstrap, demo_banner_if_active, flash, read,
-                                render_flash, sidebar_status)
+from services.app_state import (
+    bootstrap,
+    demo_banner_if_active,
+    flash,
+    read,
+    render_flash,
+    sidebar_status,
+)
 from ui import theme
 
 bootstrap()
@@ -33,8 +39,7 @@ demo_banner_if_active()
 render_flash()
 
 from analytics import data_quality
-from analytics.anomaly_detection import (
-    DEFAULT_DETECTORS, DETECTORS)
+from analytics.anomaly_detection import DEFAULT_DETECTORS, DETECTORS
 from analytics.time_series import dedupe_frame, load_metric_frame
 from config import get_settings
 from database import repository
@@ -61,7 +66,7 @@ DETECTOR_HELP = {
 def _fmt_duration(seconds) -> str:
     if seconds is None:
         return "n/a"
-    minutes = int(round(seconds / 60.0))
+    minutes = round(seconds / 60.0)
     if minutes < 60:
         return f"{minutes} min"
     hours, mins = divmod(minutes, 60)
@@ -207,10 +212,11 @@ with st.expander("📊 Detection readiness ranking (stored non-null samples)"):
             "needed": max(0, detection_floor - r["n_samples"]),
         } for r in ranked_inventory[:15]]), hide_index=True, width="stretch")
         st.caption(
-            f"Detection needs ≥ {detection_floor} non-null samples per series "
-            f"(`NETPILOT_MIN_POINTS_DETECTION`). {len(ready_inventory)} of "
-            f"{len(inventory)} stored series are ready; richest-first so the "
-            "default selection can actually be analysed.")
+            f"Detection needs at least {detection_floor} samples for each series. "
+            f"{len(ready_inventory)} of {len(inventory)} stored series are ready. "
+            "Series with more samples are shown first so the default selection can be analysed.")
+        with st.expander("Technical details", expanded=False):
+            st.markdown(f"- **Minimum samples setting:** `NETPILOT_MIN_POINTS_DETECTION={detection_floor}`")
 
 # ------------------------------------------------- explicit detection action
 if st.button("🔍 Run detection on this series", width="stretch"):
@@ -314,10 +320,13 @@ if st.button(f"📡 Scan all ready series (max "
 scan = st.session_state.get("_anom_scan")
 if scan:
     if scan["capped"]:
-        st.warning(f"More series were ready than one click may evaluate: "
-                   f"{scan['candidates'] - scan['limit']} were NOT scanned "
-                   f"(NETPILOT_SCAN_MAX_SERIES = {scan['limit']}).",
-                   icon="🛑")
+        st.warning(
+            f"More series were ready than one scan can check at once: "
+            f"{scan['candidates'] - scan['limit']} were not scanned in this run. "
+            "Run the scan again after reviewing these results.",
+            icon="🛑")
+        with st.expander("Technical details", expanded=False):
+            st.markdown(f"- **Scan limit:** `NETPILOT_SCAN_MAX_SERIES={scan['limit']}`")
     if scan["results"]:
         st.dataframe(pd.DataFrame([{
             "series": r["series"], "samples": r["n_samples"],
@@ -430,10 +439,23 @@ else:
         + (f"\n- resolved at **{ev.resolved_at}** UTC by a normal observation"
            if ev.status == "resolved" else ""))
     st.caption(
-        "⚠️ This is a statistical deviation worth investigating - not evidence "
-        "of an attack, and not a confirmed device failure."
-        + (" Event derives from SYNTHETIC demo data."
-           if ev.data_source == "demo" else ""))
+        "This is a statistical deviation worth investigating - not evidence of an attack, and not a confirmed device failure."
+        + (" This event comes from demo data." if ev.data_source == "demo" else ""))
+
+    inv_cols = st.columns(2)
+    if inv_cols[0].button("Investigate in Metrics History", key=f"anom_inv_{ev.id}"):
+        st.session_state["np_metrics_preselect_device"] = ev.device_name
+        st.session_state["np_metrics_preselect_metric"] = ev.metric
+        st.session_state["np_metrics_preselect_source"] = ev.data_source
+        st.session_state["np_metrics_preselect_range"] = "24 hours"
+        st.query_params["device"] = ev.device_name
+        st.query_params["metric"] = ev.metric
+        st.query_params["source"] = ev.data_source or ""
+        st.query_params["range"] = "24 hours"
+        st.switch_page("app_pages/5_Metrics_History.py")
+    if inv_cols[1].button("Open Operations Center", key=f"anom_ops_{ev.id}"):
+        st.session_state["np_ops_focus_device"] = ev.device_name
+        st.switch_page("app_pages/11_Ops_Center.py")
 
     with st.expander("Time-series context (the stored observations)",
                      expanded=True):
@@ -457,10 +479,10 @@ else:
             if ev.observed_value is not None:
                 fig.add_trace(px.scatter(x=[ev.last_seen_at],
                                          y=[ev.observed_value]).data[0])
-                fig.data[-1].marker = dict(color="red", size=11,
-                                           symbol="x")
+                fig.data[-1].marker = {"color": "red", "size": 11,
+                                           "symbol": "x"}
                 fig.data[-1].name = "observed (peak)"
-            fig.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10))
+            fig.update_layout(height=360, margin={"l": 10, "r": 10, "t": 30, "b": 10})
             st.plotly_chart(fig, width="stretch")
             st.caption("Context comes directly from metric_samples; the shaded "
                        "band spans the grouped episode (first → last seen).")

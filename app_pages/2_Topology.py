@@ -94,11 +94,11 @@ elif source == source_scope.SIMULATED and has_role("operator"):
         "🧪 Simulated data - expand this view with a large synthetic fabric",
         expanded=not has_sim_rows,
     ):
-        st.caption("Writes clearly-labelled **simulated** devices/links into the "
-                   "live database with provenance ``data_source='simulated'`` "
-                   "so the four layouts have real scale. Deterministic & "
-                   "idempotent. The fabric uses the reserved ``sim:`` prefix on "
-                   "structural names.")
+        st.caption(
+            "Creates clearly labeled simulated devices and links so the topology views have realistic scale. "
+            "The data is deterministic, idempotent, and kept separate from live data.")
+        with st.expander("Technical details", expanded=False):
+            st.markdown("- **Stored source label:** `data_source='simulated'`\n- **Simulated name prefix:** `sim:`")
         size = st.selectbox(
             "Fabric size",
             ["Compact (~30)", "Standard (~92)", "Large (~210)"], index=1)
@@ -121,9 +121,9 @@ nodes, edges = topology["nodes"], topology["edges"]
 status = topology["status"]
 
 if not nodes:
-    st.info("No devices exist for the selected source yet. Run a collection "
-            "cycle or `python tools/seed_simulated.py`. The graph is always "
-            "generated from stored rows, never a static image.")
+    st.info("No devices are available for this source yet. Run a collection or load sample data, then refresh this page. The topology is built from stored data, not a static image.")
+    with st.expander("Technical details", expanded=False):
+        st.markdown("- **Developer command:** `python tools/seed_simulated.py`")
     st.stop()
 
 g = read(lambda s: graph.build_from_session(s, data_source=topology_source))
@@ -240,6 +240,9 @@ st.caption("Inspect the shortest path in the stored topology and overlay "
            "source-filtered measurements recorded on each hop. This is not "
            "an active ping or a routing-table verification.")
 device_ids = sorted(g.nodes)
+focus = st.query_params.get("device") or st.session_state.get("np_topology_focus_device")
+if focus in device_ids and st.session_state.get("np_path_source") not in device_ids or focus in device_ids and "np_path_source" not in st.session_state:
+    st.session_state["np_path_source"] = focus
 path_cols = st.columns([1, 1, 1, 1])
 path_source = path_cols[0].selectbox("From", device_ids,
                                      key="np_path_source")

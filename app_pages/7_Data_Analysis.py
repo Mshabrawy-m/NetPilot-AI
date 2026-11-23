@@ -122,9 +122,9 @@ st.caption(
 
 available = _available_metrics()
 if not available:
-    st.info("No measured values stored yet. Run the native collector "
-            "(sidebar: 'Collect now') or seed the labelled simulated source "
-            "with `python tools/seed_simulated.py`.")
+    st.info("No measurements are stored yet. Collect data or load sample data to use Data Analysis.")
+    with st.expander("Technical details", expanded=False):
+        st.markdown("- **Developer command:** `python tools/seed_simulated.py`")
     st.stop()
 
 sources = sorted({row[3] for row in available})
