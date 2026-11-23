@@ -1,13 +1,12 @@
 """Page 13 - Evaluation (read-only evidence from committed result files).
 
 This page deliberately performs **no** database, network or LLM access. It
-renders the A/B/C safety ablation and the forecast backtest summary from the
-three committed artefacts below, so it behaves identically in Demo,
-Simulated and Live modes and on Streamlit Community Cloud:
+renders the A/B/C safety ablation from the two committed artefacts below, so
+it behaves identically in Demo, Simulated and Live modes and on Streamlit
+Community Cloud:
 
 * ``docs/agent_eval_results.csv``
 * ``docs/agent_eval_summary.md``
-* ``docs/forecast_backtest_results.csv``
 
 All percentages and confidence intervals are recomputed from the CSV at
 render time; the markdown file supplies the human-written failure cases and
@@ -17,7 +16,6 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import io
 import math
 from pathlib import Path
 
@@ -30,7 +28,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 RESULTS_CSV = DOCS / "agent_eval_results.csv"
 SUMMARY_MD = DOCS / "agent_eval_summary.md"
-BACKTEST_CSV = DOCS / "forecast_backtest_results.csv"
 
 CONFIG_LABELS = {
     "A": "A: LLM only",
@@ -53,7 +50,7 @@ theme.apply_plotly_theme()
 st.sidebar.caption("Static evidence page - no database, network or LLM access.")
 theme.page_header(
     "Evaluation",
-    "Offline A/B/C safety ablation and forecast backtest, read from committed files",
+    "Offline A/B/C safety ablation, read from committed files",
     icon="🧾",
 )
 
@@ -130,7 +127,7 @@ def _median(values: list[float]) -> float:
     return (ordered[middle - 1] + ordered[middle]) / 2.0
 
 
-missing = [p.name for p in (RESULTS_CSV, SUMMARY_MD, BACKTEST_CSV) if not p.exists()]
+missing = [p.name for p in (RESULTS_CSV, SUMMARY_MD) if not p.exists()]
 if missing:
     st.error(
         "Evaluation artefacts are missing from this checkout: "
@@ -142,7 +139,6 @@ if missing:
 
 results = _load_csv(RESULTS_CSV)
 summary_md = SUMMARY_MD.read_text(encoding="utf-8")
-backtest = _load_csv(BACKTEST_CSV)
 
 if not results:
     st.error("`docs/agent_eval_results.csv` contains no rows.", icon="🚫")
@@ -223,11 +219,10 @@ with st.expander("🧾 Evidence provenance & integrity", expanded=False):
         "Hashes let a reviewer confirm the exact evidence revision; the page "
         "reads them from disk and makes no network request.")
     provenance_rows = []
-    for path in (RESULTS_CSV, SUMMARY_MD, BACKTEST_CSV):
+    for path in (RESULTS_CSV, SUMMARY_MD):
         provenance_rows.append({
             "Artefact": f"docs/{path.name}",
-            "Rows": str(len(results) if path == RESULTS_CSV
-                        else len(backtest) if path == BACKTEST_CSV else "—"),
+            "Rows": str(len(results) if path == RESULTS_CSV else "—"),
             "Bytes": path.stat().st_size,
             "SHA-256 (first 16)": _sha256(path)[:16],
         })
@@ -390,148 +385,3 @@ if interpretation:
 scope = _section(summary_md, "Scope notes")
 if scope:
     st.caption(scope)
-
-# ---------------------------------------------------------------------------
-# Forecast backtest summary
-# ---------------------------------------------------------------------------
-st.subheader("Forecast backtest summary")
-if not backtest:
-    st.info("`docs/forecast_backtest_results.csv` contains no rows.")
-else:
-    series = {(row.get("source"), row.get("device"), row.get("metric"))
-              for row in backtest}
-    models = sorted({row.get("model", "") for row in backtest if row.get("model")})
-    live_series = len([item for item in series if item[0] == "live"])
-    demo_series = len([item for item in series if item[0] == "demo"])
-    perfect = len([row for row in backtest if _flag(row.get("naive_perfect"))])
-
-    theme.kpi_row([
-        ("Backtest rows", len(backtest), "model x series"),
-        ("Series", len(series), f"{live_series} live / {demo_series} demo"),
-        ("Models", len(models), ", ".join(models)),
-        ("Naive-perfect series", perfect, "naive beat by no model", "warn"),
-    ])
-
-    filter_cols = st.columns([1, 2])
-    source_filter = filter_cols[0].selectbox(
-        "Source filter", ["All"] + sorted({row.get("source") or "unknown"
-                                           for row in backtest}),
-        key="eval_bt_source")
-    model_filter = filter_cols[1].multiselect(
-        "Model filter", models, default=models, key="eval_bt_models")
-    if not model_filter:
-        model_filter = models
-    filtered_backtest = [
-        row for row in backtest
-        if (source_filter == "All" or (row.get("source") or "unknown")
-            == source_filter)
-        and row.get("model") in model_filter]
-    if not filtered_backtest:
-        st.info("No backtest rows match the selected filters.")
-    st.caption(
-        f"Showing {len(filtered_backtest)} of {len(backtest)} rows. The "
-        "summary KPIs above describe the complete committed file; the tables "
-        "below respect the filters.")
-
-    missing_mase = len([row for row in filtered_backtest
-                        if _as_float(row.get("MASE")) is None])
-    missing_skill = len([row for row in filtered_backtest
-                         if _as_float(row.get("skill_vs_naive")) is None])
-    theme.kpi_row([
-        ("Filtered rows", len(filtered_backtest), "model x series"),
-        ("MASE unavailable", missing_mase,
-         "short series / zero seasonal naive", "warn"),
-        ("Skill unavailable", missing_skill, "naive-perfect or n/a", "warn"),
-        ("Selected models", len(model_filter), ", ".join(model_filter)),
-    ])
-
-    model_rows: list[dict[str, object]] = []
-    for model in model_filter:
-        rows = [row for row in filtered_backtest if row.get("model") == model]
-        if not rows:
-            continue
-        mases = [value for value in (_as_float(row.get("MASE"))
-                                     for row in rows) if value is not None]
-        skills = [value for value in (_as_float(row.get("skill_vs_naive"))
-                                      for row in rows) if value is not None]
-        maes = [value for value in (_as_float(row.get("MAE"))
-                                    for row in rows) if value is not None]
-        model_rows.append({
-            "Model": model,
-            "Rows": len(rows),
-            "Median MAE": f"{_median(maes):.4f}" if maes else "n/a",
-            "Median MASE": f"{_median(mases):.4f}" if mases else "n/a",
-            "Median skill vs naive": f"{_median(skills):.4f}" if skills else "n/a",
-            "MASE n": len(mases),
-            "Skill n": len(skills),
-            "Naive perfect": len([row for row in rows if _flag(row.get("naive_perfect"))]),
-        })
-    st.dataframe(model_rows, hide_index=True, width="stretch")
-
-    source_rows: list[dict[str, object]] = []
-    for source in sorted({row.get("source", "") for row in filtered_backtest}):
-        rows = [row for row in filtered_backtest if row.get("source") == source]
-        source_rows.append({
-            "Source": source,
-            "Series": len({(row.get("device"), row.get("metric")) for row in rows}),
-            "Rows": len(rows),
-            "Models": len({row.get("model") for row in rows}),
-            "Naive perfect": len([row for row in rows if _flag(row.get("naive_perfect"))]),
-        })
-    st.dataframe(source_rows, hide_index=True, width="stretch")
-
-    # Best evaluated model per series, using MASE when available and MAE as a
-    # fallback. This is a re-ranking of committed rows, not a new backtest.
-    best_by_series: dict[tuple, dict[str, object]] = {}
-    for row in filtered_backtest:
-        key = (row.get("source"), row.get("device"), row.get("metric"))
-        mase = _as_float(row.get("MASE"))
-        mae = _as_float(row.get("MAE"))
-        if mae is None:
-            continue
-        score = (mase if mase is not None else float("inf"), mae)
-        candidate = best_by_series.get(key)
-        if candidate is None or score < candidate["_score"]:  # type: ignore[operator]
-            best_by_series[key] = {
-                "_score": score,
-                "Source": key[0],
-                "Device": key[1],
-                "Metric": key[2],
-                "Best model": row.get("model"),
-                "Best MAE": f"{mae:.4f}",
-                "Best MASE": f"{mase:.4f}" if mase is not None else "n/a",
-                "Naive perfect": _flag(row.get("naive_perfect")),
-            }
-    best_rows = [
-        {key: value for key, value in row.items() if key != "_score"}
-        for row in sorted(best_by_series.values(),
-                          key=lambda item: (str(item["Source"]),
-                                            str(item["Device"]),
-                                            str(item["Metric"])))
-    ]
-    if best_rows:
-        st.markdown("**Best evaluated model per series**")
-        st.dataframe(best_rows, hide_index=True, width="stretch")
-        st.caption(
-            "MASE is preferred where defined; MAE breaks ties and fills short "
-            "series where MASE is unavailable. Naive-perfect series make skill "
-            "ratios uninformative, so they are flagged rather than hidden.")
-
-    download_buffer = io.StringIO()
-    writer = csv.DictWriter(download_buffer, fieldnames=list(backtest[0]))
-    writer.writeheader()
-    writer.writerows(filtered_backtest)
-    st.download_button(
-        "⬇️ Download filtered backtest rows (CSV)",
-        data=download_buffer.getvalue(),
-        file_name="forecast_backtest_filtered.csv",
-        mime="text/csv", key="eval_bt_download")
-
-    st.caption(
-        "Computed from `docs/forecast_backtest_results.csv`. `live` rows are the "
-        "series the collector stored with source `live`; `demo` rows are the "
-        "synthetic demo fixture. This is an offline replay over stored series, "
-        "not a new measurement, and no database or network call is made by this "
-        "page. 'Naive perfect' counts model-series rows where the naive "
-        "forecast was already exact, so skill ratios there are not informative."
-    )

@@ -479,8 +479,7 @@ def test_lab_modules_never_import_the_execution_layer():
     root = Path(__file__).resolve().parents[1]
     files = sorted((root / "analytics").glob("lab_*.py")) + sorted(
         (root / "services").glob("lab_*.py")) + [
-        root / "services" / "prometheus_source.py",
-        root / "app_pages" / "12_AI_Lab.py"]
+        root / "services" / "prometheus_source.py"]
     assert files, "the lab modules must exist to be scanned"
     banned = ("lab_executor", "containerlab", "change_service",
               "change_execution", "ops_center_actions", "netmiko",
@@ -510,6 +509,7 @@ def test_importing_the_lab_does_not_load_the_execution_layer():
         "             'containerlab' in m))\n"
     )
     proc = subprocess.run([sys.executable, "-c", code],
+                          check=False,
                           cwd=str(Path(__file__).resolve().parents[1]),
                           capture_output=True, text=True, timeout=180)
     assert proc.returncode == 0, proc.stderr[-400:]

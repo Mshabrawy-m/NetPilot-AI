@@ -13,13 +13,20 @@ The Streamlit navigation is organized around workflows. The app keeps the existi
 | Network operations | Metrics & history | Provenance-filtered time-series exploration, descriptive summaries, recent-vs-earlier median comparison, and a prompt handoff to the Assistant |
 | Network operations | Anomalies | Detector runs, event review, batch scans and calibration |
 | Network operations | Operations center | Alerts, event and graph insights, Digital Twin structural report, impact analysis, human-reviewed change requests and audit history |
-| AI lab | AI Lab · data & forecasting | Simulated, stored, uploaded, allowlisted local, and configured read-only Prometheus sources; data quality, anomaly, forecasting, classification and statistics tasks; history and exports |
-| Agentic Operations | Network assistant & tools | Existing evidence-grounded LangGraph investigation and change proposal review, plus a bounded plan that calls dataset inspection, statistics, anomaly detection, forecasting, stored topology/impact and experiment-history tools |
+| Analytics | Data Analysis | Read-only source/device/metric/range exploration, summaries, Plotly charts, anomalies, quality gates and CSV exports over one selected stored series |
+| Agentic Operations | Network assistant & tools | Existing evidence-grounded LangGraph investigation and change proposal review, plus a bounded read-only tool workflow over validated datasets and stored topology |
+| Agentic Operations | Evaluation · safety | Committed A/B/C safety ablation with Wilson intervals, per-category false accepts and recorded failure cases |
 | System status | System status | Database/lab availability, collector state and runs, incidents, and disposable database reset |
 
 The Ops Center owns the structural Digital Twin and change-safety workflow because impact reports and human approval are part of request review. The Digital Twin is structural and read-only; its report must not be read as routing or traffic simulation. Change execution remains disabled by default and guarded by the existing approval and configuration checks.
 
-The older Data Analysis and Forecasting page modules remain in the repository but are no longer duplicated in the sidebar; AI Lab contains the unified cross-source task flow. The Ops Center owns structural Digital Twin and human change review. The Network Assistant exposes the additional bounded Agentic Operations tab; the existing Phase 3 workflow remains separately available. URL slugs follow Streamlit's grouped-page routing; legacy direct links were not separately browser-tested.
+The Forecasting and AI Lab pages have been removed; the shared simulator and
+analysis services remain available to the read-only agentic workflow and offline
+evaluation. The Ops Center owns structural Digital Twin and human change review.
+The Network Assistant exposes the additional bounded Agentic Operations tab;
+the existing Phase 3 workflow remains separately available. URL slugs follow
+Streamlit's grouped-page routing; legacy direct links to the removed pages no
+longer resolve.
 
 There is no separate user settings page in this project. System configuration is environment based and the System Status page reports service availability and collector diagnostics. The UI does not claim optional integrations are connected unless their availability check succeeds.
 
@@ -31,11 +38,20 @@ Start at **Network overview** to see the stored inventory status and the timesta
 
 Metrics are queried for exactly one selected provenance, device, metric and interface. Summary statistics exclude unavailable values; gaps remain visible. The recent-versus-earlier comparison is descriptive and does not claim a cause. You can pass the selected series and its observed range into the Network Assistant as an editable, read-only investigation prompt.
 
-### Run an AI Lab experiment
+### Explore stored measurements
 
-Open **AI lab → AI Lab · data & forecasting**. Select a source, inspect the dataset and quality information, choose a supported task, configure and run it, then review actual evaluation output, stored history, and exports. Simulated data is identified as simulated and may include ground-truth labels. A Prometheus source is only usable when configured and available. Classification requires labels. The experiment workflow is analysis-only and does not execute network changes.
+Open **Analytics → Data Analysis**. Select one data source, device, metric,
+interface scope, time range and resampling step. The page recomputes summaries,
+charts, anomalies, quality gates and CSV exports from that selection only.
+Sampling gaps remain visible as breaks; sparse or empty results report the
+precondition instead of displaying a placeholder. No computation writes to the
+database.
 
-The suggested task is selected from the dataset's actual task-readiness gates and its label provenance; it is a starting point only. Loading another dataset clears the previous task selection so the recommendation is recalculated.
+### Review the committed safety evidence
+
+Open **Agentic Operations → Evaluation · safety**. The A/B/C comparison,
+per-category false accepts and failure cases are recomputed from the committed
+evidence files. The page makes no database, provider or network call.
 
 ### Review a proposed change
 

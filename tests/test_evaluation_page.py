@@ -1,10 +1,9 @@
 """AppTest coverage for the read-only Evaluation page (page 13).
 
-The page reads only three committed files under ``docs/``. These tests run it
+The page reads only two committed files under ``docs/``. These tests run it
 under the three runtime modes (Demo, Simulated and Live) and assert that it
-renders the A/B/C comparison, the per-category chart, the failure cases and the
-forecast backtest summary without an uncaught exception. No network, provider
-or write path is exercised.
+renders the A/B/C comparison, the per-category chart and the failure cases
+without an uncaught exception. No network, provider or write path is exercised.
 """
 from __future__ import annotations
 
@@ -88,13 +87,14 @@ def test_evaluation_page_renders_in_every_mode(mode, tmp_path, monkeypatch):
     assert "per-category false accepts" in lowered
     assert "network_isolation_or_loop" in joined
     assert "preserve_reachability" in joined
-    assert "forecast backtest summary" in lowered
-    assert "mean_ensemble" in lowered
+    assert "forecast backtest summary" not in lowered
+    assert "mean_ensemble" not in lowered
     assert "no database, network or llm access" in lowered
 
-    # Four tables: A/B/C comparison, per-category rates, forecast models and
-    # forecast sources, plus the per-category false-accept chart.
-    assert len(at.dataframe) >= 4
+    # Five tables: A/B/C comparison, evidence provenance, per-category rates,
+    # intent drill-down and recorded latency/call accounting, plus the
+    # per-category false-accept chart. No forecast table remains.
+    assert len(at.dataframe) == 5
     assert len(at.get("plotly_chart")) == 1
 
     # The committed evidence must not be replaced by a live LLM run: the

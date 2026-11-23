@@ -122,12 +122,13 @@ stored / upload / allowlisted history / Prometheus fetch / simulator
 ```
 
 Navigation is **Overview**, **Network operations** (topology, devices,
-connectivity, Metrics & history, anomalies, Ops Center), **AI lab** (unified
-source selection and experiments), **Agentic Operations** (Network Assistant),
-and **System status**. The older stored-only Data Analysis and Forecasting page
-modules remain available in the repository but no longer duplicate AI Lab in
-navigation. The Ops Center owns structural Digital Twin reports and human
-change review. There is no user-editable settings page.
+connectivity, Metrics & history, anomalies, Ops Center), **Analytics** (read-only
+Data Analysis), **Agentic Operations** (Network Assistant and Evaluation ·
+safety), and **System status**. The Forecasting and AI Lab pages have been
+removed; their shared simulator and analysis services remain available to the
+read-only agentic workflow and offline evaluation. The Ops Center owns
+structural Digital Twin reports and human change review. There is no
+user-editable settings page.
 
 ## Reproduction / owner handover
 
@@ -139,21 +140,17 @@ $env:NETPILOT_DEMO_MODE = 'true'
 streamlit run app.py
 ```
 
-Use **AI Lab · data & forecasting** to build a deterministic simulated dataset,
-inspect its source/fingerprint/quality, and run a statistics, anomaly, or
-forecast experiment. The simulator can label injected events for supervised
-detection evaluation. For imported experiments, choose CSV and inspect the
-mapping before loading. Exported history contains the actual run metadata and
-results.
+Use **Analytics → Data Analysis** to inspect one provenance-scoped stored
+series: summaries, gaps, anomalies, quality gates and CSV exports are all
+computed from the selected rows. The shared simulator remains available through
+the read-only agentic services and their deterministic fixtures.
 
-To demonstrate Agentic Operations, load a dataset in AI Lab, then open
-**Agentic Operations → Network assistant & tools**. Enter a request such as
-“Run statistics and anomaly detection on this dataset, then forecast the
-latency series.” With a reachable Groq provider configured through the existing
-local/host secret mechanism, the UI shows the validated plan, registered tool
-outputs, actual AI Lab experiment IDs, warnings, report and saved run history.
-The automated end-to-end tool test mocks only the planner response; statistics,
-anomaly, forecasting, topology impact and experiment-history reads invoke the
+To demonstrate Agentic Operations, open **Agentic Operations → Network
+assistant & tools** with a validated dataset available. With a reachable Groq
+provider configured through the existing local/host secret mechanism, the UI
+shows the validated plan, registered read-only tool outputs, warnings and saved
+run history. The automated end-to-end tool test mocks only the planner response;
+statistics, anomaly, topology impact and experiment-history reads invoke the
 real application services over deterministic SQLite/dataset fixtures.
 
 ## Verification evidence for this audit
@@ -226,13 +223,12 @@ and tells the presenter to verify them on the recording machine. Its initial
 overview no longer promises a separate landing page or a “Safety guarantees”
 panel.
 
-The older stored-data EDA and forecasting page modules were retained. The
-unified AI Lab is the current cross-source workflow, while the older modules
-remain referenced by the Phase 2 requirements/delivery history and the
-forecast page is still exercised by the UI smoke script. Removing them would
-break an existing workflow or documented test surface without improving the
-current sidebar. `pages/1_Overview.py` was also left intact; `app.py` supplies
-the current grouped-navigation overview.
+The Forecasting and AI Lab pages were removed from navigation and from the
+repository. Their computation modules were retained because the offline
+evaluation and read-only agentic services still import them. The Phase 2
+requirements and delivery history remain as historical documents; the UI smoke
+script now targets only registered pages. `pages/1_Overview.py` was also left
+intact; `app.py` supplies the current grouped-navigation overview.
 
 Cleanup verification:
 

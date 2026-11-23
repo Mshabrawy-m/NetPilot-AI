@@ -56,11 +56,11 @@ Command run on the delivery tree:
 | Metric | Result |
 | --- | ---: |
 | Exit code | 0 |
-| Tests collected | 1638 |
+| Tests collected | 1663 |
 | Failures | 0 |
 | Errors | 0 |
 | Skipped | 0 |
-| Duration | 230.687 s (final run) |
+| Duration | 230.421 s (final run) |
 
 The suite includes:
 
@@ -87,12 +87,10 @@ unavailable because Containerlab is not installed…”).
 | 5 | Metrics & history | `app_pages/5_Metrics_History.py` | PASS | PASS | PASS |
 | 6 | Anomalies | `app_pages/8_Anomalies.py` | PASS | PASS | PASS |
 | 7 | Operations center | `app_pages/11_Ops_Center.py` | PASS | PASS | PASS |
-| 8 | AI Lab · data & forecasting | `app_pages/12_AI_Lab.py` | PASS | PASS | PASS |
-| 9 | Data Analysis | `app_pages/7_Data_Analysis.py` | PASS | PASS | PASS |
-| 10 | Forecasting | `app_pages/9_Forecasting.py` | PASS | PASS | PASS |
-| 11 | Network assistant & tools | `app_pages/10_AI_Network_Assistant.py` | PASS | PASS | PASS |
-| 12 | System status | `app_pages/6_System_Status.py` | PASS | PASS | PASS |
-| 13 | Evaluation · safety & backtest | `app_pages/13_Evaluation.py` | PASS | PASS | PASS |
+| 8 | Data Analysis | `app_pages/7_Data_Analysis.py` | PASS | PASS | PASS |
+| 9 | Network assistant & tools | `app_pages/10_AI_Network_Assistant.py` | PASS | PASS | PASS |
+| 10 | Evaluation · safety | `app_pages/13_Evaluation.py` | PASS | PASS | PASS |
+| 11 | System status | `app_pages/6_System_Status.py` | PASS | PASS | PASS |
 
 `app_pages/1_Overview.py` is a retained standalone duplicate of the inline
 overview; it was measured separately and also passed in all three modes.
@@ -110,9 +108,8 @@ Mode definitions used for this matrix:
   measurement.
 
 The Evaluation page is mode-independent by design: it reads only
-`docs/agent_eval_results.csv`, `docs/agent_eval_summary.md` and
-`docs/forecast_backtest_results.csv`, and makes no database, network or LLM
-call.
+`docs/agent_eval_results.csv` and `docs/agent_eval_summary.md`, and makes no
+database, network or LLM call.
 
 ## 4. What is real and what is simulated
 
@@ -136,13 +133,10 @@ The new page renders, from the committed files only:
 - the per-category false-accept chart and table;
 - the failure cases copied verbatim from `docs/agent_eval_summary.md`
   (twin extra failures, verifier/twin failures, safe-proposal rejections, and
-  the honest interpretation);
-- the forecast backtest summary: 84 model-series rows, 14 series (9 live,
-  5 demo), six models (`naive`, `holt_damped`, `ridge_lag`, `hgb_lag`, `sarima`,
-  `mean_ensemble`), median MASE and skill, and naive-perfect counts.
+  the honest interpretation).
 
-Verified rendering: four dataframes and one Plotly chart, no exception, in
-Demo, Simulated and Live modes.
+Verified rendering: five dataframes and one Plotly chart, no exception, in
+Demo, Simulated and Live modes. No forecast section is rendered.
 
 ## 6. Streamlit Community Cloud notes
 
@@ -224,8 +218,8 @@ No files were deleted during this hygiene check.
 | --- | --- |
 | Read-only Evaluation page added and registered | PASS |
 | AppTest for the Evaluation page | PASS (3 modes) |
-| Demo / Simulated / Live page matrix | 14/14 page entries PASS in each mode (13 navigation pages + the standalone `app_pages/1_Overview.py`) |
-| Full pytest suite | 1638 passed, 0 failed/errors/skipped, exit 0 |
+| Demo / Simulated / Live page matrix | 12/12 page entries PASS in each mode (11 navigation pages + the standalone `app_pages/1_Overview.py`) |
+| Full pytest suite | 1663 passed, 0 failed/errors/skipped, exit 0 |
 | `compileall` | PASS (exit 0) |
 | Ruff on changed files | PASS (`All checks passed!`, ruff 0.17.3) |
 | Secret scan | PASS (`Secret scan clean.`, exit 0) |

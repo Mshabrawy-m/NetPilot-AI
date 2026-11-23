@@ -23,10 +23,8 @@ MODIFIED_MODULES = [
     "app_pages/6_System_Status.py",
     "app_pages/7_Data_Analysis.py",
     "app_pages/8_Anomalies.py",
-    "app_pages/9_Forecasting.py",
     "app_pages/10_AI_Network_Assistant.py",
     "app_pages/11_Ops_Center.py",
-    "app_pages/12_AI_Lab.py",
 ]
 
 ROOT = Path(__file__).resolve().parents[1]

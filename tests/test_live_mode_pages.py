@@ -25,15 +25,19 @@ from tools import live_collector, seed_simulated
 
 ROOT = Path(__file__).resolve().parents[1]
 
-PAGES = ["app.py"] + [
+#: The ten registered page scripts (the inline overview lives in app.py).
+NAV_PAGES = [
     f"app_pages/{name}" for name in (
-        "1_Overview.py", "2_Topology.py", "3_Devices.py",
-        "4_Connectivity_Tests.py", "5_Metrics_History.py",
-        "6_System_Status.py", "7_Data_Analysis.py", "8_Anomalies.py",
-        "9_Forecasting.py", "10_AI_Network_Assistant.py",
-        "11_Ops_Center.py", "12_AI_Lab.py", "13_Evaluation.py",
+        "2_Topology.py", "3_Devices.py", "4_Connectivity_Tests.py",
+        "5_Metrics_History.py", "6_System_Status.py", "7_Data_Analysis.py",
+        "8_Anomalies.py", "10_AI_Network_Assistant.py", "11_Ops_Center.py",
+        "13_Evaluation.py",
     )
 ]
+STANDALONE_PAGES = ["app_pages/1_Overview.py"]
+PAGES = ["app.py"] + NAV_PAGES + STANDALONE_PAGES
+
+assert len(NAV_PAGES) == 10
 
 FORBIDDEN = (
     "Live telemetry is unavailable because Containerlab is not installed",
@@ -121,51 +125,3 @@ def test_all_pages_render_in_live_mode(state, db_url, monkeypatch):
                 failures.append(f"{page}: false gate {forbidden!r}")
 
     assert not failures, "\n".join(failures)
-
-
-def test_forecasting_page_accepts_a_sparse_observed_interval(db_url, monkeypatch):
-    """Regression: a sparse series crashed the strong-model interval widget.
-
-    The widget used a fixed ``max_value=3600`` while its default came from the
-    observed sampling interval, so a series whose median gap exceeded one hour
-    raised ``StreamlitValueAboveMaxError`` before the page could render. Two
-    live samples ~19 h apart reproduce the reported shape exactly: a newly
-    discovered series that is not forecastable yet ("has 2" samples).
-    """
-    monkeypatch.setenv("NETPILOT_DEMO_MODE", "false")
-    monkeypatch.setenv("NETPILOT_CHANGE_LOOP_ENABLED", "false")
-    monkeypatch.setenv("NETPILOT_LAB_EXECUTION_ENABLED", "false")
-
-    from database.connection import session_scope
-    from database.models import MetricSample, db_utcnow
-
-    now = db_utcnow()
-    with session_scope() as session:
-        session.add_all([
-            MetricSample(device_name="sparse-node", metric="ping.avg_rtt_ms",
-                         value=12.0, unit="ms", data_source="live",
-                         collected_at=now - dt.timedelta(hours=19)),
-            MetricSample(device_name="sparse-node", metric="ping.avg_rtt_ms",
-                         value=13.0, unit="ms", data_source="live",
-                         collected_at=now),
-        ])
-
-    at = _run_page("app_pages/9_Forecasting.py", "live")
-    exceptions = [str(e.value) for e in at.exception]
-    assert not exceptions, exceptions[0][:500]
-
-    interval = next(w for w in at.number_input
-                    if w.label == "Fixed grid interval (seconds)")
-    # 19 h observed gap: the default must fit inside the (grown) upper bound.
-    assert interval.value == 68400
-    assert interval.min <= interval.value <= interval.max
-
-    # Clicking the action on this sparse series must refuse gracefully, not
-    # raise: the strong path reports insufficient data instead of crashing.
-    run = next(b for b in at.button if "Run strong backtest" in b.label)
-    run.click()
-    at.run()
-    exceptions = [str(e.value) for e in at.exception]
-    assert not exceptions, exceptions[0][:500]
-    joined = "\n".join(_texts(at)).lower()
-    assert "insufficient" in joined or "not enough" in joined or "needs" in joined

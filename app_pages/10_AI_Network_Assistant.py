@@ -11,8 +11,7 @@ import json
 import pandas as pd
 import streamlit as st
 
-from services.app_state import (bootstrap, demo_banner_if_active, read,
-                                sidebar_status)
+from services.app_state import bootstrap, demo_banner_if_active, read, sidebar_status
 from ui import theme
 
 bootstrap()
@@ -65,8 +64,8 @@ def _suggested_investigations(data_source: str) -> list[str]:
 
     anomalies, metrics = read(_load)
     suggestions = [
-        "Summarize the current network evidence, including missing or stale "
-        "observations, and list the next read-only checks."
+        ("Summarize the current network evidence, including missing or stale "
+         "observations, and list the next read-only checks.")
     ]
     if anomalies:
         event = anomalies[0]
@@ -309,16 +308,16 @@ def _render_detail(uuid: str, key_prefix: str) -> None:
 with tab_agentic:
     st.subheader("Agentic Operations")
     st.caption(
-        "The planner selects registered, read-only analytics tools. Each task "
-        "runs through AI Lab services and is saved in experiment history. "
-        "No network changes, shell, SQL, or generated code are available.")
+        "The planner selects registered, read-only analytics tools over the "
+        "dataset loaded in this session. Runs are recorded in experiment "
+        "history. No network changes, shell, SQL, or generated code are "
+        "available.")
     active_dataset = st.session_state.get("np_lab_dataset")
     active_label = st.session_state.get("np_lab_dataset_label", "")
     if active_dataset is None:
-        st.info("Load a dataset in AI Lab first. This workspace uses the same "
-                "validated dataset and its source provenance.")
-        if st.button("Open AI Lab", key="np_agentic_open_lab"):
-            st.switch_page("app_pages/12_AI_Lab.py")
+        st.info("No dataset is loaded in this session. Agentic Operations "
+                "needs an in-session dataset with explicit provenance before "
+                "any registered analytics tool can run.")
     else:
         st.write(f"**Active data:** {active_dataset.source_type} · "
                  f"{active_label or active_dataset.source_id} · "
@@ -333,7 +332,7 @@ with tab_agentic:
         examples = [
             "Summarize data quality and descriptive statistics for this dataset.",
             "Detect anomalous behavior and identify which selected series merits follow-up.",
-            "Compare forecast models for the most relevant available metric.",
+            "Compare the distribution of the most relevant available metrics.",
         ]
         cols = st.columns(len(examples))
         for index, (column, example) in enumerate(zip(cols, examples)):
@@ -344,8 +343,8 @@ with tab_agentic:
                 st.rerun()
         agent_request = st.text_area(
             "Analysis request",
-            placeholder=("Identify the most problematic metric, run "
-                         "statistics and anomaly detection, then forecast it."),
+            placeholder=("Identify the most problematic metric, then run "
+                         "statistics and anomaly detection on it."),
             max_chars=1200, key="np_agentic_request")
         if st.button("🧭 Plan and run analyses", type="primary",
                      key="np_agentic_run", disabled=not bool(agent_request.strip())):
@@ -361,7 +360,7 @@ with tab_agentic:
                         session, active_dataset, plan,
                         request_text=agent_request)
                 st.session_state["np_agentic_last"] = result
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - UI must fail safe
                 st.error(f"Agent stopped safely: {type(exc).__name__}: "
                          f"{str(exc)[:240]}")
             finally:
@@ -394,7 +393,7 @@ with tab_agentic:
             from services import agentic_analytics
             persisted_runs = read(
                 lambda db: agentic_analytics.list_runs(db, limit=20))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - optional history must not crash the page
             # A history-reader import/DB issue must not make the whole
             # Network Assistant page unavailable. Tool execution itself has
             # a separate explicit safe-failure boundary above.
@@ -466,7 +465,7 @@ with tab_new:
                     res = ai_svc.run_workflow(sess, request_text=request,
                                               data_source=source)
                 st.session_state["last_ai_run"] = res["run_uuid"]
-            except Exception as exc:  # never a crash into the user
+            except Exception as exc:  # noqa: BLE001 - never a crash into the user
                 st.error(f"Workflow error (failed safe): {type(exc).__name__}")
             finally:
                 sess.close()

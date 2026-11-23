@@ -118,23 +118,21 @@ clearly labelled demo source.”
 
 ---
 
-### Scene 3 — AI Lab analytics (00:55–02:00)
+### Scene 3 — Read-only data analysis (00:55–02:00)
 
-**Page:** **AI lab → AI Lab · data & forecasting** (`pages/12_AI_Lab.py`).
+**Page:** **Analytics → Data Analysis** (`app_pages/7_Data_Analysis.py`).
 
 **Do:**
-1. On **① Data source**, keep **Simulated telemetry** and click
-   **Build simulated dataset**. The defaults make a bounded dataset with
-   injected, labelled fault windows.
-2. On **② Inspect**, show the `simulated` source, synthetic-data warning,
-   timestamps, series, quality information and task gates.
-3. On **③ Configure & run**, keep the recommended supported task and selected
-   series, then click **Run experiment**.
-4. Review the computed result under **④ Results**, then show **⑤ History**.
+1. Keep the single available source and select a device with stored samples.
+2. Choose a metric and an interface scope that actually exists for that
+   selection, then choose a time range that contains the newest stored sample.
+3. Show the summary, time series, distribution, quality panel and anomaly
+   section. Change the resampling step to demonstrate bounded downsampling.
+4. Export the selection as CSV and confirm the exported rows match the chart.
 
-The dataset is synthetic method-validation data, not a live measurement.
-Describe only metrics shown by the completed run. Before recording, confirm
-the experiment finishes and its result renders on screen.
+The displayed demo data is synthetic fixture data, not a live measurement.
+Describe only values shown on screen. Before recording, confirm the page has no
+red exception box and that empty selections report their precondition.
 
 ### Scene 4 — Agentic Operations (conditional; allow extra time)
 
@@ -277,7 +275,7 @@ integration checks are not verified in that handover.
 |---|---|---|
 | 00:00–00:25 | Overview → Network overview | Source and inventory |
 | 00:25–00:55 | Network operations → Topology | Graph, links and dependencies |
-| 00:55–02:00 | AI lab → AI Lab | Build a simulated dataset and run one experiment |
+| 00:55–02:00 | Analytics → Data Analysis | Explore one stored series, quality gates, anomalies and CSV export |
 | Optional | Agentic Operations → Network assistant & tools | Inspect planned and executed tools after live provider preflight |
 | 02:00–03:30 | Network operations → Operations center | Structural impact report and what-if result |
 | 03:30–04:00 | Operations center → Change loop | Disabled-apply and approval boundary |

@@ -33,7 +33,7 @@ flowchart LR
         FC["Forecast + rolling-origin backtest"]
     end
 
-    UI["Streamlit app<br/>13 navigation pages"]
+    UI["Streamlit app<br/>11 navigation pages"]
 
     subgraph AGENT["Agentic operations"]
         WF["LangGraph workflow"]
@@ -113,9 +113,9 @@ NETPILOT_DEMO_MODE=true .venv/bin/streamlit run app.py
 ```
 
 Demo mode uses an isolated SQLite file, seeds synthetic fixtures, and needs no
-Docker, Containerlab, network access or API key. Open **AI lab → AI Lab · data &
-forecasting** for a guided experiment, or **Agentic Operations → Evaluation** to
-see the committed safety and backtest evidence.
+Docker, Containerlab, network access or API key. Open **Analytics → Data
+Analysis** for read-only stored-series analysis, or **Agentic Operations →
+Evaluation · safety** for the committed A/B/C safety evidence.
 
 ## Run the live collector
 
@@ -148,25 +148,23 @@ metrics shown on the Evaluation page (A: 25.0% false accept, B: 20.0%, C: 10.0%;
 A: 17.5% false reject, B/C: 30.0%). Drop `--no-write` to regenerate
 `docs/agent_eval_results.csv` and `docs/agent_eval_summary.md`.
 
-**Forecast backtest.** The algorithm is
-`analytics.backtest.strong_rolling_origin_backtest`, used by the Forecasting
-page's **Run strong backtest & forecast** button. The committed
+**Forecast backtest evidence.** The algorithm is
+`analytics.backtest.strong_rolling_origin_backtest`. The committed
 `docs/forecast_backtest_results.csv` is a point-in-time export over 14 stored
 series (9 live, 5 demo); **exact reproduction from this repository is NOT
 VERIFIED** because the source database snapshot and the export script are not
-committed. The Evaluation page recomputes its summary from the committed CSV.
-To run the same method on data you collect, start the app, open **AI lab →
-Forecasting**, select a series and run the strong backtest.
+committed. It is retained as historical evidence only: no current page renders
+it or launches a backtest.
 
 ## Tests
 
-On the delivery tree (Python 3.12.10, Streamlit 1.65.0, 2026-11-11):
+On the current verification tree (Python 3.12.10, Streamlit 1.65.0, 2026-11-23):
 
 ```powershell
-.\.venv\Scripts\python -m pytest -q
+.\.venv\Scripts\python -m pytest -q --junitxml=<temp>\junit_full.xml
 ```
 
-Result: **1638 passed, 0 failed, 0 errors, 0 skipped, exit code 0** (230.7 s).
+Result: **1663 passed, 0 failed, 0 errors, 0 skipped, exit code 0** (230.4 s).
 This includes headless AppTest coverage for every page in the Live, Simulated
 and empty database states, plus the Evaluation page in Demo mode. The full
 Demo/Simulated/Live page matrix is recorded in the status report.
@@ -211,12 +209,11 @@ netpilot-ai/
 │   ├── 4_Connectivity_Tests.py # allowlisted ping / traceroute
 │   ├── 5_Metrics_History.py    # time-series charts from stored measurements
 │   ├── 6_System_Status.py      # DB, lab, scheduler, runs, incidents, reset
-│   ├── 7_Data_Analysis.py      # retained legacy stored-data EDA page (not in sidebar)
+│   ├── 7_Data_Analysis.py      # read-only stored-series analytics page
 │   ├── 8_Anomalies.py          # Phase 2 anomaly events + explanations + context
-│   ├── 9_Forecasting.py        # retained legacy stored-data forecast page (not in sidebar)
 │   ├── 10_AI_Network_Assistant.py  # Phase 3 workflow + Agentic Operations tools
 │   ├── 11_Ops_Center.py        # v2: alerting, graph risk, insights, change loop, access
-│   └── 12_AI_Lab.py            # unified cross-source analysis, forecasts, history
+│   └── 13_Evaluation.py        # offline A/B/C safety evidence
 ├── ai/                         # Phase 3 multi-agent core (LangGraph workflow)
 │   ├── groq_client.py          # single Groq SDK choke point (timeouts, retries)
 │   ├── schemas.py              # typed Pydantic schemas for every model output
@@ -474,9 +471,8 @@ NETPILOT_DEMO_MODE=true streamlit run app.py
 Demo mode uses a **separate database** (`data/netpilot_demo.db`), seeds
 deterministic synthetic history labelled `data_source='demo'`, and shows a
 persistent warning banner on every page. It exists only to exercise the UI
-without Docker — it is never presented as real network data. The Phase 5
-**AI Lab** page works fully inside demo mode: no lab, no credentials, no
-network.
+without Docker — it is never presented as real network data. Every current
+page works inside demo mode: no lab, no credentials, no network.
 
 ### Deploying to Streamlit Community Cloud (public demo, no lab)
 
@@ -914,20 +910,19 @@ With the dashboard running (demo or live mode):
 9. **Network operations → Operations center** — review alerts, graph risk,
    structural impact analysis, and the change approval boundary. Do not
    enable application flags for a demo.
-10. **AI lab → AI Lab · data & forecasting** — build a simulated dataset,
-    load stored measurements, or upload a CSV; inspect source/provenance and task gates,
-    then run statistics, anomaly detection, forecasting or another supported
-    task. Results, history and exports describe the actual computed run.
-11. **Agentic Operations → Network assistant & tools** — with the active AI
-    Lab dataset and a reachable Groq provider, request an analysis and inspect
-    the validated plan, registered-tool outputs and saved run. A provider
-    timeout is a failed run, not a diagnosis; the deterministic **Knowledge &
-    Ask** tab is an offline evidence-query fallback, not an agent run.
-
-The older **Data Analysis** and **Forecasting** page modules remain in the
-repository for their existing stored-data workflows and regression coverage;
-they are not part of the current sidebar. Use AI Lab as the unified workflow
-for new experiments across supported data sources.
+10. **Analytics → Data Analysis** — choose a source, device, metric, interface,
+    range and resampling step; confirm that summaries, charts, anomalies,
+    quality gates and CSV exports are computed from the selected stored series
+    only. Empty selections state the missing precondition instead of charting a
+    placeholder.
+11. **Agentic Operations → Network assistant & tools** — with a validated
+    dataset and a reachable Groq provider, request an analysis and inspect the
+    validated plan, registered-tool outputs and saved run. A provider timeout
+    is a failed run, not a diagnosis; the deterministic **Knowledge & Ask** tab
+    is an offline evidence-query fallback, not an agent run.
+12. **Agentic Operations → Evaluation · safety** — confirm that the A/B/C
+    comparison, per-category false accepts and failure cases come from the
+    committed evidence files without a database, provider or network call.
 
 ---
 
@@ -1069,16 +1064,15 @@ verified reports coverage NULL rather than 100 %). Raw `metric_samples`
 are never modified, and demo/live provenance is preserved end-to-end
 (`data_source` on every row, filter, run and event).
 
-**UI at the Phase 2 release:** page 7 Data Analysis, page 8 Anomalies,
-page 9 Forecasting. The current sidebar consolidates stored and imported
-analysis under AI Lab; see §17 for the current navigation.
-Page 8 adds detector selection (including the opt-in change-point
-detectors), sensitivity controls, the bounded batch scan with its cap
-reported, and the event aggregate. Page 9 adds the accuracy KPIs, the
-model ranking + best-model callout, the ensemble blend, band-mode choice
-with realized coverage and the threshold-crossing warnings. Heavy
-analyses (detection, forecast comparison) run **only** on explicit button
-press, never on every rerun.
+**UI at the Phase 2 release:** the stored-data pages were Data Analysis,
+Anomalies and Forecasting; the Forecasting page has since been removed and its
+backtest evidence is retained only as a committed CSV. The current sidebar is
+listed in §17. Page 8 adds detector selection (including the opt-in
+change-point detectors), sensitivity controls, the bounded batch scan with its
+cap reported, and the event aggregate. The retired forecast page added the
+accuracy KPIs, model ranking, ensemble blend, band modes and threshold warnings;
+the computation modules remain for the offline evaluation and agentic services.
+Heavy analyses run **only** on explicit user action, never on every rerun.
 
 **Database migration:** purely additive — `anomaly_events`,
 `forecast_runs`, `forecast_predictions` are created automatically on
@@ -1261,10 +1255,10 @@ curl -H "Accept: text/plain" http://127.0.0.1:8000/metrics
 
 ## 16. Phase 5 — Real & Simulated Data Analytics Lab (AI Lab)
 
-Page **🧪 AI Lab** (`pages/12_AI_Lab.py`) turns the existing computation core
-into an experiment platform: pick a source → inspect it → pick a task →
-configure → run → evaluate → export. Full guide:
-`docs/NetPilot_Phase_5_AI_Lab_Guide_EN.md`; delivery evidence:
+The former AI Lab page has been removed. Its shared computation core remains:
+source adapters, `LabDataset`, simulator, task services and experiment
+persistence are still used by the read-only agentic services and their tests.
+Historical guide: `docs/NetPilot_Phase_5_AI_Lab_Guide_EN.md`; delivery evidence:
 `docs/Phase5_AI_Lab_Delivery_Report.md`.
 
 **Sources.** Built-in deterministic **simulator** (multi-device telemetry with
@@ -1280,13 +1274,9 @@ Live — is carried into the result, the stored history row and the exports.
 Synthetic data is labelled *not real-network traffic* wherever it appears; an
 upload's provenance is recorded as an unverified operator claim.
 
-**Quick CSV workflow.** In AI Lab, choose **Upload a CSV/TSV file from the
-browser**, select a file, review the preview and guessed column types, confirm
-the timestamp/device/metric/value mapping and units, then click **Validate and
-load upload**. Open **② Inspect** to review source, time range, quality and
-rejected-row warnings. Choose a task in **③ Configure & run**, check its gate,
-and click **Run experiment**. The upload is parsed as data, never executed;
-the app records the provided provenance as an operator claim.
+**CSV handling.** The shared source adapters still parse CSV/TSV as data,
+never execute it, and carry the operator-provided provenance into the validated
+dataset and any result. There is no current wizard page for loading an upload.
 
 **Tasks.** Anomaly detector comparison (6 detectors, labelled scoring when
 truth exists, agreement diagnostics, threshold-sensitivity curve, opt-in
@@ -1318,15 +1308,15 @@ server, so it is documented as a boundary, not as working live operation.
 ## 17. Interface navigation and workflows
 
 The Streamlit sidebar groups the application into **Overview**, **Network
-operations**, **AI lab**, **Agentic Operations**, and **System status**. AI Lab
-unifies source selection, data quality, statistics, anomaly detection,
-forecasting, experiment history and exports. Network assistant also has a
-bounded read-only tool workflow over the active AI Lab dataset and stored
-topology. The Ops Center retains structural Digital Twin reporting and human
-change review. The Digital Twin does not simulate routing or traffic. The
-older stored-data Data Analysis and Forecasting pages remain in the repository
-but are not listed in navigation; AI Lab is the canonical cross-source user
-workflow. No user-editable settings page is currently provided.
+operations**, **Analytics**, **Agentic Operations**, and **System status**.
+Analytics contains the read-only Data Analysis page. Agentic Operations
+contains the Network Assistant and the committed A/B/C Evaluation page; the
+assistant exposes a bounded read-only tool workflow over a validated dataset
+and stored topology. The Ops Center retains structural Digital Twin reporting
+and human change review. The Digital Twin does not simulate routing or traffic.
+The Forecasting and AI Lab pages have been removed; their shared computation
+modules remain for offline evaluation and agentic services. No user-editable
+settings page is currently provided.
 
 See [`docs/UI_REDESIGN.md`](docs/UI_REDESIGN.md) for the page-to-feature map,
 workflow guide, shared UI modules and current interface limitations.
