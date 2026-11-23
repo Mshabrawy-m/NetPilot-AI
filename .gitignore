@@ -73,3 +73,4 @@ parity_failures.txt
 pytest_exact_summary.py
 *.orig
 skills-lock.json
+docs/CODE_AUDIT.md
