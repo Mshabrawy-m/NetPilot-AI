@@ -16,7 +16,7 @@ The page must render without an exception, must not offer "Start collector"
 or "Collect now", must say that collection is external and read-only, and
 must report freshness from ``MAX(metric_samples.collected_at)`` plus the stored
 sample count from read-only queries. ``collection_runs`` stays a secondary
-"last recorded run" line, never the freshness source.
+"Last successful collection" audit line, never the freshness source.
 """
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ from database import connection, roles
 ROOT = Path(__file__).resolve().parents[1]
 
 READ_ONLY_MESSAGE = (
-    "Live data is collected by the external native collector "
-    "(tools/live_collector.py); this app is read-only.")
+    "Live data is collected in the background. "
+    "This app shows the latest stored results.")
 
 
 def _texts(at) -> list[str]:
@@ -111,12 +111,13 @@ def test_select_only_live_mode_never_starts_collection(db_url, monkeypatch):
 
     joined = "\n".join(_texts(at))
     assert READ_ONLY_MESSAGE in joined
-    assert "Latest live sample:" in joined
-    assert "0 min ago" in joined
-    assert f"{n_samples} sample(s) stored" in joined
-    assert "Last recorded run:" in joined
-    assert "Last successful collection:" not in joined
-    assert "Live data is stale" not in joined
+    assert "Last live sample:" in joined
+    assert "less than a minute ago" in joined
+    assert f"Stored samples: {n_samples}" in joined
+    assert "Last successful collection:" in joined
+    # Freshness is sample-based (Last live sample), run row is secondary audit only.
+    assert joined.index("Last live sample:") < joined.index("Last successful collection:")
+    assert "Live data may be out of date" not in joined
 
     scheduler = at.session_state["_scheduler"]
     assert scheduler.is_running() is False
@@ -153,9 +154,10 @@ def test_sidebar_freshness_comes_from_samples_not_the_run_row(
     assert not exceptions, exceptions[0][:500]
 
     joined = "\n".join(_texts(at))
-    assert "Latest live sample:" in joined
-    assert re.search(r"\(4\d min ago\)", joined), joined
-    assert f"{n_samples} sample(s) stored" in joined
-    assert "Last recorded run:" in joined
-    assert "Live data is stale" in joined
-    assert "Last successful collection:" not in joined
+    assert "Last live sample:" in joined
+    assert re.search(r"\b4\d min ago\b", joined), joined
+    assert f"Stored samples: {n_samples}" in joined
+    assert "Last successful collection:" in joined
+    assert "Live data may be out of date" in joined
+    # Freshness is sample-based (40 min ago), not the 2-min-old run row.
+    assert joined.index("Last live sample:") < joined.index("Last successful collection:")

@@ -69,7 +69,7 @@ def test_page_reports_empty_state_without_charts(db_url, monkeypatch):
     monkeypatch.setenv("NETPILOT_DEMO_MODE", "false")
     at = _run(db_url)
     assert not [str(exc.value) for exc in at.exception]
-    assert "No measured values stored yet" in _texts(at)
+    assert "No measurements are stored yet" in _texts(at)
     assert len(at.get("plotly_chart")) == 0
 
 
